@@ -1,0 +1,362 @@
+[
+ {
+  "slug": "abrams",
+  "name": "Abrams",
+  "codename": "atlas",
+  "model": "models/heroes_wip/abrams/abrams.vmdl"
+ },
+ {
+  "slug": "apollo",
+  "name": "Apollo",
+  "codename": "fencer",
+  "model": "models/heroes_wip/fencer/fencer.vmdl"
+ },
+ {
+  "slug": "baba",
+  "name": "Baba",
+  "codename": "baba",
+  "model": "models/heroes_wip/baba/baba.vmdl"
+ },
+ {
+  "slug": "bebop",
+  "name": "Bebop",
+  "codename": "bebop",
+  "model": "models/heroes_staging/bebop/bebop.vmdl"
+ },
+ {
+  "slug": "billy",
+  "name": "Billy",
+  "codename": "punkgoat",
+  "model": "models/heroes_wip/punkgoat/punkgoat.vmdl"
+ },
+ {
+  "slug": "calico",
+  "name": "Calico",
+  "codename": "nano",
+  "model": "models/heroes_staging/nano/nano_v2/nano.vmdl"
+ },
+ {
+  "slug": "celeste",
+  "name": "Celeste",
+  "codename": "unicorn",
+  "model": "models/heroes_wip/unicorn/unicorn.vmdl"
+ },
+ {
+  "slug": "deadman_danny",
+  "name": "Deadman Danny",
+  "codename": "deadpack",
+  "model": "models/heroes_wip/deadpack/deadpack.vmdl"
+ },
+ {
+  "slug": "drifter",
+  "name": "Drifter",
+  "codename": "drifter",
+  "model": "models/heroes_wip/drifter/drifter.vmdl"
+ },
+ {
+  "slug": "dynamo",
+  "name": "Dynamo",
+  "codename": "dynamo",
+  "model": "models/heroes_wip/dynamo/dynamo.vmdl"
+ },
+ {
+  "slug": "graves",
+  "name": "Graves",
+  "codename": "necro",
+  "model": "models/heroes_wip/necro/necro.vmdl"
+ },
+ {
+  "slug": "grey_talon",
+  "name": "Grey Talon",
+  "codename": "orion",
+  "model": "models/heroes_staging/archer/archer.vmdl"
+ },
+ {
+  "slug": "haze",
+  "name": "Haze",
+  "codename": "haze",
+  "model": "models/heroes_staging/haze/haze.vmdl"
+ },
+ {
+  "slug": "holliday",
+  "name": "Holliday",
+  "codename": "astro",
+  "model": "models/heroes_staging/astro/astro.vmdl"
+ },
+ {
+  "slug": "infernus",
+  "name": "Infernus",
+  "codename": "inferno",
+  "model": "models/heroes_wip/inferno/inferno.vmdl"
+ },
+ {
+  "slug": "ivy",
+  "name": "Ivy",
+  "codename": "tengu",
+  "model": "models/heroes_wip/ivy/ivy.vmdl"
+ },
+ {
+  "slug": "kelvin",
+  "name": "Kelvin",
+  "codename": "kelvin",
+  "model": "models/heroes_staging/kelvin_v2/kelvin.vmdl"
+ },
+ {
+  "slug": "lady_geist",
+  "name": "Lady Geist",
+  "codename": "ghost",
+  "model": "models/heroes_wip/geist/geist.vmdl"
+ },
+ {
+  "slug": "lash",
+  "name": "Lash",
+  "codename": "lash",
+  "model": "models/heroes_wip/lash/lash.vmdl"
+ },
+ {
+  "slug": "mcginnis",
+  "name": "McGinnis",
+  "codename": "forge",
+  "model": "models/heroes_wip/mcginnis/mcginnis.vmdl"
+ },
+ {
+  "slug": "mina",
+  "name": "Mina",
+  "codename": "vampirebat",
+  "model": "models/heroes_wip/vampirebat/vampirebat.vmdl"
+ },
+ {
+  "slug": "mirage",
+  "name": "Mirage",
+  "codename": "mirage",
+  "model": "models/heroes_staging/mirage_v2/mirage.vmdl"
+ },
+ {
+  "slug": "mo_krill",
+  "name": "Mo & Krill",
+  "codename": "krill",
+  "model": "models/heroes_staging/digger/digger.vmdl"
+ },
+ {
+  "slug": "nurse_harrow",
+  "name": "Nurse Harrow",
+  "codename": "nurse",
+  "model": "models/heroes_wip/nurse/nurse.vmdl"
+ },
+ {
+  "slug": "paige",
+  "name": "Paige",
+  "codename": "bookworm",
+  "model": "models/heroes_wip/bookworm/bookworm.vmdl"
+ },
+ {
+  "slug": "paradox",
+  "name": "Paradox",
+  "codename": "chrono",
+  "model": "models/heroes_staging/chrono/chrono.vmdl"
+ },
+ {
+  "slug": "pocket",
+  "name": "Pocket",
+  "codename": "synth",
+  "model": "models/heroes_wip/pocket/pocket.vmdl"
+ },
+ {
+  "slug": "rat_king",
+  "name": "Rat King",
+  "codename": "ratking",
+  "model": "models/heroes_wip/ratking/ratking.vmdl"
+ },
+ {
+  "slug": "rem",
+  "name": "Rem",
+  "codename": "familiar",
+  "model": "models/heroes_wip/familiar/familiar_wip.vmdl"
+ },
+ {
+  "slug": "seven",
+  "name": "Seven",
+  "codename": "gigawatt",
+  "model": "models/heroes_staging/gigawatt_prisoner/gigawatt_prisoner.vmdl"
+ },
+ {
+  "slug": "shiv",
+  "name": "Shiv",
+  "codename": "shiv",
+  "model": "models/heroes_staging/shiv/shiv.vmdl"
+ },
+ {
+  "slug": "silver",
+  "name": "Silver",
+  "codename": "werewolf",
+  "model": "models/heroes_wip/werewolf/werewolf.vmdl"
+ },
+ {
+  "slug": "sinclair",
+  "name": "Sinclair",
+  "codename": "magician",
+  "model": "models/heroes_staging/magician_v2/magician.vmdl"
+ },
+ {
+  "slug": "solomon",
+  "name": "Solomon",
+  "codename": "chessmaster",
+  "model": "models/heroes_wip/chessmaster/chessmaster.vmdl"
+ },
+ {
+  "slug": "the_doorman",
+  "name": "The Doorman",
+  "codename": "doorman",
+  "model": "models/heroes_wip/doorman_v2/doorman.vmdl"
+ },
+ {
+  "slug": "venator",
+  "name": "Venator",
+  "codename": "priest",
+  "model": "models/heroes_wip/priest/priest.vmdl"
+ },
+ {
+  "slug": "victor",
+  "name": "Victor",
+  "codename": "frank",
+  "model": "models/heroes_wip/frank/frank.vmdl"
+ },
+ {
+  "slug": "vindicta",
+  "name": "Vindicta",
+  "codename": "hornet",
+  "model": "models/heroes_staging/hornet_v3/hornet.vmdl"
+ },
+ {
+  "slug": "violet",
+  "name": "Violet",
+  "codename": "artist",
+  "model": "models/heroes_wip/artist/artist.vmdl",
+  "rename": {
+   "artist": "Body",
+   "head": "Head"
+  },
+  "drop": [
+   "jar"
+  ],
+  "face": {
+   "part": "head",
+   "mesh": "Head",
+   "builder": "keys.py",
+   "controls": {
+    "landmarks": {
+     "lid": [
+      0.044,
+      -0.082,
+      2.163
+     ],
+     "lidlow": [
+      0.046,
+      -0.078,
+      2.128
+     ],
+     "brow": [
+      0.05,
+      -0.088,
+      2.192
+     ],
+     "cheek": [
+      0.058,
+      -0.076,
+      2.105
+     ],
+     "nose": [
+      0.019,
+      -0.1,
+      2.096
+     ],
+     "corner": [
+      0.033,
+      -0.088,
+      2.067
+     ],
+     "lipup": [
+      0.012,
+      -0.104,
+      2.082
+     ],
+     "liplow": [
+      0.012,
+      -0.1,
+      2.05
+     ]
+    },
+    "brow_mid": [
+     0,
+     -0.095,
+     2.18
+    ],
+    "mouth": [
+     0,
+     -0.112,
+     2.066
+    ],
+    "jaw": [
+     0,
+     -0.098,
+     2.012
+    ],
+    "eye_target": [
+     0,
+     -0.55,
+     2.147
+    ],
+    "eye_spacing": 0.044,
+    "face_box": [
+     0.0,
+     -0.06,
+     2.43
+    ]
+   }
+  },
+  "cloth_links": [
+   [
+    "apron_outer_0_L",
+    "apron_inner_0_L"
+   ],
+   [
+    "apron_inner_0_L",
+    "apron_inner_0_R"
+   ],
+   [
+    "apron_inner_0_R",
+    "apron_outer_0_R"
+   ]
+  ]
+ },
+ {
+  "slug": "viscous",
+  "name": "Viscous",
+  "codename": "viscous",
+  "model": "models/heroes_staging/viscous/viscous.vmdl"
+ },
+ {
+  "slug": "vyper",
+  "name": "Vyper",
+  "codename": "viper",
+  "model": "models/heroes_staging/viper/viper.vmdl"
+ },
+ {
+  "slug": "warden",
+  "name": "Warden",
+  "codename": "warden",
+  "model": "models/heroes_staging/warden/warden.vmdl"
+ },
+ {
+  "slug": "wraith",
+  "name": "Wraith",
+  "codename": "wraith",
+  "model": "models/heroes_wip/wraith/wraith.vmdl"
+ },
+ {
+  "slug": "yamato",
+  "name": "Yamato",
+  "codename": "yamato",
+  "model": "models/heroes_staging/yamato_v2/yamato.vmdl"
+ }
+]

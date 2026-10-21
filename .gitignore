@@ -1,0 +1,4 @@
+# everything under heroes/<hero>/ is extracted from or built on the game's files
+heroes/
+__pycache__/
+*.blend1
