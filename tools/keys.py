@@ -482,6 +482,23 @@ def build(h: fg.Head) -> tuple:
         keys[name + 'Left'] = rig.moves(spec_left)
         keys[name + 'Right'] = rig.moves(mirror(spec_left))
 
+    lip_line = np.r_[rim_u, rim_l]
+    d_lips = fg.geodesic(h, lip_line, limit=0.06 * s)
+    cx = {side: abs(p[corner[side], 0]) for side in 'LR'}
+
+    def arc(side, up, out, back, reach=0.016):
+        """The corner pulled with the whole lip line following on a curve (none at the middle, all of it at the
+        corner, fading out past it), so the mouth bends instead of kinking at the corner. mm like moves()."""
+        sx = 1 if side == 'L' else -1
+        t = p[:, 0] * sx / cx[side]
+        f = np.where(t <= 1, np.clip(t, 0, 1) ** 1.6, np.exp(-((t - 1) * cx[side] / (0.016 * s)) ** 2))
+        w = f * np.exp(-(d_lips / (reach * s)) ** 2) * rig.soft_w
+        return np.outer(w, np.array([sx * out, back, up]) * rig.mm)
+
+    def lr_arc(name, up, out, back, spec_left):
+        keys[name + 'Left'] = arc('L', up, out, back) + rig.moves(spec_left)
+        keys[name + 'Right'] = arc('R', up, out, back) + rig.moves(mirror(spec_left))
+
     jaw_open = rig.jaw_rot(14) + rig.moves({'L_LIPCORNER': (1, -5, 0), 'R_LIPCORNER': (1, -5, 0),
                                             'L_CHEEK_MID': (0, -2, 0), 'R_CHEEK_MID': (0, -2, 0)})
     keys['jawOpen'] = jaw_open
@@ -509,10 +526,10 @@ def build(h: fg.Head) -> tuple:
     lr('cheekSquint', {'L_CHEEK_MID': (1, 4, 0)})
     lr('noseSneer', {'L_MOUTHFOLD_UPPER': (0, 3, 0), 'L_NOSE_WING': (0, 3, 0), 'L_UPPERLIP_OUTER': (0, 1.5, 0),
                      'M_NOSE': (0, 0.8, 0)})
-    lr('mouthSmile', {'L_LIPCORNER': (-5, 12, -7), 'L_CHEEK_MID': (1.5, 5, -1), 'L_MOUTHFOLD_LOWER': (-1.5, 5, -3),
-                      'L_MOUTHFOLD_UPPER': (0.5, 4, -1)})
-    lr('mouthFrown', {'L_LIPCORNER': (0, -9, 0), 'L_MOUTHFOLD_LOWER': (0, -4.5, 0)})
-    lr('mouthStretch', {'L_LIPCORNER': (-2.5, -4, -9), 'L_MOUTHFOLD_LOWER': (0, -3, -4)})
+    lr_arc('mouthSmile', 10, 7, 6, {'L_CHEEK_MID': (2.5, 6, -1), 'L_MOUTHFOLD_LOWER': (-0.5, 2.5, -1.5),
+                                   'L_MOUTHFOLD_UPPER': (0.5, 3, -1)})
+    lr_arc('mouthFrown', -6, 1, 0, {'L_MOUTHFOLD_LOWER': (0, -3, 0)})
+    lr_arc('mouthStretch', -2, 7, 3, {'L_MOUTHFOLD_LOWER': (0, -2, -3)})
     lr('mouthDimple', {'L_LIPCORNER': (-3, 0, -2.5)})
     lr('mouthPress', {'L_UPPERLIP_INNER': (0, -1, 0), 'L_LOWERLIP_INNER': (0, 1, 0),
                       'L_UPPERLIP_OUTER': (-1, -1, 0), 'L_LOWERLIP_OUTER': (-1, 1, 0)})
