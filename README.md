@@ -37,6 +37,9 @@ The steps run in order: `extract data base anims rig test`.
 `heroes.json` lists the heroes: slug, display name, codename and model. It also holds optional per-hero settings:
 - `rename` / `drop`: rename or remove mesh parts
 - `cloth_links`: neighbouring cloth chains to hold together
+- `props`: held props (Abrams' book). The prop's bone gets a box control in the Props collection, and its default
+  hold comes from the idle clip. An optional `chain` (with `chain_end` and `anchor`) stays attached to the prop
+  through IK.
 - `face`: face shape keys, only Violet so far
 
 ## Using a rig
@@ -55,6 +58,8 @@ the hero, in Pose Mode on the armature.
 - Physics: the game's cloth chains (goal strength, bend, gravity) and body collision capsules, baked into the
   action. "Re-bake when playback starts" re-bakes every time you press play.
 - Hands: Relaxed, Fist, Point, Peace, Thumbs Up, Open, Grip (also in the Asset Browser).
+- Held props (Abrams' book): move or rotate the box around the prop. It follows the hand, and the chain to the cuff
+  follows the book. "Chain follows prop" in Arms & Legs turns that off. Reset puts the book back in his hand.
 - Face (Violet): circles on the face, a `FACE` box with 51 ARKit sliders, expressions and mouth shapes.
 
 ## How the rig works
@@ -62,7 +67,9 @@ the hero, in Pose Mode on the armature.
 IK runs on hidden clean chains (`IKC-*`), because the imported bones' tails point arbitrary ways. Game clips also
 key bone translations, so each `IKC-*` bone takes its deform bone's location offset through a driver, and a tiny
 locked `IKC-<hand/ankle>` bone carries the end's offset; its tail is the effector, aimed at `IKE-*` on the IK
-control. `IK_tweak_*` bones copy the chain's local transforms and add their own rotation. The deform bones copy
+control. `IK_tweak_*` bones copy the chain's local transforms and add their own rotation. IK sets the upper and
+lower bones' roll from the pole, so when switching FK to IK (or converting a clip) any twist the FK pose has about
+the limb axis goes into the tweaks, which keeps clothing and props parented to the arm/thigh in place. The deform bones copy
 `MCH-*` children of the tweaks, so their rest pose (and the skinning) is untouched.
 
 Twist uses `TW-*` helpers and a Transformation constraint (swing/twist about the limb axis). The weights are fitted
@@ -70,6 +77,9 @@ per hero against the twist bones baked into its clips, when the clips have them;
 used.
 
 Physics keys `PHYS-*` helper bones; each cloth bone adds its helper's rotation on top of the animation.
+
+A prop chain runs on `CHC-*` bones (head to next head) whose pose copies the deform chain's own keys through drivers,
+so a clip's chain shape is the starting point; IK only bends it to keep the end on `ANC-*`, which rides the prop.
 
 Parts a skeleton lacks (Baba's arms, Bebop's left fingers) are skipped. The panel code lives in the .blend
 (`dlrig_ui.py` text block): after changing `tools/rig_ui.py`, rebuild the rig.

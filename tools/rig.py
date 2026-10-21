@@ -53,7 +53,7 @@ CATS = [
     ('Weapon', r'^weapon|^brush_'),
     ('Secondary', r'.'),
 ]
-COLL_ORDER = ['Root', 'Torso', 'Arms FK', 'Legs FK', 'IK', 'Fingers', 'Face', 'Secondary', 'Weapon', 'Helpers']
+COLL_ORDER = ['Root', 'Torso', 'Arms FK', 'Legs FK', 'IK', 'Fingers', 'Props', 'Face', 'Secondary', 'Weapon', 'Helpers']
 HIDDEN = {'Helpers'}
 HIDDEN_BY_DEFAULT = {'Helpers', 'Secondary'}
 
@@ -126,6 +126,52 @@ def terms():
     t['mouthFunnel'].append(('CTRL_mouth', 'SCALE_AVG', 1, 0.5))
     return t
 
+
+# held props (heroes.json "props"): the prop's bone becomes a visible control, its default hold comes from the first
+# frame of an idle clip (at rest it sits at the origin), and a chain tying it to the hand stays attached through IK
+
+PROPS = hero.cfg.get('props', [])
+HOLD_CLIPS = ('game_out_of_combat_stand_idle', 'game_primary_stand_idle', 'game_weapon_stand_idle', 'game_stand_idle')
+
+
+def descendants(name):
+    return [name] + [c.name for c in B[name].children_recursive]
+
+
+def sample_hold(bones):
+    """Basis (of the keyed bones) and armature-space matrices of bones on the first frame of the hold clip."""
+    with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
+        dst.actions = [next(n for n in HOLD_CLIPS if n in src.actions)]
+    a = dst.actions[0]
+    arm.animation_data_create()
+    arm.animation_data.action = a
+    arm.animation_data.action_slot = a.slots[0]
+    bpy.context.scene.frame_set(int(a.frame_range[0]))
+    bpy.context.view_layer.update()
+    pbs = arm.pose.bones
+    keyed = {fc.data_path.split('"')[1] for fc in a.layers[0].strips[0].channelbags[0].fcurves
+             if fc.data_path.startswith('pose.bones')}
+    basis = {b: [*pbs[b].location, *pbs[b].rotation_quaternion, *pbs[b].scale] for b in bones if b in keyed}
+    mats = {b: pbs[b].matrix.copy() for b in bones}
+    arm.animation_data.action = None
+    bpy.data.actions.remove(a)
+    for b in pbs:
+        b.location, b.rotation_quaternion, b.scale = (0, 0, 0), (1, 0, 0, 0), (1, 1, 1)
+    bpy.context.view_layer.update()
+    return basis, mats
+
+
+PROP_POSE, PROP_CHAINS = {}, []
+for prop in PROPS:
+    chain = prop.get('chain', [])
+    held = [b for b in descendants(prop['bone']) if b not in chain and b != prop.get('chain_end')]
+    extra = chain + [prop['chain_end'], prop['anchor'], B[chain[0]].parent.name] if chain else []
+    basis, idle = sample_hold(held + extra)
+    # the chain end's own keyed offset is part of how it meets the prop
+    PROP_POSE.update({b: v for b, v in basis.items() if b in held or b == prop.get('chain_end')})
+    if chain:
+        PROP_CHAINS.append((prop, idle))
+PROP_CHAIN_BONES = {b for prop, _ in PROP_CHAINS for b in prop['chain'] + [prop['chain_end']]}
 
 # edit mode: new bones
 
@@ -224,9 +270,30 @@ for tw, w, src, frame, a, b_ in TWISTS:
     new_bone(f'TW-fol-{key_}', None, None, src, copy=r.name)
     new_bone(f'TW-src-{key_}', None, None, r.name, copy=r.name)
 
+# The prop chain: CHC-* is a clean IK chain (head to next head) whose pose follows the deform chain's own keys through
+# drivers, so a clip's chain shape is IK's starting point; IK then only bends it to keep the end on ANC-* (on the prop).
+# The chain is not connected because clips also key the chain bones' locations.
+for prop, idle in PROP_CHAINS:
+    chain, end = prop['chain'], prop['chain_end']
+    prev = eb[chain[0]].parent.name
+    for k, n in enumerate(chain):
+        nxt = chain[k + 1] if k + 1 < len(chain) else end
+        cb_ = new_bone('CHC-' + n, eb[n].head.copy(), eb[nxt].head.copy(), prev, roll_to=UP)
+        new_bone('MCH-' + n, None, None, cb_.name, copy=n)
+        prev = cb_.name
+    # the end's own keyed offset varies between clips, but where it lands on the prop does not: CHC-<end> is a tiny
+    # locked bone carrying that offset, and its tail is the IK effector
+    eps = (eb[end].head - eb[chain[-1]].head).normalized() * 0.0001
+    new_bone('CHC-' + end, eb[end].head.copy(), eb[end].head + eps, prev, roll_to=UP)
+    at = (rest[prop['anchor']] @ idle[prop['anchor']].inverted() @ idle[end]).translation
+    new_bone('ANC-' + end, at, at + UP * 0.02, prop['anchor'], roll_to=FWD)
+
 PHYS_CHAINS = []
 for c in GAMERIG['chains']:
     js = c['joints']
+    if any(j['bone'] in PROP_CHAIN_BONES for j in js):
+        print('cloth chain', c['name'], 'is held by its prop instead of simulated')
+        continue
     if not all(j['bone'] in eb for j in js) or \
             any(eb[j1['bone']].parent.name != j0['bone'] for j0, j1 in zip(js, js[1:])):
         print('skipping cloth chain', c['name'], [j['bone'] for j in js])
@@ -248,12 +315,14 @@ for b in B:
         cat = 'Face'
     elif n.startswith(('IK_', 'pole_')):
         cat = 'IK'
-    elif n.startswith(('IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-')):
+    elif n.startswith(('IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-', 'CHC-', 'ANC-')):
         cat = 'Helpers'
+    elif n in {p['bone'] for p in PROPS}:
+        cat = 'Props'
     else:
         cat = category(n)
     colls[cat].assign(b)
-    pal = 'THEME03' if cat == 'Face' else 'THEME06' if cat == 'Secondary' else COLOURS[side(n)]
+    pal = {'Face': 'THEME03', 'Secondary': 'THEME06', 'Props': 'THEME07'}.get(cat, COLOURS[side(n)])
     b.color.palette = pal
     arm.pose.bones[n].color.palette = pal
 for n in HIDDEN_BY_DEFAULT:
@@ -341,7 +410,7 @@ def seg_end(b):
 
 for b in B:
     n = b.name
-    if n.startswith(('CTRL_', 'FACE', 'IK_', 'pole_', 'IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-')):
+    if n.startswith(('CTRL_', 'FACE', 'IK_', 'pole_', 'IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-', 'CHC-', 'ANC-')):
         continue
     cat = category(n)
     if cat in HIDDEN:
@@ -699,6 +768,72 @@ def fit_twists():
 
 
 fit_twists()
+
+
+def prop_widget(bone):
+    """Box around the rest-pose vertices skinned to the prop's bones."""
+    names = set(descendants(bone)) - PROP_CHAIN_BONES
+    pts = []
+    for o in bpy.data.objects:
+        if o.type != 'MESH' or o.hide_viewport or o.name.startswith('WGT-'):
+            continue
+        groups = {g.index for g in o.vertex_groups if g.name in names}
+        if groups:
+            pts += [o.matrix_world @ v.co for v in o.data.vertices if any(g.group in groups and g.weight > 0.3 for g in v.groups)]
+    if not pts:
+        return
+    lo = Vector([min(p[i] for p in pts) for i in range(3)])
+    hi = Vector([max(p[i] for p in pts) for i in range(3)])
+    widget(bone, box((lo + hi) / 2, (hi - lo) / 2 + Vector((0.01, 0.01, 0.01))), 2.5)
+
+
+for prop in PROPS:
+    prop_widget(prop['bone'])
+if PROP_CHAINS:
+    arm['prop_chain'] = 1.0
+    arm.id_properties_ui('prop_chain').update(min=0, max=1, soft_min=0, soft_max=1,
+                                              description='Keep the chain attached to the held prop')
+for prop, _ in PROP_CHAINS:
+    chain = prop['chain']
+    for n in chain:
+        pbn = arm.pose.bones[n]
+        c = pbn.constraints.new('COPY_TRANSFORMS')
+        c.name = 'Prop chain'
+        c.target = arm
+        c.subtarget = 'MCH-' + n
+        influence_driver(c, 'prop_chain')
+        pbn.constraints.move(len(pbn.constraints) - 1, 0)
+    for n in chain + [prop['chain_end']]:
+        # CHC basis = O^-1 @ deform basis @ O, with O the (rotation-only) rest offset between the two bones
+        o = (rest[n].to_3x3().inverted() @ rest['CHC-' + n].to_3x3()).to_quaternion()
+        oi = o.inverted()
+        # columns: the conjugated quaternion for each unit input component
+        basis = [oi @ Quaternion(e) @ o for e in ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1))]
+        to_chc = rest['CHC-' + n].to_3x3().inverted() @ rest[n].to_3x3()
+        for prop_name, size, coef in (('rotation_quaternion', 4, lambda i, k: basis[k][i]),
+                                      ('location', 3, lambda i, k: to_chc[i][k])):
+            for i in range(size):
+                d = arm.pose.bones['CHC-' + n].driver_add(prop_name, i).driver
+                d.type = 'SCRIPTED'
+                names = 'wxyz' if size == 4 else 'xyz'
+                for k in range(size):
+                    v = d.variables.new()
+                    v.name = names[k]
+                    v.type = 'SINGLE_PROP'
+                    v.targets[0].id_type = 'OBJECT'
+                    v.targets[0].id = arm
+                    v.targets[0].data_path = f'pose.bones["{n}"].{prop_name}[{k}]'
+                d.expression = ' + '.join(f'{coef(i, k):.9f} * {names[k]}' for k in range(size))
+    eff = arm.pose.bones['CHC-' + prop['chain_end']]
+    eff.lock_ik_x = eff.lock_ik_y = eff.lock_ik_z = True
+    ik = eff.constraints.new('IK')
+    ik.target = arm
+    ik.subtarget = 'ANC-' + prop['chain_end']
+    ik.chain_count = len(chain) + 1
+arm['prop_pose'] = PROP_POSE
+for b, v in PROP_POSE.items():
+    pbn = arm.pose.bones[b]
+    pbn.location, pbn.rotation_quaternion, pbn.scale = v[0:3], v[3:7], v[7:10]
 
 # physics: each simulated bone gets its baked offset from PHYS-<bone> on top of the animation
 

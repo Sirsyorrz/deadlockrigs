@@ -1,28 +1,34 @@
-"""Builds ARKit facial shape keys for Violet's head mesh as per-vertex offsets.
+"""Builds ARKit facial shape keys for a hero's head mesh as per-vertex offsets.
 
-python keys.py head.npz keys.npz
-World axes (Blender, glTF import): +x her left, -y forward, +z up, metres.
-The face has no face bones (only head, jaw_0 unused, eyes), so keys come from:
+python keys.py head.npz keys.npz      (also writes keys_bag.npy and face.json next to keys.npz)
+
+World axes (Blender, glTF import): +x the hero's left, -y forward, +z up, metres.
+The heads have no face bones (only head, an unused jaw_0, eyes), so keys come from:
 - lids: rotations about the eyeball sphere centre, upper/lower lid split by geodesic distance to the
-  lid margins (the face island meets the eye socket island there),
-- jaw: rotation about jaw_0, weighted by geodesic distance to the upper and lower mouth bag islands,
+  lid margins,
+- jaw: rotation about jaw_0, harmonic weights between the lower lip/chin and the upper face,
 - everything else: translation-only virtual bones (geodesic Gaussian weights, normalised like skinning
   with a static root),
 - lash and liner cards follow the rigid motion of the lid skin under them (Kabsch on a patch).
+
+The face is found from the geometry, so it works across heads with different UV layouts:
+- eyeballs: the vertices skinned to eye_0_L/R; centre and radius from a sphere fit,
+- lid margins: around each eye, the front-visible skin vertex nearest the eye centre in each direction,
+- lip line: skin vertices that touch but are far apart along the surface (the lips are a slit into a mouth bag),
+- mouth bag: skin around the lip line whose normals point at other skin.
+Sizes scale with the eye spacing; Violet's (88 mm) is the reference the numbers were tuned on.
 """
+import json
+import os
 import sys
 
 import numpy as np
+from scipy.sparse.csgraph import connected_components, dijkstra
+from scipy.spatial import cKDTree
 
 import facegeo as fg
 
-MM = 0.001 * 1.1  # Crud's sizes are for a pirate head; Violet's is about 10% larger
-
-FACE, BAG_U, BAG_L = 6, 42, 87
-SOCKET = {'L': 48, 'R': 55}
-BALL = {'L': (0, 1, 4), 'R': (3, 2, 5)}
-EYE_C = {'L': np.array([0.044, -0.0403, 2.1469]), 'R': np.array([-0.044, -0.0403, 2.1469])}
-EYE_R = 0.0245
+REF_SPACING = 0.088
 
 
 def smoothstep(a, b, x):
@@ -63,59 +69,212 @@ def harmonic(h, one, zero):
     return np.clip(w, 0, 1)
 
 
+def sphere_fit(p):
+    a = np.c_[2 * p, np.ones(len(p))]
+    b = (p ** 2).sum(1)
+    x = np.linalg.lstsq(a, b, rcond=None)[0]
+    c = x[:3]
+    return c, np.sqrt(x[3] + c @ c)
+
+
+def fib_sphere(n):
+    i = np.arange(n) + 0.5
+    z = 1 - 2 * i / n
+    t = np.pi * (1 + 5 ** 0.5) * i
+    r = np.sqrt(1 - z * z)
+    return np.c_[r * np.cos(t), r * np.sin(t), z]
+
+
+def ray_hits(orig, dirs, tris_co, max_t):
+    """Whether each ray hits any triangle within max_t (Moller-Trumbore)."""
+    v0, e1, e2 = tris_co[:, 0], tris_co[:, 1] - tris_co[:, 0], tris_co[:, 2] - tris_co[:, 0]
+    out = np.zeros(len(orig), bool)
+    for i in range(0, len(orig), 64):
+        o, d = orig[i:i + 64, None], dirs[i:i + 64, None]
+        pv = np.cross(d, e2[None])
+        det = (e1[None] * pv).sum(-1)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1 / np.where(ok, det, 1), 0)
+        tv = o - v0[None]
+        u = (tv * pv).sum(-1) * inv
+        qv = np.cross(tv, e1[None])
+        v = (d * qv).sum(-1) * inv
+        t = (e2[None] * qv).sum(-1) * inv
+        hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-4) & (t < max_t)
+        out[i:i + 64] = hit.any(1)
+    return out
+
+
 class Rig:
     def __init__(self, h: fg.Head):
         self.h = h
         self.n = len(h.co)
         self.nw = len(h.wco)
-        isl_w = np.full(self.nw, -1)
-        isl_w[h.weld] = h.island
-        self.face_w = np.zeros(self.nw, bool)
-        self.face_w[h.weld[h.island == FACE]] = True
-        # the deformable skin: everything welded to the face (sockets, mouth bag, small UV islands)
-        from scipy.sparse.csgraph import connected_components
+        p = h.wco
         _, comp = connected_components(h.wgraph, directed=False)
-        self.soft_w = comp == comp[h.weld[h.island == FACE][0]]
-        self.bag_u = np.unique(h.weld[h.island == BAG_U])
-        self.bag_l = np.unique(h.weld[h.island == BAG_L])
+        self.comp = comp
+        ball_w = {s: np.zeros(self.nw, bool) for s in 'LR'}
+        for s in 'LR':
+            ball_w[s][h.weld[h.ball[s]]] = True
+        self.ball_w = ball_w
+        # the deformable skin: the biggest welded piece that is not an eyeball
+        sizes = np.bincount(comp, minlength=comp.max() + 1).astype(float)
+        sizes[np.unique(comp[ball_w['L'] | ball_w['R']])] = 0
+        self.soft_w = comp == sizes.argmax()
+
+        self.eye_c, self.eye_r = {}, {}
+        for s in 'LR':
+            q = h.co[h.ball[s]]
+            c, r = sphere_fit(q)
+            # glints and cornea shells sit off the sphere; refit on the main shell
+            res = np.abs(np.linalg.norm(q - c, axis=1) - r)
+            c, r = sphere_fit(q[res < max(np.percentile(res, 70), 3e-4)])
+            self.eye_c[s], self.eye_r[s] = c, r
+        self.s = abs(self.eye_c['L'][0] - self.eye_c['R'][0]) / REF_SPACING
+        self.mm = 0.001 * 1.1 * self.s  # Crud's sizes are for a pirate head; Violet's is about 10% larger
+        self.jaw_pivot = h.bones['jaw_0'].copy()
+        self.ez = (self.eye_c['L'][2] + self.eye_c['R'][2]) / 2
+
+        self._mouth()
+        self.face_w = self.soft_w & ~self.bag
         self.handles = {}
         self.lid_specs = {}
+        self.sock = {}
         self.margins = {s: self._margin(s) for s in 'LR'}
+        self.face_w &= ~(self.sock['L'] | self.sock['R'])
         self._jaw_weights()
         self._lid_weights()
-
-    def shared(self, a, b):
-        return np.intersect1d(self.h.weld[self.h.island == a], self.h.weld[self.h.island == b])
 
     def landmark(self, x, z, r=0.004):
         """Frontmost face vertex near (x, z)."""
         p = self.h.wco
         d = np.hypot(p[:, 0] - x, p[:, 2] - z)
-        cand = np.where(self.face_w & (d < r))[0]
+        cand = np.where(self.face_w & (d < r * self.s))[0]
         if len(cand) == 0:
             cand = np.where(self.face_w)[0]
             return cand[d[cand].argmin()]
         return cand[p[cand, 1].argmin()]
 
+    def front_y(self, x, z, r=0.004):
+        return self.h.wco[self.landmark(x, z, r), 1]
+
+    def openness(self, verts, centre, reach):
+        """Fraction of hemisphere rays (about each vertex normal) that leave the skin and eyeballs within reach of
+        centre without hitting them."""
+        h = self.h
+        p = h.wco
+        tri_w = h.weld[h.tris]
+        solid = self.soft_w | self.ball_w['L'] | self.ball_w['R']
+        near = solid[tri_w].all(1) & (np.linalg.norm(p[tri_w].mean(1) - centre, axis=1) < reach)
+        tris = p[tri_w[near]]
+        dirs = fib_sphere(48)
+        dirs = np.r_[dirs, dirs * [-1, 1, 1]]  # mirrored so both sides of the face get the same answer
+        frac = np.zeros(len(verts))
+        for i, v in enumerate(verts):
+            d = dirs[dirs @ h.wnrm[v] > 0.15]
+            hit = ray_hits(np.repeat(p[v][None] + h.wnrm[v] * 1e-4, len(d), 0), d, tris, reach)
+            frac[i] = 1 - hit.mean()
+        return frac
+
+    def enclosed(self, window, centre, reach, limit=0.08):
+        """Skin vertices in window that are mostly closed in (mouth bag, eye socket lining)."""
+        ids = np.where(self.soft_w & window)[0]
+        out = np.zeros(self.nw, bool)
+        out[ids[self.openness(ids, centre, reach) < limit]] = True
+        return out
+
+    def fill(self, region):
+        """region plus the skin it encloses (anything cut off from the rest of the skin by it)."""
+        rest = self.soft_w & ~region
+        ids = np.where(rest)[0]
+        _, lab = connected_components(self.h.wgraph[rest][:, rest], directed=False)
+        out = region.copy()
+        out[ids[lab != np.bincount(lab).argmax()]] = True
+        return out
+
+    def rim(self, region):
+        """Vertices of region with a neighbour on the skin outside it."""
+        g = self.h.wgraph.tocoo()
+        edge = region[g.row] & ~region[g.col] & self.soft_w[g.col]
+        return np.unique(g.row[edge])
+
+    def region_near(self, mask, point, pick):
+        """The connected piece of mask chosen by pick(ids) (a vertex id in mask)."""
+        ids = np.where(mask)[0]
+        _, lab = connected_components(self.h.wgraph[mask][:, mask], directed=False)
+        seed = pick(ids)
+        out = np.zeros(self.nw, bool)
+        out[ids[lab == lab[np.searchsorted(ids, seed)]]] = True
+        return out
+
+    # mouth
+
+    def _mouth(self):
+        h, s = self.h, self.s
+        p = h.wco
+        ez = self.ez
+        centre = np.array([0, self.jaw_pivot[1] - 0.06 * s, ez - 0.08 * s])
+        win = (np.abs(p[:, 0]) < 0.05 * s) & (np.abs(p[:, 2] - centre[2]) < 0.04 * s) \
+            & (p[:, 1] < self.jaw_pivot[1] + 0.05 * s)
+        closed = self.enclosed(win, centre, 0.12 * s)
+        # the bag is the biggest closed-in piece around the middle (nostrils and folds are small)
+        ids = np.where(closed)[0]
+        _, lab = connected_components(h.wgraph[closed][:, closed], directed=False)
+        mid = np.abs(p[ids, 0]) < 0.01 * s
+        size = np.bincount(lab[mid], minlength=lab.max() + 1)
+        self.bag = np.zeros(self.nw, bool)
+        self.bag[ids[lab == size.argmax()]] = True
+        self.bag = self.fill(self.bag)
+        rim = self.rim(self.bag)
+        q = p[rim]
+        self.corner = {'L': rim[q[:, 0].argmax()], 'R': rim[q[:, 0].argmin()]}
+        cl, cr = p[self.corner['L']], p[self.corner['R']]
+        line_z = cr[2] + (q[:, 0] - cr[0]) / (cl[0] - cr[0]) * (cl[2] - cr[2])
+        self.rim_u, self.rim_l = rim[q[:, 2] >= line_z], rim[q[:, 2] < line_z]
+        self.lip_z = (cl[2] + cr[2]) / 2
+        self.lip_y = q[:, 1].min()
+        du = fg.geodesic(h, self.rim_u, limit=0.2)
+        dl = fg.geodesic(h, self.rim_l, limit=0.2)
+        self.bag_u = np.where(self.bag & (du <= dl))[0]
+        self.bag_l = np.where(self.bag & (dl < du))[0]
+
     # lids
 
     def _margin(self, side):
-        ids = self.shared(FACE, SOCKET[side])
-        p = self.h.wco[ids]
-        c = EYE_C[side]
+        h, s = self.h, self.s
+        p = h.wco
+        c, r = self.eye_c[side], self.eye_r[side]
         sx = 1 if side == 'L' else -1
-        xs = p[:, 0] * sx
+        win = np.linalg.norm(p - c, axis=1) < 1.8 * r
+        closed = self.enclosed(win, c, 0.08 * s) & (np.linalg.norm(p - c, axis=1) < r + 0.004 * s)
+        # the socket lining: the closed-in piece wrapped around the eyeball's front
+        sock = self.region_near(closed, c, lambda ids: ids[np.linalg.norm(p[ids] - (c + np.array([0, -r, 0])), axis=1).argmin()])
+        self.sock[side] = sock = self.fill(sock)
+        ids = self.rim(sock)
+        # where the lining is not quite closed in (tear duct, deep corners) its edge dips back along the eyeball;
+        # the margin is the frontmost edge in each direction around the eye
+        u = (p[ids] - c) / np.linalg.norm(p[ids] - c, axis=1)[:, None]
+        fwd = np.arccos(np.clip(-u[:, 1], -1, 1))
+        around = np.floor((np.arctan2(u[:, 2], u[:, 0] * sx) + np.pi) / (2 * np.pi) * 40).astype(int)
+        best = {}
+        for i, (b, a) in enumerate(zip(around, fwd)):
+            if b not in best or a < fwd[best[b]]:
+                best[b] = i
+        keep = np.array([fwd[i] < fwd[best[b]] + 0.12 for i, b in enumerate(around)])
+        ids = ids[keep]
+        q = p[ids]
+        xs = q[:, 0] * sx
         inner = ids[xs.argmin()]
         outer = ids[xs.argmax()]
-        pi, po = self.h.wco[inner], self.h.wco[outer]
-        t = (p[:, 0] - pi[0]) / (po[0] - pi[0])
+        pi, po = p[inner], p[outer]
+        t = (q[:, 0] - pi[0]) / (po[0] - pi[0])
         line_z = pi[2] + t * (po[2] - pi[2])
-        upper = ids[p[:, 2] >= line_z]
-        lower = ids[p[:, 2] < line_z]
+        upper = ids[q[:, 2] >= line_z]
+        lower = ids[q[:, 2] < line_z]
         phi = lambda q: np.arctan2(q[:, 2] - c[2], -(q[:, 1] - c[1]))
 
         def chain(sel):
-            q = self.h.wco[sel]
+            q = p[sel]
             o = np.argsort(q[:, 0])
             return q[o, 0], phi(q[o])
         return {'upper': upper, 'lower': lower, 'up_chain': chain(upper), 'lo_chain': chain(lower),
@@ -133,21 +292,20 @@ class Rig:
         return fu, fl
 
     def _lid_weights(self):
-        h = self.h
+        h, s = self.h, self.s
         self.lid = {}
-        for s in 'LR':
-            m = self.margins[s]
-            du = fg.geodesic(h, m['upper'], limit=0.03)
-            dl = fg.geodesic(h, m['lower'], limit=0.03)
-            sock = np.zeros(self.nw, bool)
-            sock[h.weld[h.island == SOCKET[s]]] = True
+        for side in 'LR':
+            m = self.margins[side]
+            du = fg.geodesic(h, m['upper'], limit=0.03 * s)
+            dl = fg.geodesic(h, m['lower'], limit=0.03 * s)
+            sock = self.sock[side]
             up = (du < dl) & self.soft_w
             lo = (dl <= du) & self.soft_w
-            wu = np.where(up, 1 - smoothstep(0.0012, 0.0095, du), 0)
-            wl = np.where(lo, 1 - smoothstep(0.001, 0.007, dl), 0)
+            wu = np.where(up, 1 - smoothstep(0.0012 * s, 0.0095 * s, du), 0)
+            wl = np.where(lo, 1 - smoothstep(0.001 * s, 0.007 * s, dl), 0)
             wu[sock & up] = 1
             wl[sock & lo] = 1
-            self.lid[s] = {'wu': wu, 'wl': wl, 'sock': sock, 'du': du, 'dl': dl}
+            self.lid[side] = {'wu': wu, 'wl': wl, 'sock': sock, 'du': du, 'dl': dl}
 
     def lid_angles(self, side, x, upper_frac=0.0, lower_frac=0.0, upper_deg=0.0, lower_deg=0.0):
         """Margin turns (radians) at x for the upper and lower lid. *_frac: fraction of the open gap
@@ -167,34 +325,34 @@ class Rig:
             self.lid_specs.setdefault(key, []).append((side, amounts))
         p = self.h.wco
         lw = self.lid[side]
-        c = EYE_C[side]
+        c, r = self.eye_c[side], self.eye_r[side]
         au, al = self.lid_angles(side, p[:, 0], **amounts)
         ang = au * lw['wu'] + al * lw['wl']
         moved = rot_x(p, c, ang)
         # keep moving lid skin outside the eyeball
         skin = (ang != 0) & ~lw['sock']
         d = moved[skin] - c
-        r = np.linalg.norm(d, axis=1)
+        rr = np.linalg.norm(d, axis=1)
         r0 = np.linalg.norm(p[skin] - c, axis=1)
-        need = np.minimum(EYE_R + 0.0007, r0 + 0.0015)
-        grow = np.maximum(need - r, 0) * np.minimum(np.abs(ang[skin]) / 0.05, 1)
-        moved[skin] += d / r[:, None] * grow[:, None]
+        need = np.minimum(r + 0.0007 * self.s, r0 + 0.0015 * self.s)
+        grow = np.maximum(need - rr, 0) * np.minimum(np.abs(ang[skin]) / 0.05, 1)
+        moved[skin] += d / rr[:, None] * grow[:, None]
         return moved - p
 
     # jaw
 
     def _jaw_weights(self):
-        h = self.h
+        h, s = self.h, self.s
         p = h.wco
         du = fg.geodesic(h, self.bag_u, limit=0.2)
         dl = fg.geodesic(h, self.bag_l, limit=0.2)
         reach = np.isfinite(du) & np.isfinite(dl)
         du, dl = np.where(reach, du, 1.0), np.where(reach, dl, 1.0)
-        s = 0.0015 + 0.12 * np.minimum(du, dl)
-        lab = 1 / (1 + np.exp(-(du - dl) / s))
+        sig = 0.0015 * s + 0.12 * np.minimum(du, dl)
+        lab = 1 / (1 + np.exp(-(du - dl) / sig))
         lab[self.bag_u] = 0
         lab[self.bag_l] = 1
-        piv = self.jaw_pivot = np.array([0.0, 0.036, 2.0992])
+        lz, ly, jy = self.lip_z, self.lip_y, self.jaw_pivot[1]
         # Harmonic weights between the parts that surely follow the jaw (lower lip, chin, lower mouth
         # bag) and the parts that surely do not (upper lip and face, neck, behind the jaw), so the skin
         # under the jaw stretches smoothly into the neck instead of folding.
@@ -202,30 +360,27 @@ class Rig:
         zero = ~self.soft_w
         one[self.bag_l] = True
         zero[self.bag_u] = True
-        rim_u = np.intersect1d(np.unique(h.weld[h.island == FACE]), self.bag_u)
-        rim_l = np.intersect1d(np.unique(h.weld[h.island == FACE]), self.bag_l)
-        corners = np.intersect1d(rim_u, rim_l)
-        corners = corners[[np.argmax(p[corners, 0]), np.argmin(p[corners, 0])]]
-        near_corner = np.min(np.linalg.norm(p[:, None] - p[corners][None], axis=2), axis=1) < 0.007
-        one |= (lab > 0.6) & (dl < 0.012) & self.soft_w & ~near_corner
-        zero |= (lab < 0.4) & (du < 0.012) & ~near_corner
-        one |= (p[:, 1] < -0.06) & (p[:, 2] < 2.055) & (lab > 0.5) & self.soft_w
-        zero |= (p[:, 2] > 2.09) | (p[:, 2] < 1.96) | (p[:, 1] > 0.03)
+        corners = np.array([self.corner['L'], self.corner['R']])
+        near_corner = np.min(np.linalg.norm(p[:, None] - p[corners][None], axis=2), axis=1) < 0.007 * s
+        one |= (lab > 0.6) & (dl < 0.012 * s) & self.soft_w & ~near_corner
+        zero |= (lab < 0.4) & (du < 0.012 * s) & ~near_corner
+        one |= (p[:, 1] < ly + 0.04 * s) & (p[:, 2] < lz - 0.012 * s) & (lab > 0.5) & self.soft_w
+        zero |= (p[:, 2] > lz + 0.023 * s) | (p[:, 2] < lz - 0.107 * s) | (p[:, 1] > jy - 0.006 * s)
         # the mouth bag floor lies a few mm over the skin under the chin: it takes that skin's weight
         # (solved without the bag), else it pokes out under the jaw
+        rim_l = self.rim_l
         inner = np.setdiff1d(self.bag_l, rim_l)
-        inner = inner[np.min(np.linalg.norm(p[inner][:, None] - p[rim_l][None], axis=2), axis=1) > 0.006]
+        inner = inner[np.min(np.linalg.norm(p[inner][:, None] - p[rim_l][None], axis=2), axis=1) > 0.006 * s]
         one[inner] = False
         zero[inner] = True
         zero &= ~one
         w = harmonic(self.h, one, zero)
-        from scipy.spatial import cKDTree
         outside = np.where(self.face_w & ~near_corner)[0]
-        outside = outside[(p[outside, 2] < 2.05) & (h.wnrm[outside, 2] < -0.3)]
-        w[inner] = w[outside[cKDTree(p[outside]).query(p[inner])[1]]]
+        outside = outside[(p[outside, 2] < lz - 0.017 * s) & (h.wnrm[outside, 2] < -0.3)]
+        if len(inner) and len(outside):
+            w[inner] = w[outside[cKDTree(p[outside]).query(p[inner])[1]]]
         self.jaw_w = w
         self.mouth_lab = lab
-        self.du_bag, self.dl_bag = du, dl
 
     def jaw_rot(self, deg):
         p = self.h.wco
@@ -234,13 +389,14 @@ class Rig:
     # virtual bones
 
     def handle(self, name, vid, radius):
+        radius *= self.s
         g = fg.geodesic(self.h, [vid], limit=radius * 3)
         w = np.exp(-(g / radius) ** 2)
         w[~self.soft_w] = 0
         self.handles[name] = w
 
     def moves(self, spec):
-        """spec: {handle: crud-style mm vector (forward, up, towards her right)}"""
+        """spec: {handle: crud-style mm vector (forward, up, towards the hero's right)}"""
         tot = np.zeros(self.nw)
         for w in self.handles.values():
             tot += w
@@ -248,48 +404,46 @@ class Rig:
         out = np.zeros((self.nw, 3))
         for name, v in spec.items():
             f, u, r = v
-            world = np.array([-r, -f, u]) * MM
+            world = np.array([-r, -f, u]) * self.mm
             out += np.outer(self.handles[name] / norm, world)
         return out
 
 
-def build(h: fg.Head) -> dict:
+def build(h: fg.Head) -> tuple:
     rig = Rig(h)
     p = h.wco
+    s = rig.s
     L = rig.landmark
-    rim_u = np.unique(rig.shared(FACE, BAG_U))
-    rim_l = np.unique(rig.shared(FACE, BAG_L))
-    corner = {}
-    for s, sx in (('L', 1), ('R', -1)):
-        both = np.intersect1d(rim_u, rim_l)
-        cand = both[(p[both, 0] * sx) > 0]
-        corner[s] = cand[np.argmax(np.abs(p[cand, 0]))]
+    rim_u, rim_l, corner = rig.rim_u, rig.rim_l, rig.corner
+    ez, lz = rig.ez, rig.lip_z
+    em = ez - lz  # eye to mouth height; Violet's is 80 mm
 
     def rim_z(rim, x):
         q = p[rim]
         o = np.argsort(q[:, 0])
         return np.interp(x, q[o, 0], q[o, 2])
 
-    for s, sx in (('L', 1), ('R', -1)):
-        cx, cz = p[corner[s], 0], p[corner[s], 2]
-        rig.handle(f'{s}_LIPCORNER', corner[s], 0.009)
-        rig.handle(f'{s}_UPPERLIP_INNER', rim_u[np.argmin(np.abs(p[rim_u, 0] - sx * 0.014))], 0.005)
-        rig.handle(f'{s}_LOWERLIP_INNER', rim_l[np.argmin(np.abs(p[rim_l, 0] - sx * 0.014))], 0.005)
-        rig.handle(f'{s}_UPPERLIP_OUTER', L(sx * 0.014, rim_z(rim_u, sx * 0.014) + 0.006), 0.006)
-        rig.handle(f'{s}_LOWERLIP_OUTER', L(sx * 0.014, rim_z(rim_l, sx * 0.014) - 0.007), 0.006)
-        rig.handle(f'{s}_MOUTHFOLD_UPPER', L(sx * 0.034, cz + 0.018), 0.009)
-        rig.handle(f'{s}_MOUTHFOLD_LOWER', L(sx * 0.034, cz - 0.02), 0.009)
-        rig.handle(f'{s}_CHEEK_MID', L(sx * 0.05, 2.108), 0.013)
-        rig.handle(f'{s}_NOSE_WING', L(sx * 0.014, 2.093, 0.003), 0.006)
-        rig.handle(f'{s}_BROW_INNER', L(sx * 0.02, 2.166), 0.009)
-        rig.handle(f'{s}_BROW_MID', L(sx * 0.045, 2.178), 0.01)
-        rig.handle(f'{s}_BROW_OUTER', L(sx * 0.068, 2.174), 0.01)
+    for side, sx in (('L', 1), ('R', -1)):
+        cx, cz = p[corner[side], 0], p[corner[side], 2]
+        ex = rig.eye_c[side][0]
+        rig.handle(f'{side}_LIPCORNER', corner[side], 0.009)
+        rig.handle(f'{side}_UPPERLIP_INNER', rim_u[np.argmin(np.abs(p[rim_u, 0] - sx * 0.014 * s))], 0.005)
+        rig.handle(f'{side}_LOWERLIP_INNER', rim_l[np.argmin(np.abs(p[rim_l, 0] - sx * 0.014 * s))], 0.005)
+        rig.handle(f'{side}_UPPERLIP_OUTER', L(sx * 0.014 * s, rim_z(rim_u, sx * 0.014 * s) + 0.006 * s), 0.006)
+        rig.handle(f'{side}_LOWERLIP_OUTER', L(sx * 0.014 * s, rim_z(rim_l, sx * 0.014 * s) - 0.007 * s), 0.006)
+        rig.handle(f'{side}_MOUTHFOLD_UPPER', L(cx + sx * 0.001 * s, cz + 0.018 * s), 0.009)
+        rig.handle(f'{side}_MOUTHFOLD_LOWER', L(cx + sx * 0.001 * s, cz - 0.02 * s), 0.009)
+        rig.handle(f'{side}_CHEEK_MID', L(ex + sx * 0.006 * s, lz + 0.5125 * em), 0.013)
+        rig.handle(f'{side}_NOSE_WING', L(sx * 0.014 * s, lz + 0.325 * em, 0.003), 0.006)
+        rig.handle(f'{side}_BROW_INNER', L(ex - sx * 0.024 * s, ez + 0.019 * s), 0.009)
+        rig.handle(f'{side}_BROW_MID', L(ex + sx * 0.001 * s, ez + 0.031 * s), 0.01)
+        rig.handle(f'{side}_BROW_OUTER', L(ex + sx * 0.024 * s, ez + 0.027 * s), 0.01)
     rig.handle('M_UPPERLIP_INNER', rim_u[np.argmin(np.abs(p[rim_u, 0]))], 0.005)
     rig.handle('M_LOWERLIP_INNER', rim_l[np.argmin(np.abs(p[rim_l, 0]))], 0.005)
-    rig.handle('M_UPPERLIP_OUTER', L(0, rim_z(rim_u, 0) + 0.006), 0.006)
-    rig.handle('M_LOWERLIP_OUTER', L(0, rim_z(rim_l, 0) - 0.007), 0.006)
-    rig.handle('M_UNDER_CHIN', L(0, 2.035), 0.012)
-    rig.handle('M_NOSE', L(0, 2.1), 0.008)
+    rig.handle('M_UPPERLIP_OUTER', L(0, rim_z(rim_u, 0) + 0.006 * s), 0.006)
+    rig.handle('M_LOWERLIP_OUTER', L(0, rim_z(rim_l, 0) - 0.007 * s), 0.006)
+    rig.handle('M_UNDER_CHIN', L(0, lz - 0.4 * em), 0.012)
+    rig.handle('M_NOSE', L(0, lz + 0.4125 * em), 0.008)
 
     keys = {}
 
@@ -303,15 +457,15 @@ def build(h: fg.Head) -> dict:
     jaw_open = rig.jaw_rot(14) + rig.moves({'L_LIPCORNER': (1, -5, 0), 'R_LIPCORNER': (1, -5, 0),
                                             'L_CHEEK_MID': (0, -2, 0), 'R_CHEEK_MID': (0, -2, 0)})
     keys['jawOpen'] = jaw_open
-    fwd = np.array([0, -1, 0]) * 5 * MM
-    keys['jawForward'] = np.outer(rig.jaw_w, fwd)
-    keys['jawLeft'] = np.outer(rig.jaw_w, np.array([1, 0, 0]) * 5 * MM)
-    keys['jawRight'] = np.outer(rig.jaw_w, np.array([-1, 0, 0]) * 5 * MM)
+    mm5 = 5 * 0.0011 * s
+    keys['jawForward'] = np.outer(rig.jaw_w, np.array([0, -1, 0]) * mm5)
+    keys['jawLeft'] = np.outer(rig.jaw_w, np.array([1, 0, 0]) * mm5)
+    keys['jawRight'] = np.outer(rig.jaw_w, np.array([-1, 0, 0]) * mm5)
 
     # mouthClose: with jawOpen, brings the lips together; the lower lip rises most of the way
     # the lower lip (down to its vermilion edge) keeps its closed place; the chin below stretches
     zr = rim_z(rim_l, p[:, 0])
-    lip_lo = smoothstep(zr - 0.03, zr - 0.017, p[:, 2]) * rig.jaw_w
+    lip_lo = smoothstep(zr - 0.03 * s, zr - 0.017 * s, p[:, 2]) * rig.jaw_w
     keys['mouthClose'] = -jaw_open * lip_lo[:, None]
 
     lr('eyeBlink', {})
@@ -336,11 +490,11 @@ def build(h: fg.Head) -> dict:
                       'L_UPPERLIP_OUTER': (-1, -1, 0), 'L_LOWERLIP_OUTER': (-1, 1, 0)})
     lr('mouthUpperUp', {'L_UPPERLIP_OUTER': (0, 4, 0), 'L_UPPERLIP_INNER': (0, 3.5, 0), 'L_MOUTHFOLD_UPPER': (0, 1.5, 0)})
     lr('mouthLowerDown', {'L_LOWERLIP_OUTER': (0, -4, 0), 'L_LOWERLIP_INNER': (0, -4, 0)})
-    lips = [f'{s}_{k}' for s in 'MLR' for k in ('UPPERLIP_INNER', 'UPPERLIP_OUTER', 'LOWERLIP_INNER', 'LOWERLIP_OUTER')]
-    side = {n: (0, 0, -6) for n in lips}
-    side.update({'L_LIPCORNER': (0, 0, -6), 'R_LIPCORNER': (0, 0, -6)})
-    keys['mouthLeft'] = rig.moves(side)
-    keys['mouthRight'] = rig.moves(mirror(side))
+    lips = [f'{side}_{k}' for side in 'MLR' for k in ('UPPERLIP_INNER', 'UPPERLIP_OUTER', 'LOWERLIP_INNER', 'LOWERLIP_OUTER')]
+    sidew = {n: (0, 0, -6) for n in lips}
+    sidew.update({'L_LIPCORNER': (0, 0, -6), 'R_LIPCORNER': (0, 0, -6)})
+    keys['mouthLeft'] = rig.moves(sidew)
+    keys['mouthRight'] = rig.moves(mirror(sidew))
     keys['mouthPucker'] = rig.moves({'L_LIPCORNER': (5.6, 0, 9.8), 'R_LIPCORNER': (5.6, 0, -9.8),
                                      'L_UPPERLIP_OUTER': (7, 0, 4.2), 'R_UPPERLIP_OUTER': (7, 0, -4.2),
                                      'L_LOWERLIP_OUTER': (7, 0, 4.2), 'R_LOWERLIP_OUTER': (7, 0, -4.2),
@@ -368,23 +522,23 @@ def build(h: fg.Head) -> dict:
                                         'L_LOWERLIP_INNER': (-1.5, 0, 0), 'R_LOWERLIP_INNER': (-1.5, 0, 0)})
 
     # lids on top of the bone-style moves
-    for s, name in (('L', 'Left'), ('R', 'Right')):
-        keys['eyeBlink' + name] += rig.lid_move(s, 'eyeBlink' + name, upper_frac=0.8, lower_frac=0.2)
-        keys['eyeWide' + name] += rig.lid_move(s, 'eyeWide' + name, upper_deg=9, lower_deg=-4)
-        keys['eyeSquint' + name] += rig.lid_move(s, 'eyeSquint' + name, upper_frac=0.12, lower_frac=0.3)
-        keys['cheekSquint' + name] += rig.lid_move(s, 'cheekSquint' + name, lower_frac=0.12)
-        keys['mouthSmile' + name] += rig.lid_move(s, 'mouthSmile' + name, lower_frac=0.06)
+    for side, name in (('L', 'Left'), ('R', 'Right')):
+        keys['eyeBlink' + name] += rig.lid_move(side, 'eyeBlink' + name, upper_frac=0.8, lower_frac=0.2)
+        keys['eyeWide' + name] += rig.lid_move(side, 'eyeWide' + name, upper_deg=9, lower_deg=-4)
+        keys['eyeSquint' + name] += rig.lid_move(side, 'eyeSquint' + name, upper_frac=0.12, lower_frac=0.3)
+        keys['cheekSquint' + name] += rig.lid_move(side, 'cheekSquint' + name, lower_frac=0.12)
+        keys['mouthSmile' + name] += rig.lid_move(side, 'mouthSmile' + name, lower_frac=0.06)
 
     out = {k: v[h.weld] for k, v in keys.items()}
     out.update(eye_keys(h, rig))
     attach(h, rig, out)
-    return out
+    return out, rig
 
 
 def eye_keys(h, rig):
     out = {}
     for s, name, sx in (('L', 'Left', 1), ('R', 'Right', -1)):
-        ball = np.isin(h.island, BALL[s])
+        ball = h.ball[s]
         piv = h.bones['eye_0_' + s]
         for key, axis, deg, lid_deg in (('eyeLookUp', (1, 0, 0), 15, 5), ('eyeLookDown', (1, 0, 0), -15, -7),
                                         ('eyeLookOut', (0, 0, 1), sx * 22, 0), ('eyeLookIn', (0, 0, 1), -sx * 22, 0)):
@@ -400,43 +554,38 @@ def eye_keys(h, rig):
     return out
 
 
-def kabsch(a, b):
-    ca, cb = a.mean(0), b.mean(0)
-    hm = (a - ca).T @ (b - cb)
-    u, _, vt = np.linalg.svd(hm)
-    dd = np.sign(np.linalg.det(vt.T @ u.T))
-    r = vt.T @ np.diag([1, 1, dd]) @ u.T
-    return r, cb - r @ ca
-
-
 def attach(h, rig, keys):
-    """Cards (lashes, liner, brows: islands not welded to the skin) ride the skin under them. Liner and
+    """Cards (lashes, liner, brows: pieces not welded to the skin) ride the skin under them. Liner and
     lash cards turn with the lid margin as one piece, else the lid skin's falloff stretches them over
-    the whole closed lid."""
-    from scipy.sparse.csgraph import connected_components
-    from scipy.spatial import cKDTree
-    ball = np.isin(h.island, BALL['L'] + BALL['R'])
+    the whole closed lid. Loose pieces further off the skin (hair) fade out of the face motion."""
+    s = rig.s
+    ball = h.ball['L'] | h.ball['R']
     cards = ~rig.soft_w[h.weld] & ~ball
-    margin = np.concatenate([rig.margins[s][k] for s in 'LR' for k in ('upper', 'lower')])
+    margin = np.concatenate([rig.margins[side][k] for side in 'LR' for k in ('upper', 'lower')])
     skin = np.where(rig.face_w)[0]
     m_tree, s_tree = cKDTree(h.wco[margin]), cKDTree(h.wco[skin])
-    _, comp = connected_components(h.wgraph, directed=False)
+    comp = rig.comp
     anchors = np.zeros(len(h.co), int)
     lid_card = np.zeros(len(h.co), bool)
+    follow = np.zeros(len(h.co))
+    skin_soft = np.where(rig.soft_w)[0]
+    soft_tree = cKDTree(h.wco[skin_soft])
     for c in np.unique(comp[h.weld[cards]]):
         sel = cards & (comp[h.weld] == c)
         dm, im = m_tree.query(h.co[sel])
-        if np.median(dm) < 0.012:
+        ds, _ = soft_tree.query(h.co[sel])
+        small = np.ptp(h.co[sel], axis=0).max() < 0.05 * s
+        follow[sel] = 1 if small and ds.min() < 0.003 * s else 1 - smoothstep(0.004 * s, 0.012 * s, ds)
+        if np.median(dm) < 0.012 * s and small:
             anchors[sel] = margin[im]
             lid_card[sel] = True
         else:
             anchors[sel] = skin[s_tree.query(h.co[sel])[1]]
-    upper_card = lid_card & np.isin(anchors, np.concatenate([rig.margins[s]['upper'] for s in 'LR']))
+    upper_card = lid_card & np.isin(anchors, np.concatenate([rig.margins[side]['upper'] for side in 'LR']))
     cards_idx = np.where(cards)[0]
     # cards follow a smooth blend of the skin offsets around them; lid cards also take the closing
     # turns rigidly (raising turns stay blended so the skin above does not poke through)
-    skin_soft = np.where(rig.soft_w)[0]
-    dist, near = cKDTree(h.wco[skin_soft]).query(h.co[cards_idx], k=8)
+    dist, near = soft_tree.query(h.co[cards_idx], k=8)
     wts = 1 / np.maximum(dist, 1e-4) ** 2
     wts /= wts.sum(1, keepdims=True)
     for name, d in keys.items():
@@ -451,17 +600,55 @@ def attach(h, rig, keys):
             sel = lid_card & ((h.co[:, 0] > 0) == (side == 'L'))
             au, al = rig.lid_angles(side, h.co[sel, 0], **closing)
             lid_ang[sel] += np.where(upper_card[sel], au, al)
-        d[cards_idx] = np.einsum('ik,ikj->ij', wts, dw[skin_soft][near])
+        d[cards_idx] = np.einsum('ik,ikj->ij', wts, dw[skin_soft][near]) * follow[cards_idx, None]
         for side in 'LR':
             ss = np.where(lid_card & (lid_ang != 0) & ((h.co[:, 0] > 0) == (side == 'L')))[0]
             if len(ss):
-                d[ss] += rot_x(h.co[ss], EYE_C[side], lid_ang[ss]) - h.co[ss]
+                d[ss] += rot_x(h.co[ss], rig.eye_c[side], lid_ang[ss]) - h.co[ss]
+
+
+def controls(rig):
+    """Face control positions (rig.py): a little in front of the skin at each landmark."""
+    p = rig.h.wco
+    s = rig.s
+    ez, lz = rig.ez, rig.lip_z
+    em = ez - lz
+    c, r = rig.eye_c['L'], rig.eye_r['L']
+    cx, cz = p[rig.corner['L'], 0], p[rig.corner['L'], 2]
+
+    def at(x, z, ahead=0.008):
+        return [round(float(x), 4), round(float(rig.front_y(x, z) - ahead * s), 4), round(float(z), 4)]
+    lm = {
+        'lid': at(c[0], ez + 0.016 * s, 0.006),
+        'lidlow': at(c[0] + 0.002 * s, ez - 0.019 * s, 0.006),
+        'brow': at(c[0] + 0.006 * s, ez + 0.045 * s, 0.006),
+        'cheek': at(c[0] + 0.014 * s, lz + 0.475 * em),
+        'corner': at(cx, cz),
+        'lipup': at(0.012 * s, lz + 0.015 * s),
+        'liplow': at(0.012 * s, lz - 0.017 * s),
+        'nose': at(0.019 * s, lz + 0.36 * em, 0.004),
+    }
+    top = p[rig.soft_w, 2].max()
+    return {
+        'landmarks': lm,
+        'brow_mid': at(0, ez + 0.033 * s, 0.006),
+        'mouth': at(0, lz, 0.008),
+        'jaw': at(0, lz - 0.055 * s, 0.006),
+        'eye_target': [0, round(float(c[1] - 0.5), 4), round(float(ez), 4)],
+        'eye_spacing': round(float(c[0]), 4),
+        'face_box': [0, round(float(rig.front_y(0, ez) + 0.04), 4), round(float(top + 0.126 * s), 4)],
+    }
+
 
 if __name__ == '__main__':
     h = fg.load(sys.argv[1])
-    keys = build(h)
-    np.save(sys.argv[2].replace('.npz', '_bag.npy'), np.isin(h.island, [BAG_U, BAG_L]))
+    keys, rig = build(h)
+    base = sys.argv[2][:-len('.npz')]
+    np.save(base + '_bag.npy', rig.bag[h.weld])
+    json.dump(controls(rig), open(os.path.join(os.path.dirname(sys.argv[2]), 'face.json'), 'w'), indent=1)
     for k in sorted(keys):
         print('%-20s max %.1f mm' % (k, np.linalg.norm(keys[k], axis=1).max() * 1000))
-    print(len(keys), 'keys')
+    print(len(keys), 'keys', 'scale %.3f' % rig.s, 'bag', rig.bag.sum(), 'lip line', len(rig.rim_u), len(rig.rim_l),
+          'margins', [len(rig.margins[side][k]) for side in 'LR' for k in ('upper', 'lower')],
+          'socket', [int(rig.sock[side].sum()) for side in 'LR'])
     np.savez_compressed(sys.argv[2], **keys)

@@ -1,4 +1,5 @@
-"""blender -b -P dump.py -- <hero> : face mesh arrays (world space, Blender axes) and eye bone heads -> data/head.npz"""
+"""blender -b -P dump.py -- <hero> : face mesh arrays (world space, Blender axes), eye bone heads and eyeball
+vertices (skinned to the eye bones) -> data/head.npz"""
 import os
 import sys
 
@@ -33,6 +34,10 @@ me.polygons.foreach_get('material_index', mats)
 assert (counts == 3).all(), 'expected triangles'
 tris = loops.reshape(-1, 3)
 bones = {b: np.array(arm.matrix_world @ arm.pose.bones[b].head) for b in ('head', 'jaw_0', 'eye_0_L', 'eye_0_R', 'neck_0')}
+balls = {}
+for s in 'LR':
+    gi = o.vertex_groups[f'eye_0_{s}'].index
+    balls['ball_' + s] = np.array([any(g.group == gi and g.weight > 0.5 for g in v.groups) for v in me.vertices])
 np.savez(os.path.join(hero.data, 'head.npz'), co=co, nrm=nrm.reshape(-1, 3), tris=tris, mats=mats, matnames=np.array([m.name for m in me.materials]),
-         **{'bone_' + k: v for k, v in bones.items()})
+         **{'bone_' + k: v for k, v in bones.items()}, **balls)
 print('dumped', n, len(tris))

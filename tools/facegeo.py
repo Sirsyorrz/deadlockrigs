@@ -18,6 +18,7 @@ class Head:
     wgraph: object        # welded edge-length graph (csr)
     bones: dict
     wnrm: np.ndarray = None
+    ball: dict = None     # side -> unwelded eyeball mask
 
     def islands_of(self, ids):
         return np.isin(self.island, ids)
@@ -47,7 +48,8 @@ def load(path: str) -> Head:
     wnrm = np.zeros((nw, 3))
     np.add.at(wnrm, weld, d['nrm'])
     wnrm /= np.maximum(np.linalg.norm(wnrm, axis=1, keepdims=True), 1e-9)
-    return Head(co, tris, vmat, weld, wco, island, wg, bones, wnrm)
+    ball = {s: d['ball_' + s] for s in 'LR'} if 'ball_L' in d.files else None
+    return Head(co, tris, vmat, weld, wco, island, wg, bones, wnrm, ball)
 
 
 def geodesic(h: Head, sources_welded, limit=np.inf) -> np.ndarray:

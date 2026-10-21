@@ -3,7 +3,24 @@
   "slug": "abrams",
   "name": "Abrams",
   "codename": "atlas",
-  "model": "models/heroes_wip/abrams/abrams.vmdl"
+  "model": "models/heroes_wip/abrams/abrams.vmdl",
+  "props": [
+   {
+    "bone": "object_hand_L",
+    "chain": [
+     "chain_0",
+     "chain_1",
+     "chain_2",
+     "chain_3",
+     "chain_4",
+     "chain_5",
+     "chain_6",
+     "chain_7"
+    ],
+    "chain_end": "chain_end",
+    "anchor": "book_scale"
+   }
+  ]
  },
  {
   "slug": "apollo",

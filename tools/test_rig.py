@@ -29,6 +29,7 @@ def check(name, ok, detail=''):
 
 
 def update():
+    arm.update_tag()
     bpy.context.view_layer.update()
 
 
@@ -82,14 +83,47 @@ POSE = find_clip('game_ui_hero_select', contains='ui_') or IDLE
 JUMP = find_clip('game_jump_ground', contains='jump')
 print('clips', len(clips), 'run', RUN, 'idle', IDLE, 'pose', POSE, 'jump', JUMP, 'limbs', limbs)
 
-# rest pose untouched by the rig
+# rest pose untouched by the rig (a held prop's chain would reach for the prop, which sits at the origin at rest)
 reset()
+if 'prop_chain' in arm:
+    arm['prop_chain'] = 0.0
+    update()
 for ob in [o for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewport and not o.name.startswith('WGT-')]:
     base = np.array([v.co for v in ob.data.vertices])
     if not len(base):
         continue
     drift = np.abs(verts(ob) - base).max() * 1000
     check(f'rest drift {ob.name}', drift < 0.05, f'{drift:.4f} mm')
+
+if 'prop_chain' in arm:
+    arm['prop_chain'] = 1.0
+
+# a held prop's chain stays on the prop when the prop is moved, and matches the game clips' chain
+for name, rot in (('object_hand_L', 0.0), ('object_hand_L', 0.8)):
+    if name not in pb or 'prop_chain' not in arm:
+        break
+    end = next(b.name for b in pb if b.name.startswith('ANC-'))
+    reset()
+    bpy.ops.dlrig.reset_pose()
+    m = pb[name].matrix.copy()
+    m.translation += Vector((0.05, -0.15, 0.1))
+    pb[name].matrix = m
+    pb[name].rotation_quaternion = Quaternion((0, 0, 1), rot) @ pb[name].rotation_quaternion
+    update()
+    gap = (pb[end[4:]].head - pb[end].head).length
+    check(f'prop chain follows {name} (turn {rot})', gap < 0.001, f'{gap * 1000:.2f} mm')
+if 'prop_chain' in arm and POSE:
+    reset()
+    bpy.ops.dlrig.game_anim(clip=POSE, mode='NEW')
+    chain_bones = [b.name[4:] for b in pb if b.name.startswith('CHC-')]
+    sc.frame_set(sc.frame_start)
+    update()
+    with_ik = {n: pb[n].head.copy() for n in chain_bones}
+    arm['prop_chain'] = 0.0
+    update()
+    diff = max((pb[n].head - p).length for n, p in with_ik.items())
+    arm['prop_chain'] = 1.0
+    check(f'prop chain matches the clip ({POSE})', diff < 0.001, f'{diff * 1000:.2f} mm')
 
 # IK hands and feet follow their controls with IK on (default)
 for limb, s in limbs:
@@ -118,7 +152,9 @@ for limb, s in limbs:
     bpy.ops.dlrig.snap(limb=limb, side=s, to_ik=True)
     update()
     after = mats()
-    worst = max((before[n].translation - after[n].translation).length for n in before if not n.startswith(HELPERS))
+    worst, wn = max(((before[n].translation - after[n].translation).length, n) for n in before if not n.startswith(HELPERS))
+    if worst > 0.001:
+        print('  worst bone', wn)
     check(f'snap FK->IK {limb}_{s}', worst < 0.001 and arm[f'ik_{limb}_{s}'] == 1.0, f'{worst * 1000:.2f} mm')
     m = pb[ctrl].matrix.copy()
     m.translation += Vector((0.05, -0.1, 0.1))
@@ -276,16 +312,22 @@ if RUN and limbs:
     reset()
     bpy.ops.dlrig.game_anim(clip=RUN, mode='NEW')
     watch = [names(limb, s)[2] for limb, s in limbs] + [names(limb, s)[1] for limb, s in limbs]
-    fk = {}
+    uppers = [names(limb, s)[0] for limb, s in limbs]
+    fk, fk_rot = {}, {}
     for f in (0, 5, 10):
         sc.frame_set(sc.frame_start + f)
+        update()
         fk[f] = {n: pb[n].head.copy() for n in watch}
+        fk_rot[f] = {n: pb[n].matrix.to_quaternion() for n in uppers}
     bpy.ops.dlrig.bake_ik(limbs='ALL')
-    worst = 0
+    worst = turn = 0
     for f in (0, 5, 10):
         sc.frame_set(sc.frame_start + f)
+        update()
         worst = max(worst, max((pb[n].head - p).length for n, p in fk[f].items()))
-    check('convert to IK keeps the clip', worst < 0.003 and arm[IK_PROPS[0]] == 1.0, f'{worst * 1000:.2f} mm')
+        turn = max(turn, max(q.rotation_difference(pb[n].matrix.to_quaternion()).angle for n, q in fk_rot[f].items()))
+    check('convert to IK keeps the clip', worst < 0.003 and math.degrees(turn) < 0.1 and arm[IK_PROPS[0]] == 1.0,
+          f'{worst * 1000:.2f} mm, upper bones {math.degrees(turn):.3f} deg')
 
 # insert a clip into an existing action
 if IDLE and JUMP:

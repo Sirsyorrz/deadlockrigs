@@ -44,6 +44,9 @@ def key_bone(pb, rot=True, loc=True):
 
 
 def update(context):
+    # custom properties set from Python (the IK/FK switches) only reach their drivers once the object is tagged
+    for ob in rigs():
+        ob.update_tag()
     context.view_layer.update()
 
 
@@ -205,11 +208,16 @@ class DLRIG_OT_reset_pose(bpy.types.Operator):
 
 
 def reset_bones(ob, bones):
+    """Back to the rest pose, except held props, which go back to their default hold (at rest they sit at the origin)."""
+    hold = ob.get('prop_pose', {})
     for b in bones:
         b.location = (0, 0, 0)
         b.rotation_quaternion = (1, 0, 0, 0)
         b.rotation_euler = (0, 0, 0)
         b.scale = (1, 1, 1)
+        if b.name in hold:
+            v = list(hold[b.name])
+            b.location, b.rotation_quaternion, b.scale = v[0:3], v[3:7], v[7:10]
 
 
 # ---------------------------------------------------------------- FK / IK
@@ -232,6 +240,22 @@ def clear_tweaks(ob, limb, s, key=False):
         pb.rotation_euler = (0, 0, 0)
         if key:
             key_bone(pb, loc=False)
+
+
+def match_twist(context, ob, limb, s, fk, key=False):
+    """IK sets the upper and lower bones' roll from the pole, so any twist the FK pose has about the limb axis
+    (which moves clothing and props parented to the arm/thigh) goes into the IK tweak bones instead. IK must be on;
+    fk holds the FK matrices of the upper and lower bones."""
+    pb = ob.pose.bones
+    for n, tw in zip(limb_names(limb, s)[:2], tweak_names(limb, s)):
+        update(context)
+        t = pb[tw].matrix
+        x = t.inverted() @ fk[n] @ pb[n].matrix.inverted() @ t
+        pb[tw].rotation_mode = 'QUATERNION'
+        pb[tw].rotation_quaternion = pb[tw].rotation_quaternion @ x.to_quaternion()
+        if key:
+            key_bone(pb[tw], loc=False)
+    update(context)
 
 
 def ik_from_fk(context, ob, limb, s, key=False):
@@ -288,8 +312,10 @@ class DLRIG_OT_snap(bpy.types.Operator):
             ob[prop] = 0.0
             clear_tweaks(ob, self.limb, self.side, key)
             update(context)
+            fk = {n: pb[n].matrix.copy() for n in (up, lo)}
             ik_from_fk(context, ob, self.limb, self.side, key)
             ob[prop] = 1.0
+            match_twist(context, ob, self.limb, self.side, fk, key)
         else:
             mats = {n: pb[n].matrix.copy() for n in (up, lo, end)}
             ob[prop] = 0.0
@@ -332,8 +358,17 @@ Use it on game animations to edit them with IK"""
         with FastEval(ob):
             for f in range(f0, f1 + 1):
                 sc.frame_set(f)
+                update(context)
+                fk = {}
                 for limb, s in todo:
+                    fk[limb, s] = {n: ob.pose.bones[n].matrix.copy() for n in limb_names(limb, s)[:2]}
                     ik_from_fk(context, ob, limb, s, key=True)
+                for limb, s in todo:
+                    ob[f'ik_{limb}_{s}'] = 1.0
+                for limb, s in todo:
+                    match_twist(context, ob, limb, s, fk[limb, s], key=True)
+                for limb, s in todo:
+                    ob[f'ik_{limb}_{s}'] = 0.0
         for limb, s in todo:
             ob[f'ik_{limb}_{s}'] = 1.0
         sc.frame_set(keep)
@@ -906,6 +941,10 @@ class DLRIG_PT_body(bpy.types.Panel):
         col.label(text='Switching keeps the pose', icon='INFO')
         col.label(text='IK: rings rotate bones too', icon='INFO')
         col.operator('dlrig.bake_ik', icon='CON_KINEMATIC').limbs = 'ALL'
+        if 'prop_chain' in ob:
+            col.separator()
+            col.label(text='Held prop: move its box', icon='INFO')
+            col.prop(ob, '["prop_chain"]', text='Chain follows prop', slider=True)
 
 
 class DLRIG_PT_game(bpy.types.Panel):
