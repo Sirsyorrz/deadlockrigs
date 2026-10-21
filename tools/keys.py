@@ -9,13 +9,15 @@ The heads have no face bones (only head, an unused jaw_0, eyes), so keys come fr
 - jaw: rotation about jaw_0, harmonic weights between the lower lip/chin and the upper face,
 - everything else: translation-only virtual bones (geodesic Gaussian weights, normalised like skinning
   with a static root),
-- lash and liner cards follow the rigid motion of the lid skin under them (Kabsch on a patch).
+- lash and liner cards turn rigidly with the lid margin; other cards ride the skin under them.
 
 The face is found from the geometry, so it works across heads with different UV layouts:
 - eyeballs: the vertices skinned to eye_0_L/R; centre and radius from a sphere fit,
-- lid margins: around each eye, the front-visible skin vertex nearest the eye centre in each direction,
-- lip line: skin vertices that touch but are far apart along the surface (the lips are a slit into a mouth bag),
-- mouth bag: skin around the lip line whose normals point at other skin.
+- eye sockets and the mouth bag: skin from which almost no rays escape (it faces the eyeball or the other side
+  of the mouth),
+- lid margins: walking out from straight ahead in each direction around an eye, the first skin met on or just
+  off the eyeball,
+- lip line: the edge of the mouth bag; upper and lower lip by which way the edge faces, corners at its ends.
 Sizes scale with the eye spacing; Violet's (88 mm) is the reference the numbers were tuned on.
 """
 import json
@@ -23,7 +25,7 @@ import os
 import sys
 
 import numpy as np
-from scipy.sparse.csgraph import connected_components, dijkstra
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 
 import facegeo as fg
@@ -85,10 +87,12 @@ def fib_sphere(n):
     return np.c_[r * np.cos(t), r * np.sin(t), z]
 
 
-def ray_hits(orig, dirs, tris_co, max_t):
-    """Whether each ray hits any triangle within max_t (Moller-Trumbore)."""
+def ray_cast(orig, dirs, tris_co, max_t, min_t=1e-4):
+    """Nearest hit (distance, triangle index) of each ray between min_t and max_t (Moller-Trumbore); inf/-1 for
+    misses."""
     v0, e1, e2 = tris_co[:, 0], tris_co[:, 1] - tris_co[:, 0], tris_co[:, 2] - tris_co[:, 0]
-    out = np.zeros(len(orig), bool)
+    best_t = np.full(len(orig), np.inf)
+    best_i = np.full(len(orig), -1)
     for i in range(0, len(orig), 64):
         o, d = orig[i:i + 64, None], dirs[i:i + 64, None]
         pv = np.cross(d, e2[None])
@@ -100,9 +104,14 @@ def ray_hits(orig, dirs, tris_co, max_t):
         qv = np.cross(tv, e1[None])
         v = (d * qv).sum(-1) * inv
         t = (e2[None] * qv).sum(-1) * inv
-        hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-4) & (t < max_t)
-        out[i:i + 64] = hit.any(1)
-    return out
+        t = np.where(ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > min_t) & (t < max_t), t, np.inf)
+        best_i[i:i + 64] = np.where(np.isfinite(t.min(1)), t.argmin(1), -1)
+        best_t[i:i + 64] = t.min(1)
+    return best_t, best_i
+
+
+def ray_hits(orig, dirs, tris_co, max_t):
+    return np.isfinite(ray_cast(orig, dirs, tris_co, max_t)[0])
 
 
 class Rig:
@@ -110,7 +119,6 @@ class Rig:
         self.h = h
         self.n = len(h.co)
         self.nw = len(h.wco)
-        p = h.wco
         _, comp = connected_components(h.wgraph, directed=False)
         self.comp = comp
         ball_w = {s: np.zeros(self.nw, bool) for s in 'LR'}
@@ -198,7 +206,7 @@ class Rig:
         edge = region[g.row] & ~region[g.col] & self.soft_w[g.col]
         return np.unique(g.row[edge])
 
-    def region_near(self, mask, point, pick):
+    def region_near(self, mask, pick):
         """The connected piece of mask chosen by pick(ids) (a vertex id in mask)."""
         ids = np.where(mask)[0]
         _, lab = connected_components(self.h.wgraph[mask][:, mask], directed=False)
@@ -221,6 +229,8 @@ class Rig:
         ids = np.where(closed)[0]
         _, lab = connected_components(h.wgraph[closed][:, closed], directed=False)
         mid = np.abs(p[ids, 0]) < 0.01 * s
+        if not mid.any():
+            sys.exit('no mouth bag behind the lips (fused lips?): this head needs another jaw setup')
         size = np.bincount(lab[mid], minlength=lab.max() + 1)
         self.bag = np.zeros(self.nw, bool)
         self.bag[ids[lab == size.argmax()]] = True
@@ -229,14 +239,25 @@ class Rig:
         q = p[rim]
         self.corner = {'L': rim[q[:, 0].argmax()], 'R': rim[q[:, 0].argmin()]}
         cl, cr = p[self.corner['L']], p[self.corner['R']]
-        line_z = cr[2] + (q[:, 0] - cr[0]) / (cl[0] - cr[0]) * (cl[2] - cr[2])
-        self.rim_u, self.rim_l = rim[q[:, 2] >= line_z], rim[q[:, 2] < line_z]
+        # the lips meet face to face, so the upper lip's edge faces down and the lower's up (the lip line
+        # arches, so a height split would put the middle of the lower lip with the upper)
+        down = h.wnrm[rim, 2] < 0
+        self.rim_u, self.rim_l = rim[down], rim[~down]
         self.lip_z = (cl[2] + cr[2]) / 2
         self.lip_y = q[:, 1].min()
-        du = fg.geodesic(h, self.rim_u, limit=0.2)
-        dl = fg.geodesic(h, self.rim_l, limit=0.2)
-        self.bag_u = np.where(self.bag & (du <= dl))[0]
-        self.bag_l = np.where(self.bag & (dl < du))[0]
+        # split the bag level with the lip line (a geodesic split leans towards the shorter lip)
+        o = np.argsort(q[:, 0])
+        zr = np.interp(p[:, 0], q[o, 0], q[o, 2])
+        upper = p[:, 2] >= zr - 0.001 * s
+        # except the lips' own inner faces, which belong with their lip
+        du = fg.geodesic(h, self.rim_u, limit=0.01 * s)
+        dl = fg.geodesic(h, self.rim_l, limit=0.01 * s)
+        lip = np.minimum(du, dl) < 0.004 * s
+        upper[lip] = du[lip] < dl[lip]
+        upper[self.rim_u] = True
+        upper[self.rim_l] = False
+        self.bag_u = np.where(self.bag & upper)[0]
+        self.bag_l = np.where(self.bag & ~upper)[0]
 
     # lids
 
@@ -248,20 +269,28 @@ class Rig:
         win = np.linalg.norm(p - c, axis=1) < 1.8 * r
         closed = self.enclosed(win, c, 0.08 * s) & (np.linalg.norm(p - c, axis=1) < r + 0.004 * s)
         # the socket lining: the closed-in piece wrapped around the eyeball's front
-        sock = self.region_near(closed, c, lambda ids: ids[np.linalg.norm(p[ids] - (c + np.array([0, -r, 0])), axis=1).argmin()])
+        sock = self.region_near(closed, lambda ids: ids[np.linalg.norm(p[ids] - (c + np.array([0, -r, 0])), axis=1).argmin()])
         self.sock[side] = sock = self.fill(sock)
-        ids = self.rim(sock)
-        # where the lining is not quite closed in (tear duct, deep corners) its edge dips back along the eyeball;
-        # the margin is the frontmost edge in each direction around the eye
-        u = (p[ids] - c) / np.linalg.norm(p[ids] - c, axis=1)[:, None]
-        fwd = np.arccos(np.clip(-u[:, 1], -1, 1))
-        around = np.floor((np.arctan2(u[:, 2], u[:, 0] * sx) + np.pi) / (2 * np.pi) * 40).astype(int)
-        best = {}
-        for i, (b, a) in enumerate(zip(around, fwd)):
-            if b not in best or a < fwd[best[b]]:
-                best[b] = i
-        keep = np.array([fwd[i] < fwd[best[b]] + 0.12 for i, b in enumerate(around)])
-        ids = ids[keep]
+        # the margin: walking out from straight ahead in each direction around the eye, the first skin met
+        # on or just off the eyeball (many heads close the socket with a cup inside the ball; that is skipped)
+        tri_w = h.weld[h.tris]
+        near = self.soft_w[tri_w].all(1) & (np.linalg.norm(p[tri_w].mean(1) - c, axis=1) < 2 * r)
+        tris, tri_ids = p[tri_w[near]], tri_w[near]
+        betas = np.linspace(-np.pi, np.pi, 72, endpoint=False)
+        alphas = np.radians(np.arange(0, 85, 0.75))
+        bb, aa = np.meshgrid(betas, alphas, indexing='ij')
+        dirs = np.c_[(np.sin(aa) * np.cos(bb)).ravel() * sx, -np.cos(aa).ravel(), (np.sin(aa) * np.sin(bb)).ravel()]
+        t, ti = ray_cast(np.repeat(c[None], len(dirs), 0), dirs, tris, r + 0.005 * s, r - 0.002 * s)
+        t, ti = t.reshape(bb.shape), ti.reshape(bb.shape)
+        ids = []
+        for k in range(len(betas)):
+            j = np.argmax(np.isfinite(t[k]))
+            if not np.isfinite(t[k, j]) or j == 0:
+                continue
+            hit = c + dirs[k * len(alphas) + j] * t[k, j]
+            tv = tri_ids[ti[k, j]]
+            ids.append(tv[np.linalg.norm(p[tv] - hit, axis=1).argmin()])
+        ids = np.unique(ids)
         q = p[ids]
         xs = q[:, 0] * sx
         inner = ids[xs.argmin()]
@@ -364,8 +393,8 @@ class Rig:
         near_corner = np.min(np.linalg.norm(p[:, None] - p[corners][None], axis=2), axis=1) < 0.007 * s
         one |= (lab > 0.6) & (dl < 0.012 * s) & self.soft_w & ~near_corner
         zero |= (lab < 0.4) & (du < 0.012 * s) & ~near_corner
-        one |= (p[:, 1] < ly + 0.04 * s) & (p[:, 2] < lz - 0.012 * s) & (lab > 0.5) & self.soft_w
-        zero |= (p[:, 2] > lz + 0.023 * s) | (p[:, 2] < lz - 0.107 * s) | (p[:, 1] > jy - 0.006 * s)
+        one |= (p[:, 1] < ly + 0.018 * s) & (p[:, 2] < lz - 0.010 * s) & (lab > 0.5) & self.soft_w
+        zero |= (p[:, 2] > lz + 0.025 * s) | (p[:, 2] < lz - 0.105 * s) | (p[:, 1] > jy - 0.006 * s)
         # the mouth bag floor lies a few mm over the skin under the chin: it takes that skin's weight
         # (solved without the bag), else it pokes out under the jaw
         rim_l = self.rim_l
@@ -376,11 +405,10 @@ class Rig:
         zero &= ~one
         w = harmonic(self.h, one, zero)
         outside = np.where(self.face_w & ~near_corner)[0]
-        outside = outside[(p[outside, 2] < lz - 0.017 * s) & (h.wnrm[outside, 2] < -0.3)]
+        outside = outside[(p[outside, 2] < lz - 0.015 * s) & (h.wnrm[outside, 2] < -0.3)]
         if len(inner) and len(outside):
             w[inner] = w[outside[cKDTree(p[outside]).query(p[inner])[1]]]
         self.jaw_w = w
-        self.mouth_lab = lab
 
     def jaw_rot(self, deg):
         p = self.h.wco
@@ -574,7 +602,7 @@ def attach(h, rig, keys):
         sel = cards & (comp[h.weld] == c)
         dm, im = m_tree.query(h.co[sel])
         ds, _ = soft_tree.query(h.co[sel])
-        small = np.ptp(h.co[sel], axis=0).max() < 0.05 * s
+        small = np.ptp(h.co[sel], axis=0).max() < 0.08 * s
         follow[sel] = 1 if small and ds.min() < 0.003 * s else 1 - smoothstep(0.004 * s, 0.012 * s, ds)
         if np.median(dm) < 0.012 * s and small:
             anchors[sel] = margin[im]
@@ -608,35 +636,37 @@ def attach(h, rig, keys):
 
 
 def controls(rig):
-    """Face control positions (rig.py): a little in front of the skin at each landmark."""
+    """Face control positions (rig.py): in front of the skin at each landmark, as far out as Violet's hand-placed
+    ones."""
     p = rig.h.wco
     s = rig.s
     ez, lz = rig.ez, rig.lip_z
     em = ez - lz
-    c, r = rig.eye_c['L'], rig.eye_r['L']
+    c = rig.eye_c['L']
     cx, cz = p[rig.corner['L'], 0], p[rig.corner['L'], 2]
 
-    def at(x, z, ahead=0.008):
+    def at(x, z, ahead):
         return [round(float(x), 4), round(float(rig.front_y(x, z) - ahead * s), 4), round(float(z), 4)]
     lm = {
-        'lid': at(c[0], ez + 0.016 * s, 0.006),
-        'lidlow': at(c[0] + 0.002 * s, ez - 0.019 * s, 0.006),
-        'brow': at(c[0] + 0.006 * s, ez + 0.045 * s, 0.006),
-        'cheek': at(c[0] + 0.014 * s, lz + 0.475 * em),
-        'corner': at(cx, cz),
-        'lipup': at(0.012 * s, lz + 0.015 * s),
-        'liplow': at(0.012 * s, lz - 0.017 * s),
-        'nose': at(0.019 * s, lz + 0.36 * em, 0.004),
+        'lid': at(c[0], ez + 0.016 * s, 0.010),
+        'lidlow': at(c[0] + 0.002 * s, ez - 0.019 * s, 0.011),
+        'brow': at(c[0] + 0.006 * s, ez + 0.045 * s, 0.015),
+        'cheek': at(c[0] + 0.014 * s, lz + 0.475 * em, 0.010),
+        'corner': at(cx, cz, 0.012),
+        'lipup': at(0.012 * s, lz + 0.015 * s, 0.015),
+        'liplow': at(0.012 * s, lz - 0.017 * s, 0.022),
+        'nose': at(0.019 * s, lz + 0.36 * em, 0.013),
     }
+    chin = rig.face_w & (np.abs(p[:, 0]) < 0.01 * s) & (p[:, 2] < lz - 0.02 * s) & (p[:, 2] > lz - 0.06 * s)
     top = p[rig.soft_w, 2].max()
     return {
         'landmarks': lm,
-        'brow_mid': at(0, ez + 0.033 * s, 0.006),
-        'mouth': at(0, lz, 0.008),
-        'jaw': at(0, lz - 0.055 * s, 0.006),
-        'eye_target': [0, round(float(c[1] - 0.5), 4), round(float(ez), 4)],
+        'brow_mid': at(0, ez + 0.033 * s, 0.011),
+        'mouth': at(0, lz, 0.028),
+        'jaw': [0, round(float(p[chin, 1].min() - 0.023 * s), 4), round(float(lz - 0.055 * s), 4)],
+        'eye_target': [0, round(float(c[1] - 0.51), 4), round(float(ez), 4)],
         'eye_spacing': round(float(c[0]), 4),
-        'face_box': [0, round(float(rig.front_y(0, ez) + 0.04), 4), round(float(top + 0.126 * s), 4)],
+        'face_box': [0, round(float(rig.front_y(0, ez) + 0.019), 4), round(float(top + 0.126 * s), 4)],
     }
 
 
@@ -644,7 +674,9 @@ if __name__ == '__main__':
     h = fg.load(sys.argv[1])
     keys, rig = build(h)
     base = sys.argv[2][:-len('.npz')]
-    np.save(base + '_bag.npy', rig.bag[h.weld])
+    # the dark mouth interior starts a little in from the lip line, so the inner lips keep their colour
+    interior = rig.bag & (fg.geodesic(h, np.r_[rig.rim_u, rig.rim_l], limit=0.01) > 0.003 * rig.s)
+    np.save(base + '_bag.npy', (rig.bag.astype(np.int8) + interior)[h.weld])
     json.dump(controls(rig), open(os.path.join(os.path.dirname(sys.argv[2]), 'face.json'), 'w'), indent=1)
     for k in sorted(keys):
         print('%-20s max %.1f mm' % (k, np.linalg.norm(keys[k], axis=1).max() * 1000))

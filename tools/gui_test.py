@@ -95,7 +95,7 @@ def s_face():
     with bpy.context.temp_override(**ctx()):
         bpy.ops.dlrig.expression(name='Laugh')
         bpy.ops.dlrig.hand(name='Fist', side='B')
-    kb = bpy.data.objects['Head'].data.shape_keys.key_blocks
+    kb = next(o for o in bpy.data.objects if o.type == 'MESH' and o.data.shape_keys).data.shape_keys.key_blocks
     say('laugh smile', round(kb['mouthSmileLeft'].value, 2), 'action', arm.animation_data.action.name if arm.animation_data and arm.animation_data.action else None)
     shot('02_face_keys')
 

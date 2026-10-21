@@ -30,7 +30,7 @@ if focus in ('L', 'R'):
     centre = arm.matrix_world @ arm.pose.bones['eye_0_' + focus].head
     dist = 0.2
 elif focus == 'mouth':
-    centre = Vector((0, eyes.y, 2.065))
+    centre = Vector((0, eyes.y, eyes.z - 0.082))
     dist = 0.25
 scene.render.engine = 'BLENDER_EEVEE'
 scene.render.resolution_x = scene.render.resolution_y = 512

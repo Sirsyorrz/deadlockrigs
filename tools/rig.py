@@ -74,7 +74,8 @@ COLOURS = {'L': 'THEME04', 'R': 'THEME01', None: 'THEME09'}
 CTRLS = {}
 FACE = 'FACE'
 if HAS_FACE:
-    FC = hero.face['controls']
+    # hand-placed in heroes.json (Violet), else the positions keys.py derived from the head
+    FC = hero.face.get('controls') or json.load(open(os.path.join(hero.data, 'face.json')))
     for s, sx in (('L', 1), ('R', -1)):
         for k, (x, y, z) in FC['landmarks'].items():
             CTRLS[f'CTRL_{k}_{s}'] = (Vector((sx * x, y, z)), 0.0035, 0.01, 0.01, False, False)
@@ -447,7 +448,7 @@ def build_face():
     """Face control widgets, limits, the FACE slider bone and the shape key drivers."""
     for name, (pos, r, *_rest) in CTRLS.items():
         widget(name, circle(pos, FWD, r), 2.5)
-    e1, e2 = EYE_TARGET + Vector((0.044, 0, 0)), EYE_TARGET - Vector((0.044, 0, 0))
+    e1, e2 = EYE_TARGET + Vector((EYE_SPACING, 0, 0)), EYE_TARGET - Vector((EYE_SPACING, 0, 0))
     p1, ed1 = circle(e1, FWD, 0.03)
     p2, ed2 = circle(e2, FWD, 0.03)
     widget('CTRL_eyes', (p1 + p2, ed1 + [(a + len(p1), b + len(p1)) for a, b in ed2]), 2.5)

@@ -71,17 +71,20 @@ if hero.face:
         kb.data.foreach_set('co', (base.reshape(-1, 3) + d @ inv.T).astype(np.float32).ravel())
     print('shape keys', len(keys.files))
 
-    # The mouth bag shares the skin texture, so an open mouth showed a flat skin-coloured wall.
+    # The mouth bag shares the skin texture, so an open mouth showed a flat skin-coloured wall. Per vertex:
+    # 0 outside the bag, 1 the lips' inner faces, 2 deeper in; faces reaching deeper in go dark.
     bag = np.load(keys_path.replace('.npz', '_bag.npy'))
     mat = bpy.data.materials.new('mouth_interior')
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes['Principled BSDF']
     bsdf.inputs['Base Color'].default_value = (0.09, 0.025, 0.03, 1)
     bsdf.inputs['Roughness'].default_value = 0.6
+    # flat, shallow bags (Apollo) otherwise just mirror the sky
+    bsdf.inputs['Specular IOR Level'].default_value = 0
     me.materials.append(mat)
     mi = len(me.materials) - 1
     for poly in me.polygons:
-        if all(bag[v] for v in poly.vertices):
+        if all(bag[v] for v in poly.vertices) and any(bag[v] == 2 for v in poly.vertices):
             poly.material_index = mi
 
 bpy.ops.wm.save_as_mainfile(filepath=hero.base_blend)

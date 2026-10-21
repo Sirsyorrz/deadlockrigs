@@ -26,7 +26,11 @@
   "slug": "apollo",
   "name": "Apollo",
   "codename": "fencer",
-  "model": "models/heroes_wip/fencer/fencer.vmdl"
+  "model": "models/heroes_wip/fencer/fencer.vmdl",
+  "face": {
+   "part": "head",
+   "mesh": "head"
+  }
  },
  {
   "slug": "baba",
@@ -80,7 +84,11 @@
   "slug": "graves",
   "name": "Graves",
   "codename": "necro",
-  "model": "models/heroes_wip/necro/necro.vmdl"
+  "model": "models/heroes_wip/necro/necro.vmdl",
+  "face": {
+   "part": "head",
+   "mesh": "head"
+  }
  },
  {
   "slug": "grey_talon",
@@ -140,7 +148,11 @@
   "slug": "mina",
   "name": "Mina",
   "codename": "vampirebat",
-  "model": "models/heroes_wip/vampirebat/vampirebat.vmdl"
+  "model": "models/heroes_wip/vampirebat/vampirebat.vmdl",
+  "face": {
+   "part": "head",
+   "mesh": "head"
+  }
  },
  {
   "slug": "mirage",

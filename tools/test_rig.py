@@ -363,4 +363,28 @@ if IDLE:
         side = next(iter(hand_poses['Fist']))
         fist = pb[f'finger_index_1_{side}'].rotation_quaternion.copy()
         check('idle layer keeps the pose', abs(fist.w - 1) > 0.01, str(tuple(round(x, 3) for x in fist)))
+# face: every ARKit key moves the head by a sane amount, and the controls drive the keys
+if 'FACE' in pb:
+    reset()
+    head = next(o for o in bpy.data.objects if o.type == 'MESH' and o.data.shape_keys and 'jawOpen' in o.data.shape_keys.key_blocks)
+    kbs = head.data.shape_keys.key_blocks
+    base = np.array([v.co for v in kbs[0].data])
+    sizes = {kb.name: np.linalg.norm(np.array([v.co for v in kb.data]) - base, axis=1).max() * 1000 for kb in kbs[1:]}
+    odd = {k: round(v, 1) for k, v in sizes.items() if not 0.5 < v < 45}
+    check('face keys move 0.5-45 mm', not odd, f'{len(sizes)} keys {odd}')
+    lr = {k: (sizes[k], sizes[k[:-4] + 'Right']) for k in sizes if k.endswith('Left')}
+    lop = {k: tuple(round(x, 1) for x in v) for k, v in lr.items() if abs(v[0] - v[1]) > 0.35 * max(v)}
+    check('face keys left/right alike', not lop, str(lop))
+    rest = verts(head)
+    pb['CTRL_jaw'].location.y = -0.025
+    update()
+    jaw = np.linalg.norm(verts(head) - rest, axis=1).max() * 1000
+    check('jaw control opens the mouth', kbs['jawOpen'].value > 0.99 and jaw > 10, f'jawOpen {kbs["jawOpen"].value:.2f}, {jaw:.1f} mm')
+    reset()
+    pb['FACE']['eyeBlinkLeft'] = 1.0
+    update()
+    blink = np.linalg.norm(verts(head) - rest, axis=1).max() * 1000
+    check('face slider drives its key', kbs['eyeBlinkLeft'].value > 0.99 and blink > 3, f'{blink:.1f} mm')
+    reset()
+
 print('FAILS', fails)
