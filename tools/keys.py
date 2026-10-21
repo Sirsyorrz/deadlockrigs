@@ -565,6 +565,8 @@ def build(h: fg.Head) -> tuple:
     t_abs = np.abs(p[:, 0]) / ((cx['L'] + cx['R']) / 2)
     along = np.where(t_abs <= 1, 1, np.exp(-((t_abs - 1) / 0.45) ** 2))
     lipw = (1 - smoothstep(0.01 * s, 0.03 * s, d_lips)) * along * rig.soft_w
+    # the bag behind the corners would slide out through the cheek, so only its lip edge goes along
+    lipw[rig.bag] *= 1 - smoothstep(0.001 * s, 0.005 * s, d_lips[rig.bag])
     mid = (rim_z(rim_u, p[:, 0]) + rim_z(rim_l, p[:, 0])) / 2
     upper = smoothstep(-0.002 * s, 0.002 * s, p[:, 2] - mid)
     centre = np.clip(1 - t_abs ** 2, 0, 1)
