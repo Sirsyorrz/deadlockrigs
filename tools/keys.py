@@ -143,6 +143,11 @@ class Rig:
         self.jaw_pivot = h.bones['jaw_0'].copy()
         self.ez = (self.eye_c['L'][2] + self.eye_c['R'][2]) / 2
 
+        # teeth: their own pieces, by material name (they block rays into the mouth, and the lower row rides the jaw)
+        mats = np.array([any(k in str(m).lower() for k in ('teeth', 'tooth')) for m in h.matnames])
+        teeth = np.zeros(self.nw, bool)
+        teeth[h.weld[mats[h.vmat]]] = True
+        self.teeth_w = teeth & ~self.soft_w
         self._mouth()
         self.face_w = self.soft_w & ~self.bag
         self.handles = {}
@@ -172,7 +177,7 @@ class Rig:
         h = self.h
         p = h.wco
         tri_w = h.weld[h.tris]
-        solid = self.soft_w | self.ball_w['L'] | self.ball_w['R']
+        solid = self.soft_w | self.ball_w['L'] | self.ball_w['R'] | self.teeth_w
         near = solid[tri_w].all(1) & (np.linalg.norm(p[tri_w].mean(1) - centre, axis=1) < reach)
         tris = p[tri_w[near]]
         dirs = fib_sphere(48)
@@ -243,6 +248,8 @@ class Rig:
         # arches, so a height split would put the middle of the lower lip with the upper)
         down = h.wnrm[rim, 2] < 0
         self.rim_u, self.rim_l = rim[down], rim[~down]
+        if not down.any() or down.all():
+            sys.exit('no mouth bag behind the lips (open hole or fused lips?): this head needs another jaw setup')
         self.lip_z = (cl[2] + cr[2]) / 2
         self.lip_y = q[:, 1].min()
         # split the bag level with the lip line (a geodesic split leans towards the shorter lip)
@@ -282,7 +289,7 @@ class Rig:
         dirs = np.c_[(np.sin(aa) * np.cos(bb)).ravel() * sx, -np.cos(aa).ravel(), (np.sin(aa) * np.sin(bb)).ravel()]
         t, ti = ray_cast(np.repeat(c[None], len(dirs), 0), dirs, tris, r + 0.005 * s, r - 0.002 * s)
         t, ti = t.reshape(bb.shape), ti.reshape(bb.shape)
-        ids = []
+        ids, hits = [], []
         for k in range(len(betas)):
             j = np.argmax(np.isfinite(t[k]))
             if not np.isfinite(t[k, j]) or j == 0:
@@ -290,23 +297,25 @@ class Rig:
             hit = c + dirs[k * len(alphas) + j] * t[k, j]
             tv = tri_ids[ti[k, j]]
             ids.append(tv[np.linalg.norm(p[tv] - hit, axis=1).argmin()])
-        ids = np.unique(ids)
-        q = p[ids]
-        xs = q[:, 0] * sx
-        inner = ids[xs.argmin()]
-        outer = ids[xs.argmax()]
-        pi, po = p[inner], p[outer]
-        t = (q[:, 0] - pi[0]) / (po[0] - pi[0])
-        line_z = pi[2] + t * (po[2] - pi[2])
-        upper = ids[q[:, 2] >= line_z]
-        lower = ids[q[:, 2] < line_z]
+            hits.append(hit)
+        ids, hits = np.array(ids), np.array(hits)
+
+        def split(q):
+            xs = q[:, 0] * sx
+            qi, qo = q[xs.argmin()], q[xs.argmax()]
+            line_z = qi[2] + (q[:, 0] - qi[0]) / (qo[0] - qi[0]) * (qo[2] - qi[2])
+            return q[:, 2] >= line_z, qi, qo
+        up_v, _, _ = split(p[ids])
+        upper, lower = np.unique(ids[up_v]), np.unique(ids[~up_v])
+        # the lid turn angles come from the hit points, not the vertices: on a thick lid the nearest vertices
+        # alternate between its front and back edge, which made the closed lid zigzag
+        up_h, pi, po = split(hits)
         phi = lambda q: np.arctan2(q[:, 2] - c[2], -(q[:, 1] - c[1]))
 
-        def chain(sel):
-            q = p[sel]
+        def chain(q):
             o = np.argsort(q[:, 0])
             return q[o, 0], phi(q[o])
-        return {'upper': upper, 'lower': lower, 'up_chain': chain(upper), 'lo_chain': chain(lower),
+        return {'upper': upper, 'lower': lower, 'up_chain': chain(hits[up_h]), 'lo_chain': chain(hits[~up_h]),
                 'x_in': pi[0], 'x_out': po[0], 'phi': phi}
 
     def margin_phis(self, side, x):
@@ -325,12 +334,16 @@ class Rig:
         self.lid = {}
         for side in 'LR':
             m = self.margins[side]
-            du = fg.geodesic(h, m['upper'], limit=0.03 * s)
+            du = fg.geodesic(h, m['upper'], limit=0.04 * s)
             dl = fg.geodesic(h, m['lower'], limit=0.03 * s)
             sock = self.sock[side]
             up = (du < dl) & self.soft_w
             lo = (dl <= du) & self.soft_w
-            wu = np.where(up, 1 - smoothstep(0.0012 * s, 0.0095 * s, du), 0)
+            # wide open eyes pull the upper lid further; spread its falloff so the skin above stretches over
+            # more rows instead of shearing a coarse lid into a sawtooth
+            gap = np.subtract(*self.margin_phis(side, np.linspace(m['x_in'], m['x_out'], 50))).max()
+            reach = 0.0095 * s * max(1.0, gap * self.eye_r[side] / (0.016 * s)) ** 1.5
+            wu = np.where(up, 1 - smoothstep(0.0012 * s, reach, du), 0)
             wl = np.where(lo, 1 - smoothstep(0.001 * s, 0.007 * s, dl), 0)
             wu[sock & up] = 1
             wl[sock & lo] = 1
@@ -366,7 +379,16 @@ class Rig:
         need = np.minimum(r + 0.0007 * self.s, r0 + 0.0015 * self.s)
         grow = np.maximum(need - rr, 0) * np.minimum(np.abs(ang[skin]) / 0.05, 1)
         moved[skin] += d / rr[:, None] * grow[:, None]
-        return moved - p
+        off = moved - p
+        # relax the stretch band above the margin: on coarse lids neighbouring rows shear into folds
+        band = skin & (lw['du'] > 0.003 * self.s) & (lw['wu'] > 0)
+        if band.any():
+            adj = self.h.wgraph.copy()
+            adj.data[:] = 1
+            deg = np.asarray(adj.sum(1)).ravel()
+            for _ in range(10):
+                off[band] = (adj @ off)[band] / deg[band, None]
+        return off
 
     # jaw
 
@@ -408,6 +430,10 @@ class Rig:
         outside = outside[(p[outside, 2] < lz - 0.015 * s) & (h.wnrm[outside, 2] < -0.3)]
         if len(inner) and len(outside):
             w[inner] = w[outside[cKDTree(p[outside]).query(p[inner])[1]]]
+        # each row of teeth moves as one piece: the lower row (below the lip line) with the jaw
+        for c in np.unique(self.comp[self.teeth_w]):
+            m = self.comp == c
+            w[m] = float(p[m, 2].mean() < self.lip_z)
         self.jaw_w = w
 
     def jaw_rot(self, deg):
@@ -510,7 +536,7 @@ def build(h: fg.Head) -> tuple:
     # mouthClose: with jawOpen, brings the lips together; the lower lip rises most of the way
     # the lower lip (down to its vermilion edge) keeps its closed place; the chin below stretches
     zr = rim_z(rim_l, p[:, 0])
-    lip_lo = smoothstep(zr - 0.03 * s, zr - 0.017 * s, p[:, 2]) * rig.jaw_w
+    lip_lo = smoothstep(zr - 0.03 * s, zr - 0.017 * s, p[:, 2]) * rig.jaw_w * ~rig.teeth_w
     keys['mouthClose'] = -jaw_open * lip_lo[:, None]
 
     lr('eyeBlink', {})
@@ -602,10 +628,10 @@ def eye_keys(h, rig):
 def attach(h, rig, keys):
     """Cards (lashes, liner, brows: pieces not welded to the skin) ride the skin under them. Liner and
     lash cards turn with the lid margin as one piece, else the lid skin's falloff stretches them over
-    the whole closed lid. Loose pieces further off the skin (hair) fade out of the face motion."""
+    the whole closed lid. Pieces standing off the skin (hair, glasses) stay put; teeth go with the jaw."""
     s = rig.s
     ball = h.ball['L'] | h.ball['R']
-    cards = ~rig.soft_w[h.weld] & ~ball
+    cards = ~rig.soft_w[h.weld] & ~ball & ~rig.teeth_w[h.weld]
     margin = np.concatenate([rig.margins[side][k] for side in 'LR' for k in ('upper', 'lower')])
     skin = np.where(rig.face_w)[0]
     m_tree, s_tree = cKDTree(h.wco[margin]), cKDTree(h.wco[skin])
@@ -620,7 +646,9 @@ def attach(h, rig, keys):
         dm, im = m_tree.query(h.co[sel])
         ds, _ = soft_tree.query(h.co[sel])
         small = np.ptp(h.co[sel], axis=0).max() < 0.08 * s
-        follow[sel] = 1 if small and ds.min() < 0.003 * s else 1 - smoothstep(0.004 * s, 0.012 * s, ds)
+        # lashes, brows, liner, moustaches lie on the skin; hair and glasses stand off it and stay put
+        on_skin = np.median(ds) < 0.01 * s and np.ptp(h.co[sel], axis=0).max() < 0.13 * s
+        follow[sel] = float(on_skin)
         if np.median(dm) < 0.012 * s and small:
             anchors[sel] = margin[im]
             lid_card[sel] = True

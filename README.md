@@ -105,10 +105,12 @@ Other known gaps:
 | Hero | Face rig | Notes |
 |---|---|---|
 | Apollo | yes | |
+| Drifter | yes | lower teeth follow the jaw |
 | Graves | yes | dark lid make-up shows when the eyes close |
 | Mina | yes | |
+| Paige | yes | lower teeth follow the jaw; the glasses stay put |
 | Violet | yes | controls placed by hand |
-| Drifter, Paige, Venator | not yet | separate head mesh with eyes and teeth; the lower teeth would need to follow the jaw |
+| Venator | not yet | the lips are parted, so the mouth is not closed off and no mouth bag is found |
 | Nurse Harrow | not yet | separate head mesh, not checked further |
 | The Doorman | not yet | separate head mesh, but the lips are one closed surface (no mouth bag), so the jaw can't open the mouth |
 | Abrams, McGinnis | no keys | real face bones (lids, lips, brows, jaw), posable directly |
@@ -129,13 +131,15 @@ is found from the geometry, so a new hero usually only needs `"face": {"part": "
   with a cup, is skipped).
 - Mouth bag: the enclosed skin around the lips. Its edge is the lip line, split into upper and lower lip by which
   way the edge faces, and the corners are its ends.
-- Lashes, liner and brow cards ride the skin under them; loose pieces further off the skin (hair) fade out.
+- Lashes, liner and brow cards ride the skin under them; pieces standing off the skin (hair, glasses) stay put.
+- Teeth: separate pieces with a material named `*teeth*`/`*tooth*`. They block the rays when finding the mouth
+  bag, and a piece below the lip line moves rigidly with the jaw.
 
 `data/face.json` holds the control positions derived from the same landmarks. `make.sh <hero> data base rig test`
 rebuilds a face; `test` checks every key's size, left/right balance, and that the controls and sliders drive the
 keys.
 
-`mouthClose` is meant to be used with `jawOpen`, like ARKit. There are no teeth or tongue in these heads, so the
+`mouthClose` is meant to be used with `jawOpen`, like ARKit. Heads without teeth get no extra teeth or tongue; the
 mouth interior is a plain dark material.
 
     HERO=mina tools/sheet.sh shots/check.png eyeBlinkLeft,jawOpen 0 face   # render keys, angle, focus: face|mouth|L|R

@@ -72,7 +72,11 @@
   "slug": "drifter",
   "name": "Drifter",
   "codename": "drifter",
-  "model": "models/heroes_wip/drifter/drifter.vmdl"
+  "model": "models/heroes_wip/drifter/drifter.vmdl",
+  "face": {
+   "part": "drifter_head_neutral",
+   "mesh": "drifter_head_neutral"
+  }
  },
  {
   "slug": "dynamo",
@@ -176,7 +180,11 @@
   "slug": "paige",
   "name": "Paige",
   "codename": "bookworm",
-  "model": "models/heroes_wip/bookworm/bookworm.vmdl"
+  "model": "models/heroes_wip/bookworm/bookworm.vmdl",
+  "face": {
+   "part": "head",
+   "mesh": "head"
+  }
  },
  {
   "slug": "paradox",
