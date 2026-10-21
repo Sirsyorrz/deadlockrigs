@@ -13,6 +13,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 from bodygroups import mesh_parts  # noqa: E402
 from hero import from_argv  # noqa: E402
+from tongue_mesh import add_tongue  # noqa: E402
 
 hero, _ = from_argv()
 os.makedirs(hero.out, exist_ok=True)
@@ -59,13 +60,16 @@ if hero.face:
     head = bpy.data.objects[hero.face['mesh']]
     me = head.data
     inv = np.array(head.matrix_world.inverted().to_3x3())
+    n_head = len(me.vertices)
+    tongue_path = keys_path.replace('.npz', '_tongue.npz')
+    tongue = add_tongue(head, tongue_path) if os.path.exists(tongue_path) else {}
     n = len(me.vertices)
     base = np.empty(n * 3, np.float32)
     me.vertices.foreach_get('co', base)
     keys = np.load(keys_path)
     head.shape_key_add(name='Basis', from_mix=False)
     for name in keys.files:
-        d = keys[name]
+        d = np.concatenate([keys[name], tongue[name]]) if tongue else keys[name]
         assert d.shape == (n, 3), (name, d.shape, n)
         kb = head.shape_key_add(name=name, from_mix=False)
         kb.data.foreach_set('co', (base.reshape(-1, 3) + d @ inv.T).astype(np.float32).ravel())
@@ -84,6 +88,8 @@ if hero.face:
     me.materials.append(mat)
     mi = len(me.materials) - 1
     for poly in me.polygons:
+        if poly.vertices[0] >= n_head:
+            continue
         if all(bag[v] for v in poly.vertices) and any(bag[v] == 2 for v in poly.vertices):
             poly.material_index = mi
 

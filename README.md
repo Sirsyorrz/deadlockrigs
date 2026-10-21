@@ -139,8 +139,13 @@ is found from the geometry, so a new hero usually only needs `"face": {"part": "
 rebuilds a face; `test` checks every key's size, left/right balance, and that the controls and sliders drive the
 keys.
 
-`mouthClose` is meant to be used with `jawOpen`, like ARKit. Heads without teeth get no extra teeth or tongue; the
-mouth interior is a plain dark material.
+`mouthClose` is meant to be used with `jawOpen`, like ARKit. None of the heads has a tongue, so `keys.py` builds one
+on the mouth bag floor (`data/keys_tongue.npz`), sized to the bag, and `build.py` adds it to the head mesh. It
+follows the jaw and has the 52nd ARKit key, `tongueOut` (meant with `jawOpen`; on a closed mouth it goes through
+the lips). Heads without teeth get none; the rest of the mouth interior is a plain dark material.
+
+Hair, hats and other meshes around the head are dumped too: skin above the eyes that lies within a few mm of them
+stays put, so brow keys can't push it through.
 
     HERO=mina tools/sheet.sh shots/check.png eyeBlinkLeft,jawOpen 0 face   # render keys, angle, focus: face|mouth|L|R
 

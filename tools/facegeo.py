@@ -20,6 +20,7 @@ class Head:
     wnrm: np.ndarray = None
     ball: dict = None     # side -> unwelded eyeball mask
     matnames: np.ndarray = None
+    other: np.ndarray = None   # vertices of the other shown meshes near the head
 
     def islands_of(self, ids):
         return np.isin(self.island, ids)
@@ -50,7 +51,7 @@ def load(path: str) -> Head:
     np.add.at(wnrm, weld, d['nrm'])
     wnrm /= np.maximum(np.linalg.norm(wnrm, axis=1, keepdims=True), 1e-9)
     ball = {s: d['ball_' + s] for s in 'LR'} if 'ball_L' in d.files else None
-    return Head(co, tris, vmat, weld, wco, island, wg, bones, wnrm, ball, d['matnames'])
+    return Head(co, tris, vmat, weld, wco, island, wg, bones, wnrm, ball, d['matnames'], d['other'] if 'other' in d.files else np.zeros((0, 3)))
 
 
 def geodesic(h: Head, sources_welded, limit=np.inf) -> np.ndarray:

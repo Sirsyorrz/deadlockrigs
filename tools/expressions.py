@@ -12,13 +12,14 @@ ARKIT = [
     'mouthPressLeft', 'mouthPressRight', 'mouthUpperUpLeft', 'mouthUpperUpRight',
     'mouthLowerDownLeft', 'mouthLowerDownRight', 'mouthLeft', 'mouthRight',
     'mouthPucker', 'mouthFunnel', 'mouthRollUpper', 'mouthRollLower', 'mouthShrugUpper', 'mouthShrugLower',
+    'tongueOut',
 ]
 
 GROUPS = {
     'Eyes': [k for k in ARKIT if k.startswith('eye')],
     'Brows': [k for k in ARKIT if k.startswith('brow')],
     'Cheeks & Nose': [k for k in ARKIT if k.startswith(('cheek', 'nose'))],
-    'Jaw': [k for k in ARKIT if k.startswith('jaw')] + ['mouthClose'],
+    'Jaw': [k for k in ARKIT if k.startswith('jaw')] + ['mouthClose', 'tongueOut'],
     'Mouth': [k for k in ARKIT if k.startswith('mouth') and k != 'mouthClose'],
 }
 
@@ -83,7 +84,7 @@ VISEMES = {
     'OO': {'jawOpen': 0.1, 'mouthPucker': 0.9},
     'MBP': {**both('mouthPress', 0.6), 'mouthRollUpper': 0.3, 'mouthRollLower': 0.3},
     'FV': {'mouthRollLower': 0.7, **both('mouthUpperUp', 0.3), 'jawOpen': 0.05},
-    'TH/L': {'jawOpen': 0.25, **both('mouthUpperUp', 0.15)},
+    'TH/L': {'jawOpen': 0.25, **both('mouthUpperUp', 0.15), 'tongueOut': 0.25},
     'CH/SH': {'jawOpen': 0.1, 'mouthFunnel': 0.5, 'mouthShrugUpper': 0.3},
     'Rest': {},
 }

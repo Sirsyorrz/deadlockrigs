@@ -561,26 +561,25 @@ def build(h: fg.Head) -> tuple:
                       'L_UPPERLIP_OUTER': (-1, -1, 0), 'L_LOWERLIP_OUTER': (-1, 1, 0)})
     lr('mouthUpperUp', {'L_UPPERLIP_OUTER': (0, 4, 0), 'L_UPPERLIP_INNER': (0, 3.5, 0), 'L_MOUTHFOLD_UPPER': (0, 1.5, 0)})
     lr('mouthLowerDown', {'L_LOWERLIP_OUTER': (0, -4, 0), 'L_LOWERLIP_INNER': (0, -4, 0)})
-    lips = [f'{side}_{k}' for side in 'MLR' for k in ('UPPERLIP_INNER', 'UPPERLIP_OUTER', 'LOWERLIP_INNER', 'LOWERLIP_OUTER')]
-    sidew = {n: (0, 0, -6) for n in lips}
-    sidew.update({'L_LIPCORNER': (0, 0, -6), 'R_LIPCORNER': (0, 0, -6)})
-    keys['mouthLeft'] = rig.moves(sidew)
-    keys['mouthRight'] = rig.moves(mirror(sidew))
-    keys['mouthPucker'] = rig.moves({'L_LIPCORNER': (5.6, 0, 9.8), 'R_LIPCORNER': (5.6, 0, -9.8),
-                                     'L_UPPERLIP_OUTER': (7, 0, 4.2), 'R_UPPERLIP_OUTER': (7, 0, -4.2),
-                                     'L_LOWERLIP_OUTER': (7, 0, 4.2), 'R_LOWERLIP_OUTER': (7, 0, -4.2),
-                                     'M_UPPERLIP_OUTER': (8.4, 0, 0), 'M_LOWERLIP_OUTER': (8.4, 0, 0),
-                                     'L_UPPERLIP_INNER': (4.9, 0, 2.8), 'R_UPPERLIP_INNER': (4.9, 0, -2.8),
-                                     'L_LOWERLIP_INNER': (4.9, 0, 2.8), 'R_LOWERLIP_INNER': (4.9, 0, -2.8),
-                                     'M_UPPERLIP_INNER': (5.6, 0, 0), 'M_LOWERLIP_INNER': (5.6, 0, 0),
-                                     'L_MOUTHFOLD_LOWER': (1.4, 0, 2.8), 'R_MOUTHFOLD_LOWER': (1.4, 0, -2.8)})
-    keys['mouthFunnel'] = rig.moves({'L_LIPCORNER': (3, 0, 5), 'R_LIPCORNER': (3, 0, -5),
-                                     'M_UPPERLIP_OUTER': (5, 3, 0), 'M_UPPERLIP_INNER': (4, 3, 0),
-                                     'M_LOWERLIP_OUTER': (5, -3, 0), 'M_LOWERLIP_INNER': (4, -3, 0),
-                                     'L_UPPERLIP_OUTER': (4, 2.5, 1.5), 'R_UPPERLIP_OUTER': (4, 2.5, -1.5),
-                                     'L_UPPERLIP_INNER': (3.5, 2.5, 1.5), 'R_UPPERLIP_INNER': (3.5, 2.5, -1.5),
-                                     'L_LOWERLIP_OUTER': (4, -2.5, 1.5), 'R_LOWERLIP_OUTER': (4, -2.5, -1.5),
-                                     'L_LOWERLIP_INNER': (3.5, -2.5, 1.5), 'R_LOWERLIP_INNER': (3.5, -2.5, -1.5)})
+    # whole-mouth moves use one smooth lip field: separate handles leave dips between them that crease the lips
+    t_abs = np.abs(p[:, 0]) / ((cx['L'] + cx['R']) / 2)
+    along = np.where(t_abs <= 1, 1, np.exp(-((t_abs - 1) / 0.45) ** 2))
+    lipw = (1 - smoothstep(0.01 * s, 0.03 * s, d_lips)) * along * rig.soft_w
+    mid = (rim_z(rim_u, p[:, 0]) + rim_z(rim_l, p[:, 0])) / 2
+    upper = smoothstep(-0.002 * s, 0.002 * s, p[:, 2] - mid)
+    centre = np.clip(1 - t_abs ** 2, 0, 1)
+    mm = rig.mm
+
+    def field(fwd, up, x):
+        return np.stack(np.broadcast_arrays(x, -fwd, up), axis=1) * mm
+
+    keys['mouthLeft'] = field(0, 0, 6 * lipw)
+    keys['mouthRight'] = field(0, 0, -6 * lipw)
+    # pucker: lips push out (most in the middle) and gather towards it
+    keys['mouthPucker'] = field(lipw * (5 + 3 * centre), 0, 0) + field(0, 0, -0.38 * p[:, 0] / mm * lipw)
+    # funnel: as pucker but rounder, with the lips flaring apart in the middle
+    keys['mouthFunnel'] = (field(lipw * (3 + 2 * centre), lipw * centre * 3 * (2 * upper - 1), 0)
+                           + field(0, 0, -0.2 * p[:, 0] / mm * lipw))
     keys['mouthShrugUpper'] = rig.moves({'M_UPPERLIP_OUTER': (1, 2.5, 0), 'L_UPPERLIP_OUTER': (1, 2, 0),
                                          'R_UPPERLIP_OUTER': (1, 2, 0)})
     keys['mouthShrugLower'] = rig.moves({'M_LOWERLIP_OUTER': (1.5, 3, 0), 'L_LOWERLIP_OUTER': (1.5, 2.5, 0),
@@ -600,6 +599,14 @@ def build(h: fg.Head) -> tuple:
         keys['cheekSquint' + name] += rig.lid_move(side, 'cheekSquint' + name, lower_frac=0.12)
         keys['mouthSmile' + name] += rig.lid_move(side, 'mouthSmile' + name, lower_frac=0.06)
 
+    # hair and hats are separate meshes the keys don't move: forehead skin under them stays put so it can't
+    # come through
+    if len(h.other):
+        d_other, _ = cKDTree(h.other).query(p)
+        above = smoothstep(rig.ez + 0.01 * s, rig.ez + 0.025 * s, p[:, 2])
+        hold = 1 - above * (1 - smoothstep(0.004 * s, 0.015 * s, d_other))
+        for k in keys:
+            keys[k] *= hold[:, None]
     out = {k: v[h.weld] for k, v in keys.items()}
     out.update(eye_keys(h, rig))
     attach(h, rig, out)
@@ -622,6 +629,83 @@ def eye_keys(h, rig):
                 dl = rig.lid_move(s, key + name, upper_deg=lid_deg, lower_deg=lid_deg * 0.5)[h.weld]
                 d[~ball] += dl[~ball]
             out[key + name] = d
+    return out
+
+
+def tongue(h, rig, n_ring=14, n_len=16):
+    """A tongue lying on the mouth bag floor (the heads have none): ring-by-ring along its length, each ring
+    sized to the bag around it. Returns co, tris, jaw weights and u (0 tip .. 1 root) per vertex."""
+    s, p = rig.s, h.wco
+    soft_tris = rig.soft_w[h.weld[h.tris]].all(1) & ~rig.teeth_w[h.weld[h.tris]].any(1)
+    tc = h.co[h.tris[soft_tris]]
+    lip_y = p[np.r_[rig.rim_u, rig.rim_l], 1].mean()
+    y0 = lip_y + 0.008 * s
+    if rig.teeth_w.any():
+        low = rig.teeth_w & (p[:, 2] < rig.lip_z)
+        if low.any():
+            y0 = max(y0, p[low & (np.abs(p[:, 0]) < 0.01 * s), 1].max(initial=y0) + 0.002 * s)
+    ys = y0 + np.linspace(0, 0.06 * s, n_len)
+    z_top = rig.lip_z - 0.002 * s
+
+    def cast(o, d):
+        return ray_cast(np.asarray(o, float), np.tile(d, (len(o), 1)).astype(float), tc, 0.1)[0]
+    down = cast([[0, y, z_top] for y in ys], [0, 0, -1])
+    up = cast([[0, y, z_top] for y in ys], [0, 0, 1])
+    ok = np.isfinite(down) & np.isfinite(up)
+    ok = np.cumprod(ok).astype(bool)
+    ys, floor, ceil = ys[ok], z_top - down[ok], z_top + up[ok]
+    zmid = (floor + np.minimum(ceil, z_top)) / 2
+    side = cast([[0, y, z] for y, z in zip(ys, zmid)], [1, 0, 0])
+    side = np.where(np.isfinite(side), side, 0.02 * s)
+    u = np.linspace(0, 1, len(ys))
+    # rounded tip, full width behind it
+    prof = np.sqrt(np.clip(1 - (1 - np.minimum(u / 0.16, 1)) ** 2, 0, 1)) ** 0.7
+    hw = np.minimum(0.023 * s, 0.85 * side) * np.maximum(prof, 0.0)
+    hh = np.minimum(0.0065 * s, 0.45 * (np.minimum(ceil, z_top) - floor)) * np.maximum(prof, 0.5)
+    # deep bags (Drifter): the tongue floats up to where it would show, the dark bag below hides the gap
+    cz = np.maximum(floor + hh * 0.85, z_top - 0.016 * s - hh)
+    a = np.linspace(0, 2 * np.pi, n_ring, endpoint=False)
+    sa, ca = np.sin(a), np.cos(a)
+    # flatter on top, rounder underneath
+    sz = np.sign(sa) * np.abs(sa) ** np.where(sa > 0, 0.6, 1.0)
+    rings = np.stack([hw[:, None] * ca, np.repeat(ys[:, None], n_ring, 1), cz[:, None] + hh[:, None] * sz], -1)
+    tip = np.array([[0, ys[0] - 0.001 * s, cz[0]]])
+    root = np.array([[0, ys[-1] + 0.002 * s, cz[-1]]])
+    co = np.concatenate([tip, rings[1:].reshape(-1, 3), root])
+    uu = np.r_[0, np.repeat(u[1:], n_ring), 1]
+    nr = len(ys) - 1
+    tris = []
+    for j in range(n_ring):
+        k = (j + 1) % n_ring
+        tris.append((0, 1 + j, 1 + k))
+        for i in range(nr - 1):
+            a0, a1 = 1 + i * n_ring + j, 1 + i * n_ring + k
+            b0, b1 = a0 + n_ring, a1 + n_ring
+            tris += [(a0, b1, a1), (a0, b0, b1)]
+        last = 1 + (nr - 1) * n_ring
+        tris.append((last + j, len(co) - 1, last + k))
+    # follows the bag floor under it, which follows the jaw
+    floor_v = np.setdiff1d(rig.bag_l, rig.rim_l)
+    d, i = cKDTree(p[floor_v]).query(co, k=6)
+    wt = 1 / np.maximum(d, 1e-4)
+    w = (rig.jaw_w[floor_v][i] * wt).sum(1) / wt.sum(1)
+    return co, np.array(tris), w, uu
+
+
+def tongue_keys(rig, co, w, u, names):
+    s = rig.s
+    out = {k: np.zeros_like(co) for k in names}
+    out['jawOpen'] = rot_x(co, rig.jaw_pivot, -np.radians(14) * w) - co
+    mm5 = 5 * 0.0011 * s
+    for k, v in (('jawForward', (0, -1, 0)), ('jawLeft', (1, 0, 0)), ('jawRight', (-1, 0, 0))):
+        out[k] = np.outer(w, np.array(v) * mm5)
+    # out over the lower lip: slides forward, the front rises to lip height and thins
+    lead = (1 - u) ** 1.5
+    tip_lift = max(rig.lip_z + 0.002 * s - co[0, 2], 0)
+    # the front half slides out whole; the root stays and the back half stretches
+    slide = 1 - smoothstep(0.35, 1.0, u)
+    droop = 0.006 * s * np.clip(1 - u / 0.35, 0, 1) ** 2
+    out['tongueOut'] = np.stack([-0.1 * co[:, 0] * lead, -0.036 * s * slide, tip_lift * slide - droop], 1)
     return out
 
 
@@ -728,4 +812,9 @@ if __name__ == '__main__':
     print(len(keys), 'keys', 'scale %.3f' % rig.s, 'bag', rig.bag.sum(), 'lip line', len(rig.rim_u), len(rig.rim_l),
           'margins', [len(rig.margins[side][k]) for side in 'LR' for k in ('upper', 'lower')],
           'socket', [int(rig.sock[side].sum()) for side in 'LR'])
+    keys['tongueOut'] = np.zeros_like(h.co)
+    tco, ttris, tw, tu = tongue(h, rig)
+    tk = tongue_keys(rig, tco, tw, tu, keys)
+    print('tongue', len(tco), 'verts, jaw weight %.2f..%.2f' % (tw.min(), tw.max()))
+    np.savez_compressed(base + '_tongue.npz', co=tco, tris=ttris, **{'key_' + k: v for k, v in tk.items()})
     np.savez_compressed(sys.argv[2], **keys)

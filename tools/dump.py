@@ -7,6 +7,7 @@ import bpy
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
+from bodygroups import mesh_parts  # noqa: E402
 from hero import from_argv  # noqa: E402
 
 hero, _ = from_argv()
@@ -38,6 +39,21 @@ balls = {}
 for s in 'LR':
     gi = o.vertex_groups[f'eye_0_{s}'].index
     balls['ball_' + s] = np.array([any(g.group == gi and g.weight > 0.5 for g in v.groups) for v in me.vertices])
+# other shown meshes around the head (hair, hats, collars): the face keys must not push skin through them
+parts = mesh_parts(open(hero.vmdl).read())
+others = []
+for m in bpy.context.scene.objects:
+    if m.type != 'MESH' or m is o or m.parent is None:
+        continue
+    part = next((p for p in sorted(parts, key=len, reverse=True) if m.name.endswith('.' + p)), m.name.rsplit('.', 1)[-1])
+    if part in hero.drop or not parts.get(part, True):
+        continue
+    q = np.empty(len(m.data.vertices) * 3, np.float32)
+    m.data.vertices.foreach_get('co', q)
+    w = np.array(m.matrix_world)
+    q = q.reshape(-1, 3) @ w[:3, :3].T + w[:3, 3]
+    others.append(q[np.linalg.norm(q - bones['head'], axis=1) < 0.3])
+other = np.concatenate(others) if others else np.zeros((0, 3), np.float32)
 np.savez(os.path.join(hero.data, 'head.npz'), co=co, nrm=nrm.reshape(-1, 3), tris=tris, mats=mats, matnames=np.array([m.name for m in me.materials]),
-         **{'bone_' + k: v for k, v in bones.items()}, **balls)
-print('dumped', n, len(tris))
+         other=other, **{'bone_' + k: v for k, v in bones.items()}, **balls)
+print('dumped', n, len(tris), 'other', len(other))
