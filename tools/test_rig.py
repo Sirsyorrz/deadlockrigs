@@ -131,6 +131,20 @@ for limb, s in limbs:
     worst = max((before[n].translation - after[n].translation).length for n in before if not n.startswith(HELPERS))
     check(f'snap IK->FK {limb}_{s}', worst < 0.001 and arm[f'ik_{limb}_{s}'] == 0.0, f'{worst * 1000:.2f} mm')
 
+# snapping to the mode a limb is already in leaves the pose alone
+for limb, s in limbs:
+    up, lo, end, ctrl = names(limb, s)
+    reset()
+    m = pb[ctrl].matrix.copy()
+    m.translation = m.translation.lerp(pb[up].head, 0.33)
+    pb[ctrl].matrix = m
+    update()
+    before = pb[end].head.copy()
+    r = bpy.ops.dlrig.snap(limb=limb, side=s, to_ik=True)
+    update()
+    moved = (pb[end].head - before).length
+    check(f'snap to IK while in IK {limb}_{s}', r == {'CANCELLED'} and moved < 1e-5, f'{moved * 1000:.2f} mm')
+
 # IK tweaks rotate the limb bones on top of IK, the lower bone follows the upper's tweak
 for limb, s in limbs:
     up, lo, end, _ = names(limb, s)

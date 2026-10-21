@@ -271,7 +271,19 @@ class DLRIG_OT_snap(bpy.types.Operator):
         prop = f'ik_{self.limb}_{self.side}'
         up, lo, end, ik, pole, dist = limb_names(self.limb, self.side)
         pb = ob.pose.bones
-        key = autokey(context)
+        # without auto-key, the snapped pose would still be thrown away on the next frame change wherever the
+        # action already animates these bones (or the switch itself), so those get keyed anyway
+        cb = channelbag(ob, create=False)
+        names = (up, lo, end, ik, pole) + tweak_names(self.limb, self.side)
+        animated = cb is not None and any(f.data_path == f'["{prop}"]' or
+                                          (f.data_path.startswith('pose.bones["') and f.data_path.split('"')[1] in names)
+                                          for f in cb.fcurves)
+        key = autokey(context) or animated
+        # snapping "to IK" while already in IK would rebuild the IK pose from the FK bones, which have not
+        # moved (usually the rest pose), so the limb would jump back
+        if (ob[prop] >= 0.5) == self.to_ik:
+            self.report({'INFO'}, f'Already in {"IK" if self.to_ik else "FK"}')
+            return {'CANCELLED'}
         if self.to_ik:
             ob[prop] = 0.0
             clear_tweaks(ob, self.limb, self.side, key)
@@ -287,7 +299,7 @@ class DLRIG_OT_snap(bpy.types.Operator):
                 pb[n].matrix = mats[n]
                 update(context)
                 if key:
-                    key_bone(pb[n], loc=False)
+                    key_bone(pb[n])
         if key:
             ob.keyframe_insert(f'["{prop}"]', group='FK/IK')
         update(context)
@@ -885,14 +897,14 @@ class DLRIG_PT_body(bpy.types.Panel):
                 p = f'ik_{limb}_{s}'
                 if p not in ob:
                     continue
+                is_ik = ob[p] >= 0.5
                 row = col.row(align=True)
-                row.prop(ob, f'["{p}"]', text=f'{side} {limb}  IK', slider=True)
-                op = row.operator('dlrig.snap', text='', icon='CON_KINEMATIC')
-                op.limb, op.side, op.to_ik = limb, s, True
-                op = row.operator('dlrig.snap', text='', icon='BONE_DATA')
-                op.limb, op.side, op.to_ik = limb, s, False
-        col.label(text='Icons: switch to IK / to FK without a jump', icon='INFO')
-        col.label(text='In IK, the rings on the limbs rotate them on top of IK', icon='INFO')
+                row.label(text=f'{side} {limb}: {"IK" if is_ik else "FK"}',
+                          icon='CON_KINEMATIC' if is_ik else 'BONE_DATA')
+                op = row.operator('dlrig.snap', text='Switch to FK' if is_ik else 'Switch to IK')
+                op.limb, op.side, op.to_ik = limb, s, not is_ik
+        col.label(text='Switching keeps the pose', icon='INFO')
+        col.label(text='IK: rings rotate bones too', icon='INFO')
         col.operator('dlrig.bake_ik', icon='CON_KINEMATIC').limbs = 'ALL'
 
 
