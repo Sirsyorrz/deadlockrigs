@@ -26,7 +26,7 @@ import sys
 
 import numpy as np
 from scipy.sparse import coo_matrix
-from scipy.sparse.csgraph import connected_components
+from scipy.sparse.csgraph import connected_components, dijkstra
 from scipy.spatial import cKDTree
 
 import facegeo as fg
@@ -153,8 +153,8 @@ class Rig:
         teeth[h.weld[mats[h.vmat]]] = True
         self.teeth_w = teeth & ~self.soft_w
         self._mouth()
-        if self.hole is not None:
-            # the caller builds a mouth bag onto this edge and starts over (make_bag)
+        if self.hole is not None or self.fused is not None:
+            # the caller opens the lips (fused) or builds a mouth bag onto the edge (add_bag) and starts over
             return
         self.face_w = self.soft_w & ~self.bag
         self.handles = {}
@@ -241,6 +241,7 @@ class Rig:
         centre = np.array([0, self.jaw_pivot[1] - 0.06 * s, ez - 0.08 * s])
         win = (np.abs(p[:, 0]) < 0.05 * s) & (np.abs(p[:, 2] - centre[2]) < 0.04 * s) \
             & (p[:, 1] < self.jaw_pivot[1] + 0.05 * s)
+        self.fused = None
         self.hole = self.mouth_hole(win)
         if self.hole is not None:
             return
@@ -250,7 +251,10 @@ class Rig:
         _, lab = connected_components(h.wgraph[closed][:, closed], directed=False)
         mid = np.abs(p[ids, 0]) < 0.01 * s
         if not mid.any():
-            sys.exit('no mouth bag behind the lips (fused lips?): this head needs another jaw setup')
+            self.fused = self.lip_strip()
+            if self.fused is not None:
+                return
+            sys.exit('no mouth bag behind the lips and no lip line to open: this head needs another jaw setup')
         size = np.bincount(lab[mid], minlength=lab.max() + 1)
         self.bag = np.zeros(self.nw, bool)
         self.bag[ids[lab == size.argmax()]] = True
@@ -281,6 +285,50 @@ class Rig:
         self.bag_u = np.where(self.bag & upper)[0]
         self.bag_l = np.where(self.bag & ~upper)[0]
 
+    def lip_strip(self):
+        """Unwelded triangle ids joining the lips where they are one surface (The Doorman's sculpted closed mouth):
+        a band one triangle thick between the upper lip's underside (facing down) and the lower lip's top (facing
+        up), under a few mm tall. None if there is no such band across the middle."""
+        h, s, p = self.h, self.s, self.h.wco
+        tw = h.weld[h.tris]
+        nz = h.wnrm[tw, 2]
+        c = p[tw].mean(1)
+        strip = ((nz.min(1) < -0.3) & (nz.max(1) > 0.2) & (np.ptp(p[tw, 2], axis=1) < 0.0025 * s)
+                 & self.soft_w[tw].all(1) & (np.abs(c[:, 0]) < 0.045 * s)
+                 & (c[:, 2] < self.ez - 0.06 * s) & (c[:, 2] > self.ez - 0.13 * s))
+        ids = np.where(strip)[0]
+        if not len(ids):
+            return None
+        nt = len(tw)
+        e = np.concatenate([np.c_[ids, nt + tw[ids, k]] for k in range(3)])
+        _, lab = connected_components(coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])),
+                                                 shape=(nt + self.nw, nt + self.nw)), directed=False)
+        best = None
+        for k in np.unique(lab[ids]):
+            ts = ids[lab[ids] == k]
+            # the lip line crosses the middle and reaches out to both corners
+            if (c[ts, 0].min() < -0.015 * s and c[ts, 0].max() > 0.015 * s
+                    and (best is None or np.ptp(c[ts, 0]) > np.ptp(c[best, 0]))):
+                best = ts
+        if best is None:
+            return None
+        # where the lips pinch together (a vertex both edges share once the band is gone) is the corner: the band
+        # past it opened a torn sliver out in the cheek (The Doorman's)
+        keep = np.ones(len(tw), bool)
+        keep[best] = False
+        k = tw[keep]
+        e = np.sort(np.concatenate([k[:, [0, 1]], k[:, [1, 2]], k[:, [2, 0]]]), axis=1)
+        u, cnt = np.unique(e, axis=0, return_counts=True)
+        deg = np.bincount(u[cnt == 1].ravel(), minlength=self.nw)
+        band = np.unique(tw[best])
+        pinch = band[deg[band] >= 4]
+        for sx in (1, -1):
+            side = pinch[p[pinch, 0] * sx > 0.01 * s]
+            if len(side):
+                limit = np.abs(p[side, 0]).min()
+                best = best[~((c[best, 0] * sx > 0) & (np.abs(c[best, 0]) > limit))]
+        return best
+
     def mouth_hole(self, win):
         """The skin's open edge between the lips, ordered around, when the mouth is a hole into the head with no
         bag behind it (Venator's), else None."""
@@ -298,19 +346,31 @@ class Rig:
             loop_e = open_e[lab[open_e[:, 0]] == k]
             ids = np.unique(loop_e)
             # a mouth edge crosses the middle, spans both sides, and closes on itself
-            if (len(ids) < 12 or not (np.abs(p[ids, 0]) < 0.004 * s).any() or np.ptp(p[ids, 0]) < 0.03 * s
-                    or len(loop_e) != len(ids)):
+            if len(ids) < 12 or not (np.abs(p[ids, 0]) < 0.004 * s).any() or np.ptp(p[ids, 0]) < 0.03 * s:
                 continue
-            nbr = {i: [] for i in ids}
-            for a, b in loop_e:
-                nbr[a].append(b)
-                nbr[b].append(a)
-            order, prev = [ids[0]], None
-            while len(order) < len(ids):
-                nxt = next(n for n in nbr[order[-1]] if n != prev)
-                prev = order[-1]
-                order.append(nxt)
-            return np.array(order)
+            # corner to corner twice (once along each lip), so stray open edges (a hole cut open with a spare
+            # face or two) don't break the loop
+            lens = np.linalg.norm(p[loop_e[:, 0]] - p[loop_e[:, 1]], axis=1)
+            g = coo_matrix((lens, (loop_e[:, 0], loop_e[:, 1])), shape=(self.nw, self.nw)).tocsr()
+            g = g.maximum(g.T)
+            a, b = ids[p[ids, 0].argmax()], ids[p[ids, 0].argmin()]
+            chains = []
+            for _ in range(2):
+                d, pred = dijkstra(g, directed=False, indices=a, return_predecessors=True)
+                if not np.isfinite(d[b]):
+                    break
+                path = [b]
+                while path[-1] != a:
+                    path.append(pred[path[-1]])
+                chains.append(path[::-1])
+                # drop the edges used, not the vertices: the lips can pinch together at a vertex both share
+                g = g.tolil()
+                for i, j in zip(path[:-1], path[1:]):
+                    g[i, j] = g[j, i] = 0
+                g = g.tocsr()
+            if len(chains) < 2:
+                continue
+            return np.array(chains[0] + chains[1][::-1][1:-1])
         return None
 
     # lids
@@ -1050,9 +1110,10 @@ def add_bag(d, h, rig, rings=10):
     ring_pts = []
     for k in range(rings + 1):
         t = k / rings
-        f = smoothstep(0, 0.4, t)
+        # straight back first (the lips' inner faces), then out around the teeth, so the walls stay inside the cheeks
+        f = smoothstep(0.35, 0.8, t)
         xz = v[:, [0, 2]] * (1 - f) + ell * f
-        y = v[:, 1] + (y_back - v[:, 1]) * t
+        y = v[:, 1] + (y_back - v[:, 1]) * t ** 0.7
         ring_pts.append(np.c_[xz[:, 0], y, xz[:, 1]])
     cap = np.array([[0, y_back + 0.004 * s, zc]])
     co = np.concatenate(ring_pts + [cap])
@@ -1093,6 +1154,15 @@ if __name__ == '__main__':
     n_head = len(h.co)
     bag_mesh = None
     probe = Rig(h)
+    cut = None
+    if probe.fused is not None:
+        # open the sculpted closed lips by dropping the faces joining them; build.py drops the same faces
+        cut = probe.fused
+        arrays['tris'] = np.delete(arrays['tris'], cut, axis=0)
+        arrays['mats'] = np.delete(arrays['mats'], cut)
+        h = fg.from_arrays(arrays)
+        probe = Rig(h)
+        print('opened the lips:', len(cut), 'faces')
     if probe.hole is not None:
         arrays, bco, btris = add_bag(arrays, h, probe)
         h = fg.from_arrays(arrays)
@@ -1124,6 +1194,11 @@ if __name__ == '__main__':
     tk = tongue_keys(rig, tco, tw, tu, keys)
     print('tongue', len(tco), 'verts, jaw weight %.2f..%.2f' % (tw.min(), tw.max()))
     np.savez_compressed(base + '_tongue.npz', co=tco, tris=ttris, **{'key_' + k: v for k, v in tk.items()})
+    cut_path = base + '_cut.npy'
+    if cut is not None:
+        np.save(cut_path, cut)
+    elif os.path.exists(cut_path):
+        os.remove(cut_path)
     mouth_path = base + '_mouth.npz'
     if bag_mesh is not None:
         np.savez_compressed(mouth_path, co=bag_mesh[0], tris=bag_mesh[1],

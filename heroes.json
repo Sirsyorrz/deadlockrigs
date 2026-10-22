@@ -273,7 +273,11 @@
   "slug": "the_doorman",
   "name": "The Doorman",
   "codename": "doorman",
-  "model": "models/heroes_wip/doorman_v2/doorman.vmdl"
+  "model": "models/heroes_wip/doorman_v2/doorman.vmdl",
+  "face": {
+   "part": "head",
+   "mesh": "head"
+  }
  },
  {
   "slug": "venator",

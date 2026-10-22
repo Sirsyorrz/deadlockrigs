@@ -89,6 +89,16 @@ if hero.face:
     me = head.data
     inv = np.array(head.matrix_world.inverted().to_3x3())
     n_head = len(me.vertices)
+    # keys.py opened sculpted closed lips by dropping the faces joining them (dump.py's triangles are the polygons)
+    cut_path = keys_path.replace('.npz', '_cut.npy')
+    if os.path.exists(cut_path):
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bm.faces.ensure_lookup_table()
+        bmesh.ops.delete(bm, geom=[bm.faces[int(i)] for i in np.load(cut_path)], context='FACES_ONLY')
+        bm.to_mesh(me)
+        bm.free()
+        assert len(me.vertices) == n_head
     # generated parts after the head's own vertices, in the order keys.py's keys expect: mouth bag, then tongue
     extra = []
     for suffix, mat in (('_mouth.npz', interior_material), ('_tongue.npz', tongue_material)):
