@@ -2,10 +2,18 @@
 # ./make.sh <hero|all> [step...]     steps: extract data base anims rig test (default: all of them)
 # Builds heroes/<hero>/out/<hero>_rig.blend (+ <hero>_anims.blend, <hero>.blend/.glb/.fbx) from the game files.
 # KEEP=1 keeps the animation glb and the decompiled dmx files (large, only needed to rebuild).
+# OLD=4.4 builds with older-versions/blender-4.4*/ into heroes/<hero>/out-4.4/ (5.x .blend files don't open before 4.5).
 set -eo pipefail
 cd "$(dirname "$0")"
 ROOT=$PWD
 B=${BLENDER:-~/.local/share/Steam/steamapps/common/Blender/blender}
+OUT=out
+if [ -n "$OLD" ]; then
+  B=$(ls -d "$ROOT"/older-versions/blender-"$OLD"*/blender 2>/dev/null | sort -V | tail -1)
+  [ -x "$B" ] || { echo "no Blender $OLD in older-versions/"; exit 1; }
+  OUT=out-$OLD
+fi
+export DLRIG_OUT=$OUT
 V=${S2V:-~/Documents/GitHub/deadlock-forge/tools/vrf/Source2Viewer-CLI}
 PAK=${PAK:-~/.local/share/Steam/steamapps/common/Deadlock/game/citadel/pak01_dir.vpk}
 
@@ -18,14 +26,14 @@ build() {
   local model; model=$(field "$hero" model)
   local dir=$ROOT/heroes/$hero
   local stem=${model%.vmdl}
-  mkdir -p "$dir"/{raw,anim,dec,data,out}
+  mkdir -p "$dir"/{raw,anim,dec,data,$OUT}
   echo "== $hero ($model): $steps"
   for step in $steps; do
     case $step in
       extract)
         [ -f "$dir/raw/$stem.glb" ] || $V -i $PAK -f "${model}_c" -o "$dir/raw" --gltf_export_format glb \
           --gltf_export_materials --gltf_textures_adapt --gltf_export_extras > "$dir/extract.log" 2>&1
-        [ -f "$dir/anim/$stem.glb" ] || [ -f "$dir/out/${hero}_anims.blend" ] || $V -i $PAK -f "${model}_c" \
+        [ -f "$dir/anim/$stem.glb" ] || [ -f "$dir/$OUT/${hero}_anims.blend" ] || $V -i $PAK -f "${model}_c" \
           -o "$dir/anim" --gltf_export_format glb --gltf_export_animations --gltf_compose_additive >> "$dir/extract.log" 2>&1
         if [ ! -f "$dir/dec/$model" ]; then
           $V -i $PAK -f "${model}_c" -o "$dir/dec" -d >> "$dir/extract.log" 2>&1
@@ -41,27 +49,27 @@ build() {
         fi
         ;;
       base)
-        rm -f "$dir/out/$hero.blend"
+        rm -f "$dir/$OUT/$hero.blend"
         $B -b -P tools/build.py -- "$hero" 2>&1 | grep -E "^(meshes|shape keys|wrote|mesh without)|Error|Traceback" || true
-        [ -f "$dir/out/$hero.blend" ]
+        [ -f "$dir/$OUT/$hero.blend" ]
         ;;
       anims)
         if [ -f "$dir/anim/$stem.glb" ]; then
-          rm -f "$dir/out/${hero}_anims.blend"
+          rm -f "$dir/$OUT/${hero}_anims.blend"
           $B -b -P tools/anims.py -- "$hero" 2>&1 | grep -E "^clips|Error|Traceback" || true
-          [ -f "$dir/out/${hero}_anims.blend" ]
+          [ -f "$dir/$OUT/${hero}_anims.blend" ]
           [ -n "$KEEP" ] || rm -rf "$dir/anim"
         fi
         ;;
       rig)
-        rm -f "$dir/out/${hero}_rig.blend"
-        $B -b "$dir/out/$hero.blend" -P tools/rig.py -- "$hero" 2>&1 \
+        rm -f "$dir/$OUT/${hero}_rig.blend"
+        $B -b "$dir/$OUT/$hero.blend" -P tools/rig.py -- "$hero" 2>&1 \
           | grep -E "^(IK|skipping|WARNING|wrote|twist)|Error|Traceback" || true
-        [ -f "$dir/out/${hero}_rig.blend" ]
+        [ -f "$dir/$OUT/${hero}_rig.blend" ]
         ;;
       test)
-        $B -b "$dir/out/${hero}_rig.blend" -P tools/test_rig.py 2>&1 | grep -E "^(PASS|FAIL|clips)|Error|Traceback" \
-          | tee "$dir/test.log"
+        $B -b "$dir/$OUT/${hero}_rig.blend" -P tools/test_rig.py 2>&1 | grep -E "^(PASS|FAIL|clips)|Error|Traceback" \
+          | tee "$dir/test${OLD:+-$OLD}.log"
         ;;
       *) echo "unknown step $step"; exit 1 ;;
     esac

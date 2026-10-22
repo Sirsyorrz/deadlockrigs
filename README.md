@@ -32,6 +32,14 @@ The steps run in order: `extract data base anims rig test`.
 | `rig` | The rig (needs the two files above) | `out/<hero>_rig.blend` |
 | `test` | Numeric checks (IK reach, snapping, tweaks, twist vs game, physics, clip loading) | `test.log` |
 
+Blender 5.x writes a .blend format that only 4.5 and newer can open. For Blender 4.4, unpack a portable 4.4 build
+from download.blender.org into `older-versions/` (ignored, e.g. `older-versions/blender-4.4.3-linux-x64/`) and build
+with `OLD=4.4`. The output goes to `heroes/<hero>/out-4.4/` and the test log to `test-4.4.log`, next to the normal
+`out/`. `anims` needs the animation glb, so use `KEEP=1` on whichever build runs first, or `extract` again.
+
+    KEEP=1 ./make.sh violet
+    OLD=4.4 ./make.sh violet base anims rig test
+
 `KEEP=1` keeps the big intermediate files (animation glb, decompiled dmx). Without it they are deleted after use.
 
 `heroes.json` lists the heroes: slug, display name, codename and model. It also holds optional per-hero settings:

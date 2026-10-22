@@ -22,7 +22,7 @@ class Hero:
         self.anim_glb = os.path.join(self.dir, 'anim', stem + '.glb')
         self.vmdl = os.path.join(self.dir, 'dec', self.model)
         self.data = os.path.join(self.dir, 'data')
-        self.out = os.path.join(self.dir, 'out')
+        self.out = os.path.join(self.dir, os.environ.get('DLRIG_OUT', 'out'))
         self.face = cfg.get('face')
         self.rename = cfg.get('rename', {})
         self.drop = set(cfg.get('drop', []))

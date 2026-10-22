@@ -96,6 +96,14 @@ def channelbag(ob, create=True):
     return cb
 
 
+def new_fcurve(cb, path, index, group):
+    # fcurves.new() has no group_name before Blender 4.5
+    fc = cb.fcurves.new(path, index=index)
+    if group:
+        fc.group = cb.groups.get(group) or cb.groups.new(group)
+    return fc
+
+
 # ---------------------------------------------------------------- faces and hands
 
 
@@ -470,7 +478,7 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
             off = sc.frame_current - start
             for f in cb_src.fcurves:
                 dst = cb.fcurves.find(f.data_path, index=f.array_index) or \
-                    cb.fcurves.new(f.data_path, index=f.array_index, group_name=f.group.name if f.group else '')
+                    new_fcurve(cb, f.data_path, f.array_index, f.group.name if f.group else '')
                 for k in f.keyframe_points:
                     dst.keyframe_points.insert(k.co[0] + off, k.co[1], options={'FAST'})
                 dst.update()
@@ -536,8 +544,8 @@ Combine mode, so your own keys still work; change its strength in the panel)"""
                 return Vector([c.evaluate(f) if c else 0.0 for c in fl])
 
             q0, l0 = q_at(f0), l_at(f0)
-            out_q = [cb.fcurves.new(path_q, index=i, group_name=bone) for i in range(4)]
-            out_l = [cb.fcurves.new(path_l, index=i, group_name=bone) for i in range(3)]
+            out_q = [new_fcurve(cb, path_q, i, bone) for i in range(4)]
+            out_l = [new_fcurve(cb, path_l, i, bone) for i in range(3)]
             for f in range(f0, f1 + 1):
                 dq = q0.inverted() @ q_at(f)
                 dl = l_at(f) - l0
@@ -809,7 +817,7 @@ Uses the game's own cloth settings and body collision capsules"""
         for bones in chain_bones:
             for b in bones[:-1]:
                 path = f'pose.bones["PHYS-{b}"].rotation_quaternion'
-                curves[b] = [cb.fcurves.new(path, index=i, group_name='Physics') for i in range(4)]
+                curves[b] = [new_fcurve(cb, path, i, 'Physics') for i in range(4)]
                 for fc in curves[b]:
                     fc.keyframe_points.add(len(frames))
         mw_rot = ob.matrix_world.to_quaternion()

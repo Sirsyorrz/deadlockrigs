@@ -46,9 +46,11 @@ arm = next(o for o in bpy.data.objects if 'dlrig' in o)
 
 
 def select_bone(name):
-    for pb in arm.pose.bones:
-        pb.select = False
-    arm.pose.bones[name].select = True
+    # selection is on Bone before Blender 5.0
+    bones = arm.pose.bones if hasattr(arm.pose.bones[0], 'select') else arm.data.bones
+    for b in bones:
+        b.select = False
+    bones[name].select = True
     arm.data.bones.active = arm.data.bones[name]
 
 

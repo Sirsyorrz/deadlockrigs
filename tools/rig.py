@@ -632,13 +632,15 @@ for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
     c.subtarget = 'IKC-' + end
     c.target_space = c.owner_space = 'LOCAL'
 
-# only the active mode's limb controls are shown
+# only the active mode's limb controls are shown; pose bone visibility is on Bone before 5.0
+POSE_HIDE = 'hide' in bpy.types.PoseBone.bl_rna.properties
 for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
     fk = (a_, b_, c_)
     ik_bones = (ik_name, f'pole_{limb}', f'IK_tweak_{a_}', f'IK_tweak_{b_}')
     for names, expr in ((fk, 'ik > 0.5'), (ik_bones, 'ik < 0.5')):
         for n in names:
-            d = arm.driver_add(f'pose.bones["{n}_{s}"].hide').driver
+            d = (arm.driver_add(f'pose.bones["{n}_{s}"].hide') if POSE_HIDE else
+                 arm.data.driver_add(f'bones["{n}_{s}"].hide')).driver
             d.type = 'SCRIPTED'
             v = d.variables.new()
             v.name = 'ik'
@@ -879,15 +881,23 @@ with open(cat_file, 'w') as f:
 arm.animation_data_create()
 
 
+def ensure_fcurve(a, path, index, group):
+    # fcurve_ensure_for_datablock() has no group_name before Blender 4.5
+    fc = a.fcurve_ensure_for_datablock(arm, path, index=index)
+    cb = a.layers[0].strips[0].channelbags[0]
+    fc.group = cb.groups.get(group) or cb.groups.new(group)
+    return fc
+
+
 def pose_asset(name, catalog, props=None, rots=None):
     a = bpy.data.actions.new(name)
     arm.animation_data.action = a
     for k in ARKIT if props is not None else ():
-        fc = a.fcurve_ensure_for_datablock(arm, f'pose.bones["{FACE}"]["{k}"]', index=0, group_name=FACE)
+        fc = ensure_fcurve(a, f'pose.bones["{FACE}"]["{k}"]', 0, FACE)
         fc.keyframe_points.insert(1, props.get(k, 0.0))
     for bone, q in (rots or {}).items():
         for i, v in enumerate(q):
-            fc = a.fcurve_ensure_for_datablock(arm, f'pose.bones["{bone}"].rotation_quaternion', index=i, group_name=bone)
+            fc = ensure_fcurve(a, f'pose.bones["{bone}"].rotation_quaternion', i, bone)
             fc.keyframe_points.insert(1, v)
     arm.animation_data.action = None
     a.asset_mark()
