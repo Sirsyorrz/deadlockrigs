@@ -45,9 +45,11 @@ with `OLD=4.4`. The output goes to `heroes/<hero>/out-4.4/` and the test log to 
 `heroes.json` lists the heroes: slug, display name, codename and model. It also holds optional per-hero settings:
 - `rename` / `drop`: rename or remove mesh parts
 - `cloth_links`: neighbouring cloth chains to hold together
+- `split`: object name -> materials to move out of their mesh into a separate object (Violet's portfolio and
+  brush), so they can be hidden or deleted
 - `props`: held props (Abrams' book). The prop's bone gets a box control in the Props collection, and its default
   hold comes from the idle clip. An optional `chain` (with `chain_end` and `anchor`) stays attached to the prop
-  through IK.
+  through IK. `"hold": false` is for worn props (Violet's portfolio) that already sit in place at rest.
 - `face`: face shape keys. `part` is the head mesh's vmdl part, `mesh` its object name after `rename`. Optional
   `controls` places the face controls by hand (Violet); without it they come from `data/face.json`
 
@@ -69,6 +71,8 @@ the hero, in Pose Mode on the armature.
 - Hands: Relaxed, Fist, Point, Peace, Thumbs Up, Open, Grip (also in the Asset Browser).
 - Held props (Abrams' book): move or rotate the box around the prop. It follows the hand, and the chain to the cuff
   follows the book. "Chain follows prop" in Arms & Legs turns that off. Reset puts the book back in his hand.
+  Violet's portfolio works the same way (box around bag and strap, follows the chest); it and her brush are separate
+  objects (`Portfolio`, `Brush`) you can hide or delete.
 - Face (heroes with face keys): circles on the face, a `FACE` box with 51 ARKit sliders, expressions and mouth
   shapes.
 

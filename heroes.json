@@ -276,6 +276,22 @@
   "drop": [
    "jar"
   ],
+  "split": {
+   "Portfolio": [
+    "artist_portfolio",
+    "artist_portfolio_paper",
+    "artist_portfolio_stickers"
+   ],
+   "Brush": [
+    "artist_weapon"
+   ]
+  },
+  "props": [
+   {
+    "bone": "portfolio_shoulder",
+    "hold": false
+   }
+  ],
   "face": {
    "part": "head",
    "mesh": "Head",

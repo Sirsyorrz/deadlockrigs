@@ -178,6 +178,9 @@ def sample_hold(bones):
 
 PROP_POSE, PROP_CHAINS = {}, []
 for prop in PROPS:
+    if not prop.get('hold', True):
+        # worn props (Violet's portfolio) already sit on the body at rest
+        continue
     chain = prop.get('chain', [])
     held = [b for b in descendants(prop['bone']) if b not in chain and b != prop.get('chain_end')]
     extra = chain + [prop['chain_end'], prop['anchor'], B[chain[0]].parent.name] if chain else []
