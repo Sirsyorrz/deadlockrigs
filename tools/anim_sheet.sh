@@ -1,7 +1,7 @@
 #!/bin/bash
 # tools/anim_sheet.sh blend clip frames view physics loop out.png
 set -e
-B=~/.local/share/Steam/steamapps/common/Blender/blender
+B=${BLENDER:-blender}
 tmp=$(mktemp -d)
 $B -b "$1" -P "$(dirname "$0")/anim_views.py" -- "$tmp/a" "$2" "$3" "$4" "$5" "$6" 2>&1 | grep -E "FINISHED|CANCELLED|Error|rror|Traceback" || true
 files=()

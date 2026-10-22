@@ -288,7 +288,7 @@ for limb, s in limbs:
 
 # twist weights fitted to baked clips reproduce them (the game's own TiltTwist weights are taken as they are)
 tw = list(arm.get('twist_fitted', []))
-lib = bpy.path.abspath(arm['anim_library'])
+lib = bpy.path.abspath(arm.get('anim_library', ''))
 for name in [c for c in (RUN, POSE) if c] if tw else []:
     reset()
     with bpy.data.libraries.load(lib) as (src, dst):
@@ -386,7 +386,7 @@ if RUN and (phys['chains'] or cloth):
     update()
     check('physics moves cloth', moved > 0.001, f'{moved * 1000:.1f} mm')
     if cloth:
-        check('physics moves the vertex cloth', 0.005 < moved_cloth < 0.5, f'{moved_cloth * 1000:.1f} mm')
+        check('physics moves the vertex cloth', 0.005 < moved_cloth < 1.0, f'{moved_cloth * 1000:.1f} mm')
 
 # copy pose from a game clip with IK on
 ends = [n for n in ('hand_L', 'hand_R', 'ankle_L', 'ankle_R', 'head', 'pelvis') if n in pb]

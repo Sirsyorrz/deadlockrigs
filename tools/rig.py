@@ -23,7 +23,7 @@ import sys
 import uuid
 
 import bpy
-from mathutils import Quaternion, Vector
+from mathutils import Matrix, Quaternion, Vector
 
 sys.path.insert(0, os.path.dirname(__file__))
 from expressions import ARKIT, EXPRESSIONS, GROUPS, VISEMES  # noqa: E402
@@ -198,6 +198,10 @@ if HAS_FACE:
 # frame of an idle clip (at rest it sits at the origin), and a chain tying it to the hand stays attached through IK
 
 PROPS = hero.cfg.get('props', [])
+# with the clip library (dev builds) the grips and twist weights are sampled and saved to rigdata/<hero>.json; builds
+# without it (the add-on) read them back, so both rigs come out the same
+HAVE_CLIPS = os.path.exists(hero.anims_blend)
+RIGDATA = json.load(open(hero.rigdata)) if os.path.exists(hero.rigdata) else {}
 HOLD_CLIPS = ('game_out_of_combat_stand_idle', 'game_primary_stand_idle', 'game_weapon_stand_idle', 'game_stand_idle')
 
 
@@ -205,8 +209,14 @@ def descendants(name):
     return [name] + [c.name for c in B[name].children_recursive]
 
 
-def sample_hold(bones):
+def sample_hold(key, bones):
     """Basis (of the keyed bones) and armature-space matrices of bones on the first frame of the hold clip."""
+    if not HAVE_CLIPS:
+        saved = RIGDATA.get('hold', {}).get(key)
+        if saved is None:
+            print(f'WARNING: no clips and no saved grip for {key}, it stays at rest')
+            return None, None
+        return saved['basis'], {b: Matrix(m) for b, m in saved['mats'].items()}
     with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
         dst.actions = [next(n for n in HOLD_CLIPS if n in src.actions)]
     a = dst.actions[0]
@@ -225,6 +235,7 @@ def sample_hold(bones):
     for b in pbs:
         b.location, b.rotation_quaternion, b.scale = (0, 0, 0), (1, 0, 0, 0), (1, 1, 1)
     bpy.context.view_layer.update()
+    RIGDATA.setdefault('hold', {})[key] = {'basis': basis, 'mats': {b: [list(r) for r in m] for b, m in mats.items()}}
     return basis, mats
 
 
@@ -236,7 +247,9 @@ for prop in PROPS:
     chain = prop.get('chain', [])
     held = [b for b in descendants(prop['bone']) if b not in chain and b != prop.get('chain_end')]
     extra = chain + [prop['chain_end'], prop['anchor'], B[chain[0]].parent.name] if chain else []
-    basis, idle = sample_hold(held + extra)
+    basis, idle = sample_hold(prop['bone'], held + extra)
+    if basis is None:
+        continue
     # the chain end's own keyed offset is part of how it meets the prop
     PROP_POSE.update({b: v for b, v in basis.items() if b in held or b == prop.get('chain_end')})
     if chain:
@@ -889,7 +902,16 @@ def fit_twists():
     for t in TWISTS:
         if t[0] in GAME_TWIST:
             print(f'twist {t[0]}: weight {t[1]:+.3f} from the game')
-    if not tws or not os.path.exists(hero.anims_blend):
+    if tws and not HAVE_CLIPS:
+        saved = RIGDATA.get('twists', {})
+        for b in tws:
+            if b in saved:
+                c = arm.pose.bones[b].constraints['Twist']
+                c.to_min_y_rot, c.to_max_y_rot = -math.pi * saved[b], math.pi * saved[b]
+                print(f'twist {b}: weight {saved[b]:+.3f} saved')
+        arm['twist_fitted'] = RIGDATA.get('twist_fitted', [])
+        return
+    if not tws:
         return
     with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
         pref = ['game_out_of_combat_run_n', 'game_ui_hero_select', 'game_out_of_combat_stand_idle', 'game_jump_ground',
@@ -953,6 +975,7 @@ def fit_twists():
             msg = f'mean error {math.degrees(err[b][weights.index(w)] / n):.2f} deg vs baked clips'
             fitted.append(b)
         c.to_min_y_rot, c.to_max_y_rot = -math.pi * w, math.pi * w
+        RIGDATA.setdefault('twists', {})[b] = w
         print(f'twist {b}: weight {w:+.3f} fitted, {msg}')
     arm.animation_data.action = None
     for a in clips:
@@ -968,6 +991,7 @@ def fit_twists():
         m.show_viewport = True
     sc.frame_set(0)
     arm['twist_fitted'] = fitted
+    RIGDATA['twist_fitted'] = fitted
 
 
 fit_twists()
@@ -1183,7 +1207,12 @@ header = (f'HERO = {hero.name!r}\nHAS_FACE = {HAS_FACE!r}\nCLOTH_LINKS = {hero.c
 with open(os.path.join(os.path.dirname(__file__), 'rig_ui.py')) as f:
     ui.write(header + f.read())
 ui.use_module = True
-arm['anim_library'] = '//' + os.path.basename(hero.anims_blend)
+if HAVE_CLIPS:
+    arm['anim_library'] = '//' + os.path.basename(hero.anims_blend)
+    # the add-on's copy of rigdata/ is not ours to rewrite
+    if RIGDATA and not os.environ.get('DLRIG_ADDON'):
+        os.makedirs(os.path.dirname(hero.rigdata), exist_ok=True)
+        json.dump(RIGDATA, open(hero.rigdata, 'w'), indent=1, sort_keys=True)
 arm['dlrig'] = hero.slug
 arm['rig_scale'] = SCALE
 # the timeline otherwise only shows keys of the selected bones in pose mode
@@ -1197,6 +1226,13 @@ for scr in bpy.data.screens:
                 sp.dopesheet.show_only_selected = False
             if sp.type == 'VIEW_3D':
                 sp.show_region_ui = True
+
+# one collection per hero, so the add-on can append the rig into another scene
+hero_coll = bpy.data.collections.new(hero.name)
+bpy.context.scene.collection.children.link(hero_coll)
+for o in list(bpy.context.scene.collection.objects):
+    hero_coll.objects.link(o)
+    bpy.context.scene.collection.objects.unlink(o)
 
 bpy.ops.object.mode_set(mode='POSE')
 bpy.ops.wm.save_as_mainfile(filepath=out)

@@ -1,0 +1,19 @@
+schema_version = "1.0.0"
+
+id = "deadlock_rigs"
+version = "0.1.0"
+name = "Deadlock Rigs"
+tagline = "Build animation rigs of Deadlock heroes from your own game files"
+maintainer = "Sirsyorrz"
+type = "add-on"
+website = "https://github.com/Sirsyorrz/deadlockrigs"
+tags = ["Rigging", "Animation", "Import-Export"]
+
+# the face keys need scipy built for Blender's Python 3.13
+blender_version_min = "5.1.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Read the Deadlock install and write rigs to the output folder"
+network = "Download Source2Viewer-CLI on first use"

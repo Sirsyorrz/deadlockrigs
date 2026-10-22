@@ -2,6 +2,7 @@
 # (ARKIT, GROUPS, EXPRESSIONS, VISEMES, HAND_POSES) and stores this as a registered text block.
 import json
 import math
+import os
 import time
 
 import bpy
@@ -389,10 +390,15 @@ Use it on game animations to edit them with IK"""
 _clips = []
 
 
+def anim_library(ob):
+    # the add-on's Export Animations writes <hero>_anims.blend next to rigs it built earlier, which have no path set
+    return bpy.path.abspath(ob.get('anim_library') or f'//{ob["dlrig"]}_anims.blend')
+
+
 def clip_items(self, context):
     if not _clips:
         ob = rig(context)
-        path = bpy.path.abspath(ob.get('anim_library', '//dlrig_anims.blend')) if ob else ''
+        path = anim_library(ob) if ob else ''
         try:
             with bpy.data.libraries.load(path) as (src, _dst):
                 names = sorted(src.actions)
@@ -403,8 +409,7 @@ def clip_items(self, context):
 
 
 def append_clip(ob, name):
-    path = bpy.path.abspath(ob.get('anim_library', '//dlrig_anims.blend'))
-    with bpy.data.libraries.load(path) as (_src, dst):
+    with bpy.data.libraries.load(anim_library(ob)) as (_src, dst):
         dst.actions = [name]
     a = dst.actions[0]
     a.use_fake_user = False
@@ -1099,6 +1104,11 @@ class DLRIG_PT_game(bpy.types.Panel):
     bl_category = HERO
     bl_label = 'Game Animations'
     bl_parent_id = 'DLRIG_PT_main'
+
+    @classmethod
+    def poll(cls, context):
+        ob = rig(context)
+        return ob is not None and os.path.exists(anim_library(ob))
 
     def draw(self, context):
         col = self.layout.column(align=True)

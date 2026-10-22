@@ -2,7 +2,8 @@
 
 Imports the S2V export, drops the bone display sphere, names the armature after the hero and the meshes after
 their vmdl parts, hides meshes that are not in the default bodygroup choice, adds facial shape keys when the
-hero has a face config, and writes out/<hero>.blend, .glb and .fbx.
+hero has a face config, and writes build/<hero>.blend (the rig step's input). DLRIG_EXPORTS=1 also writes
+out/<hero>.glb and .fbx.
 """
 import os
 import sys
@@ -18,7 +19,7 @@ from hero import from_argv  # noqa: E402
 from tongue_mesh import add_tongue  # noqa: E402
 
 hero, _ = from_argv()
-os.makedirs(hero.out, exist_ok=True)
+os.makedirs(os.path.dirname(hero.base_blend), exist_ok=True)
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=hero.raw_glb)
 
@@ -155,9 +156,12 @@ if hero.face and os.path.exists(bag_path):
             poly.material_index = mi
 
 bpy.ops.wm.save_as_mainfile(filepath=hero.base_blend)
-stem = os.path.join(hero.out, hero.slug)
-bpy.ops.export_scene.gltf(filepath=stem + '.glb', export_format='GLB', export_morph_normal=True,
-                          export_apply=False, export_animations=False, use_visible=True)
-bpy.ops.export_scene.fbx(filepath=stem + '.fbx', path_mode='COPY', embed_textures=True,
-                         add_leaf_bones=False, bake_anim=False, use_visible=True)
-print('wrote', hero.out)
+print('wrote', hero.base_blend)
+if os.environ.get('DLRIG_EXPORTS') == '1':
+    os.makedirs(hero.out, exist_ok=True)
+    stem = os.path.join(hero.out, hero.slug)
+    bpy.ops.export_scene.gltf(filepath=stem + '.glb', export_format='GLB', export_morph_normal=True,
+                              export_apply=False, export_animations=False, use_visible=True)
+    bpy.ops.export_scene.fbx(filepath=stem + '.fbx', path_mode='COPY', embed_textures=True,
+                             add_leaf_bones=False, bake_anim=False, use_visible=True)
+    print('wrote', stem + '.glb/.fbx')
