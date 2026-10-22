@@ -45,6 +45,12 @@ for b in ('head', 'jaw_0', 'eye_0_L', 'eye_0_R', 'neck_0'):
 vmat = np.zeros(len(co), int)
 vmat[tris.ravel()] = np.repeat(mats, 3)
 eye_mat = hero.face.get('eyes')
+if isinstance(eye_mat, list):
+    # roughly where the left eye is (Shiv: no eye bones, eyeballs in the head material); the pieces there are found
+    # by shape below
+    bones['eye_0_L'] = np.array(eye_mat, float)
+    bones['eye_0_R'] = bones['eye_0_L'] * [-1, 1, 1]
+    eye_mat = None
 if eye_mat:
     # eyeballs by material (heroes.json face "eyes"), for heads with no eye bones (Kelvin): each side's eye bone is
     # the centre of the sphere through its vertices
@@ -98,6 +104,21 @@ if not (balls['ball_L'].any() and balls['ball_R'].any()):
         if best is not None:
             balls['ball_' + s] = best
     print('eyeballs found by shape:', int(balls['ball_L'].sum()), int(balls['ball_R'].sum()))
+    if isinstance(hero.face.get('eyes'), list):
+        for s in 'LR':
+            q = co[balls['ball_' + s]]
+            a = np.c_[2 * q, np.ones(len(q))]
+            fit = np.linalg.lstsq(a, (q ** 2).sum(1), rcond=None)[0]
+            c, r = fit[:3], np.sqrt(fit[3] + fit[:3] @ fit[:3])
+            # the cornea shell over the ball (Shiv's) is another small piece: everything small that sits on the sphere
+            for k in np.unique(comp[np.linalg.norm(co - c, axis=1) < r * 1.3]):
+                m = comp == k
+                if np.ptp(co[m], axis=0).max() < 2.5 * r and (np.linalg.norm(co[m] - c, axis=1) < r * 1.3).all():
+                    balls['ball_' + s] |= m
+            q = co[balls['ball_' + s]]
+            a = np.c_[2 * q, np.ones(len(q))]
+            bones[f'eye_0_{s}'] = np.linalg.lstsq(a, (q ** 2).sum(1), rcond=None)[0][:3]
+            print('eye', s, 'centre', np.round(bones[f'eye_0_{s}'], 4))
 # other shown meshes around the head (hair, hats, collars): the face keys must not push skin through them
 parts = mesh_parts(open(hero.vmdl).read())
 others = []

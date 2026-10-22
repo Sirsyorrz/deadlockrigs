@@ -11,6 +11,7 @@ import sys
 import bmesh
 import bpy
 import numpy as np
+from mathutils import Vector
 
 sys.path.insert(0, os.path.dirname(__file__))
 from bodygroups import mesh_parts, split_meshes  # noqa: E402
@@ -77,6 +78,23 @@ if hero.face:
         bm.to_mesh(me)
         bm.free()
         assert len(me.vertices) == n_head
+    # or split them along the upper lip's edge: copies of those vertices for the lower lip's faces
+    split_path = keys_path.replace('.npz', '_split.npz')
+    if os.path.exists(split_path):
+        sp = np.load(split_path)
+        src = sp['src']
+        me.vertices.add(len(src))
+        wl = np.array(head.matrix_world.inverted())
+        for i, (v, off) in enumerate(zip(src, sp['off'])):
+            nv = me.vertices[n_head + i]
+            nv.co = me.vertices[int(v)].co + Vector(off @ wl[:3, :3].T)
+            for g in me.vertices[int(v)].groups:
+                head.vertex_groups[g.group].add([nv.index], g.weight, 'REPLACE')
+        for f, k, nv in sp['rewire']:
+            me.loops[me.polygons[int(f)].loop_start + int(k)].vertex_index = int(nv)
+        me.update(calc_edges=True)
+        n_head = len(me.vertices)
+        print('split the lips:', len(src), 'vertices')
     # generated parts after the head's own vertices, in the order keys.py's keys expect: mouth bag, then tongue
     extra = []
     for suffix, mat in (('_mouth.npz', interior_material), ('_tongue.npz', tongue_material)):

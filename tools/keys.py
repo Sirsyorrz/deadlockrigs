@@ -153,7 +153,7 @@ class Rig:
         teeth[h.weld[mats[h.vmat]]] = True
         self.teeth_w = teeth & ~self.soft_w
         self._mouth()
-        if self.hole is not None or self.fused is not None:
+        if self.hole is not None or self.fused is not None or self.lip_cut is not None:
             # the caller opens the lips (fused) or builds a mouth bag onto the edge (add_bag) and starts over
             return
         self.face_w = self.soft_w & ~self.bag
@@ -242,23 +242,33 @@ class Rig:
         win = (np.abs(p[:, 0]) < 0.05 * s) & (np.abs(p[:, 2] - centre[2]) < 0.04 * s) \
             & (p[:, 1] < self.jaw_pivot[1] + 0.05 * s)
         self.fused = None
+        self.lip_cut = None
         self.hole = self.mouth_hole(win)
         if self.hole is not None:
             return
-        closed = self.enclosed(win, centre, 0.12 * s)
-        # the bag is the biggest closed-in piece around the middle (nostrils and folds are small)
-        ids = np.where(closed)[0]
-        _, lab = connected_components(h.wgraph[closed][:, closed], directed=False)
-        mid = np.abs(p[ids, 0]) < 0.01 * s
-        if not mid.any():
-            self.fused = self.lip_strip()
-            if self.fused is not None:
-                return
-            sys.exit('no mouth bag behind the lips and no lip line to open: this head needs another jaw setup')
-        size = np.bincount(lab[mid], minlength=lab.max() + 1)
-        self.bag = np.zeros(self.nw, bool)
-        self.bag[ids[lab == size.argmax()]] = True
-        self.bag = self.fill(self.bag)
+        gen = np.where(np.char.equal(h.matnames.astype(str), 'mouth_bag'))[0]
+        if len(gen):
+            # a bag add_bag built: its own faces, not whatever the closed-in test makes of them
+            self.bag = np.zeros(self.nw, bool)
+            self.bag[h.weld[np.isin(h.vmat, gen)]] = True
+        else:
+            closed = self.enclosed(win, centre, 0.12 * s)
+            # the bag is the biggest closed-in piece around the middle (nostrils and folds are small)
+            ids = np.where(closed)[0]
+            _, lab = connected_components(h.wgraph[closed][:, closed], directed=False)
+            mid = np.abs(p[ids, 0]) < 0.01 * s
+            if not mid.any():
+                self.fused = self.lip_strip()
+                if self.fused is not None:
+                    return
+                self.lip_cut = self.lip_line()
+                if self.lip_cut is not None:
+                    return
+                sys.exit('no mouth bag behind the lips and no lip line to open: this head needs another jaw setup')
+            size = np.bincount(lab[mid], minlength=lab.max() + 1)
+            self.bag = np.zeros(self.nw, bool)
+            self.bag[ids[lab == size.argmax()]] = True
+            self.bag = self.fill(self.bag)
         rim = self.rim(self.bag)
         # a shallow cup sculpted behind parted lips (Celeste's) has no room for a tongue or an open jaw: drop it and
         # build a full bag on the lips instead, like for a closed mouth
@@ -274,6 +284,12 @@ class Rig:
         # the lips meet face to face, so the upper lip's edge faces down and the lower's up (the lip line
         # arches, so a height split would put the middle of the lower lip with the upper)
         down = h.wnrm[rim, 2] < 0
+        if len(gen) or not down.any() or down.all():
+            # lips opened from one surface have edges facing every way: above or below the middle of the edge at the
+            # same x instead
+            near = np.abs(q[:, 0][:, None] - q[:, 0][None]) < 0.002 * s
+            mid = np.array([(q[n, 2].max() + q[n, 2].min()) / 2 for n in near])
+            down = q[:, 2] >= mid
         self.rim_u, self.rim_l = rim[down], rim[~down]
         if not down.any() or down.all():
             sys.exit('no mouth bag behind the lips (open hole or fused lips?): this head needs another jaw setup')
@@ -337,10 +353,70 @@ class Rig:
                 best = best[~((c[best, 0] * sx > 0) & (np.abs(c[best, 0]) > limit))]
         return best
 
+    def lip_line(self):
+        """For closed lips sculpted as one surface with no band to drop (Grey Talon's, Lady Geist's): the crease
+        where they meet, as the cheapest path through the mouth's middle when walking along concave skin is cheap,
+        out to where the crease fades at the corners. The chin crease can be deeper (Solomon's), so of the creases
+        through the middle the widest wins. Returns (path of welded vertices, a lower-lip vertex) or None."""
+        h, s, p, nrm = self.h, self.s, self.h.wco, self.h.wnrm
+        g = h.wgraph.tocoo()
+        d = p[g.col] - p[g.row]
+        # curvature along each edge, most concave per vertex (1/m, times s so heads compare)
+        k = ((nrm[g.col] - nrm[g.row]) * d).sum(1) / np.maximum((d * d).sum(1), 1e-12)
+        val = np.full(self.nw, np.inf)
+        np.minimum.at(val, g.row, k * s)
+        band = (self.soft_w & (np.abs(p[:, 0]) < 0.07 * s) & (p[:, 2] < self.ez - 0.04 * s)
+                & (p[:, 2] > self.ez - 0.17 * s) & (nrm[:, 1] < -0.2))
+        cost = np.exp(np.clip((val[g.row] + val[g.col]) / 2, -800, 200) / 250)
+        keep = band[g.row] & band[g.col]
+        wg = coo_matrix((np.sqrt((d * d).sum(1))[keep] * cost[keep], (g.row[keep], g.col[keep])),
+                        shape=(self.nw, self.nw)).tocsr()
+        mids = np.where(band & (np.abs(p[:, 0]) < 0.003 * s) & (val < -150))[0]
+        mids = mids[np.argsort(p[mids, 2])]
+        # one candidate per crease: the deepest of each run of middle vertices close in height
+        runs = np.split(mids, np.where(np.diff(p[mids, 2]) > 0.004 * s)[0] + 1) if len(mids) else []
+        best = None
+        for run in runs:
+            m = run[val[run].argmin()]
+            dist, pred = dijkstra(wg, directed=False, indices=m, return_predecessors=True, limit=0.12 * s)
+            ends = []
+            for sx in (1, -1):
+                x = p[:, 0] * sx
+                # the crease's end: the farthest point reached while walking mostly in the valley
+                ok = np.isfinite(dist) & (x > 0.008 * s) & (dist < 0.4 * np.maximum(x, 1e-9)) & (val < -100)
+                if not ok.any():
+                    break
+                ends.append(np.where(ok)[0][x[ok].argmax()])
+            if len(ends) < 2:
+                continue
+            width = p[ends[0], 0] - p[ends[1], 0]
+            if best is None or width > best[0]:
+                best = (width, m, ends, pred)
+        if best is None or best[0] < 0.04 * s:
+            return None
+        _, m, ends, pred = best
+        halves = []
+        for e in ends:
+            seg = [e]
+            while seg[-1] != m:
+                seg.append(pred[seg[-1]])
+            halves.append(seg)
+        path = np.array(halves[0][:-1] + halves[1][::-1])
+        # the lower lip: the neighbour of the middle with the lowest point
+        nb = h.wgraph.tocsr()
+        cand = nb.indices[nb.indptr[m]:nb.indptr[m + 1]]
+        cand = cand[~np.isin(cand, path)]
+        below = cand[p[cand, 2].argmin()]
+        print('lip line', len(path), 'verts, x', round(p[ends[1], 0], 4), '..', round(p[ends[0], 0], 4),
+              'z', round(p[m, 2], 4))
+        return path, below
+
     def mouth_hole(self, win):
         """The skin's open edge between the lips, ordered around, when the mouth is a hole into the head with no
         bag behind it (Venator's), else None."""
         h, s, p = self.h, self.s, self.h.wco
+        if h.lip_loop is not None:
+            return h.weld[h.lip_loop]
         tw = h.weld[h.tris]
         e = np.sort(np.concatenate([tw[:, [0, 1]], tw[:, [1, 2]], tw[:, [2, 0]]]), axis=1)
         u, cnt = np.unique(e, axis=0, return_counts=True)
@@ -1099,6 +1175,78 @@ def controls(rig):
     }
 
 
+def cut_lips(d, h, rig):
+    """Splits closed lips along rig.lip_cut: the vertices along the upper lip's edge (but not the corners) get a
+    copy, a hair lower, for the faces on the lower lip's side, so the lips come apart there. Returns d with the
+    copies appended and the faces rewired, and what build.py needs to do the same: (copied vertex, offset) per new
+    vertex and (face, corner, new vertex) per rewired corner."""
+    s = rig.s
+    path, below = rig.lip_cut
+    inner = np.zeros(len(h.wco), bool)
+    inner[path[1:-1]] = True
+    cut_e = {tuple(sorted(e)) for e in zip(path[:-1].tolist(), path[1:].tolist())}
+    tw = h.weld[h.tris]
+    # the faces around the path, joined across their shared edges except the path's own: the lower lip's side is
+    # the piece holding the face between the middle and the lower-lip vertex (a side test per corner breaks where
+    # the path zigzags)
+    # two rings out, so faces caught inside a bump of the path still reach the rest of their side
+    ring = inner.copy()
+    for _ in range(2):
+        ring[tw[ring[tw].any(1)].ravel()] = True
+    # (but not around the corners, where they would join the lips back up)
+    cx = h.wco[tw, 0].mean(1)
+    lo, hi = sorted(h.wco[[path[0], path[-1]], 0])
+    fan = np.where(inner[tw].any(1) | (ring[tw].any(1) & (cx > lo + 0.004 * s) & (cx < hi - 0.004 * s)))[0]
+    by_edge = {}
+    for f in fan:
+        for k in range(3):
+            e = tuple(sorted((int(tw[f, k]), int(tw[f, (k + 1) % 3]))))
+            if e not in cut_e:
+                by_edge.setdefault(e, []).append(f)
+    pos = {f: i for i, f in enumerate(fan)}
+    pairs = [(pos[fs[0]], pos[g]) for fs in by_edge.values() for g in fs[1:]]
+    pairs = np.array(pairs).reshape(-1, 2)
+    _, lab = connected_components(coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])),
+                                             shape=(len(fan), len(fan))), directed=False)
+    m = path[len(path) // 2]
+    seed = [i for i, f in enumerate(fan) if below in tw[f] and (tw[f] == path[:, None]).any()]
+    if not seed:
+        seed = [i for i, f in enumerate(fan) if below in tw[f]]
+    size = np.bincount(lab)
+    on_lower = lab == lab[seed[0]]
+    # stray faces cut off on their own (slivers on Wraith's lips): below the path's height there is the lower lip
+    order = np.argsort(h.wco[path, 0])
+    line_z = np.interp(cx[fan], h.wco[path[order], 0], h.wco[path[order], 2])
+    on_lower |= (size[lab] < 10) & (h.wco[tw[fan], 2].mean(1) < line_z)
+    lower = fan[on_lower]
+    n0 = len(h.co)
+    new_of, src, rewire = {}, [], []
+    tris = d['tris'].copy()
+    for f in lower:
+        for k in range(3):
+            if inner[tw[f, k]]:
+                u = tris[f, k]
+                if u not in new_of:
+                    new_of[u] = n0 + len(src)
+                    src.append(u)
+                tris[f, k] = new_of[u]
+                rewire.append((f, k, new_of[u]))
+    src = np.array(src)
+    off = np.tile([0, 0, -0.0002 * s], (len(src), 1))
+    out = dict(d)
+    out['co'] = np.concatenate([d['co'], d['co'][src] + off]).astype(d['co'].dtype)
+    out['nrm'] = np.concatenate([d['nrm'], d['nrm'][src]]).astype(d['nrm'].dtype)
+    out['tris'] = tris
+    # the hole's edge, so the next Rig need not find it among the open edges (Wraith's lips have edges shared by
+    # three faces, which leave gaps in it)
+    rep = {int(w): u for u, w in enumerate(h.weld)}
+    copy = {int(h.weld[u]): v for u, v in new_of.items()}
+    out['lip_loop'] = np.array([rep[int(v)] for v in path] + [copy.get(int(v), rep[int(v)]) for v in path[-2:0:-1]])
+    for k in ('ball_L', 'ball_R'):
+        out[k] = np.concatenate([d[k], np.zeros(len(src), bool)])
+    return out, {'src': src, 'off': off, 'rewire': np.array(rewire)}
+
+
 def add_bag(d, h, rig, rings=10):
     """A mouth bag for a head whose mouth is a hole into nothing (Venator's): a tube from the lips' open edge back
     past the teeth, widening to hold them, closed at the back. Returns d with the bag appended (its first ring sits
@@ -1124,12 +1272,16 @@ def add_bag(d, h, rig, rings=10):
     is_up[[i_l, i_r]] = True
     phi = np.arccos(np.clip(v[:, 0] / hx, -1, 1)) * np.where(is_up, 1, -1)
     ell = np.c_[rx * np.cos(phi), rz * np.sin(phi) + zc]
+    # lips split along a line (Grey Talon's) leave a slit with no height: open up and down straight away, or the
+    # front of the bag is flat
+    slit = abs(v[is_up, 2].mean() - v[~is_up, 2].mean()) < 0.003 * s
     ring_pts = []
     for k in range(rings + 1):
         t = k / rings
         # straight back first (the lips' inner faces), then out around the teeth, so the walls stay inside the cheeks
         f = smoothstep(0.35, 0.8, t)
-        xz = v[:, [0, 2]] * (1 - f) + ell * f
+        fz = smoothstep(0.0, 0.45, t) if slit else f
+        xz = np.c_[v[:, 0] * (1 - f) + ell[:, 0] * f, v[:, 2] * (1 - fz) + ell[:, 1] * fz]
         y = v[:, 1] + (y_back - v[:, 1]) * t ** 0.7
         ring_pts.append(np.c_[xz[:, 0], y, xz[:, 1]])
     cap = np.array([[0, y_back + 0.004 * s, zc]])
@@ -1180,8 +1332,16 @@ if __name__ == '__main__':
         h = fg.from_arrays(arrays)
         probe = Rig(h)
         print('opened the lips:', len(cut), 'faces')
+    split = None
+    if probe.lip_cut is not None:
+        arrays, split = cut_lips(arrays, h, probe)
+        h = fg.from_arrays(arrays)
+        n_head = len(h.co)
+        probe = Rig(h)
+        print('split the lips along', len(split['src']), 'vertices')
     if probe.hole is not None:
         arrays, bco, btris = add_bag(arrays, h, probe)
+        arrays.pop('lip_loop', None)
         h = fg.from_arrays(arrays)
         bag_mesh = (bco, btris)
         print('mouth bag built on the lips\' edge:', len(bco), 'verts')
@@ -1216,6 +1376,11 @@ if __name__ == '__main__':
         np.save(cut_path, cut)
     elif os.path.exists(cut_path):
         os.remove(cut_path)
+    split_path = base + '_split.npz'
+    if split is not None:
+        np.savez_compressed(split_path, **split)
+    elif os.path.exists(split_path):
+        os.remove(split_path)
     mouth_path = base + '_mouth.npz'
     if bag_mesh is not None:
         np.savez_compressed(mouth_path, co=bag_mesh[0], tris=bag_mesh[1],

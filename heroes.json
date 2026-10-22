@@ -127,7 +127,21 @@
   "slug": "grey_talon",
   "name": "Grey Talon",
   "codename": "orion",
-  "model": "models/heroes_staging/archer/archer.vmdl"
+  "model": "models/heroes_staging/archer/archer.vmdl",
+  "split": {
+   "Head": [
+    "orion_head"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.046,
+    -0.19,
+    1.932
+   ]
+  }
  },
  {
   "slug": "haze",
