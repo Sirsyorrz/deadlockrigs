@@ -32,6 +32,11 @@ if 'eye_0_L' in arm.pose.bones:
     eyes = (arm.matrix_world @ arm.pose.bones['eye_0_L'].head + arm.matrix_world @ arm.pose.bones['eye_0_R'].head) / 2
     centre = Vector((0, eyes.y, eyes.z - 0.04 * fs))
     dist = 0.6 * fs
+elif 'eye_target' in fjs:
+    # no eye bones but a generated face (Kelvin's): face.json has the eye height and spacing
+    eyes = Vector((0, fjs['brow_mid'][1] + 0.03 * fs, fjs['eye_target'][2]))
+    centre = Vector((0, eyes.y, eyes.z - 0.04 * fs))
+    dist = 0.6 * fs
 else:
     # no eye bones (Rem): frame the skin the keys move
     ob = keyed[0]
@@ -44,7 +49,10 @@ else:
     centre = Vector((0, lo.y, eyes.z - 0.04))
     dist = 0.6 * max(hi.x - lo.x, hi.z - lo.z) / 0.15
 if focus in ('L', 'R'):
-    centre = arm.matrix_world @ arm.pose.bones['eye_0_' + focus].head
+    if 'eye_0_' + focus in arm.pose.bones:
+        centre = arm.matrix_world @ arm.pose.bones['eye_0_' + focus].head
+    else:
+        centre = Vector(((1 if focus == 'L' else -1) * fjs['eye_spacing'], eyes.y, eyes.z))
     dist = 0.2 * fs
 elif focus == 'mouth':
     centre = Vector((0, eyes.y, fjs['mouth'][2] if 'mouth' in fjs else eyes.z - 0.082 * fs))

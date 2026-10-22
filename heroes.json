@@ -67,7 +67,21 @@
   "slug": "calico",
   "name": "Calico",
   "codename": "nano",
-  "model": "models/heroes_staging/nano/nano_v2/nano.vmdl"
+  "model": "models/heroes_staging/nano/nano_v2/nano.vmdl",
+  "split": {
+   "Head": [
+    "nanov2_head"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.045,
+    -0.082,
+    2.15
+   ]
+  }
  },
  {
   "slug": "celeste",
