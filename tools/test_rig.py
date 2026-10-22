@@ -521,6 +521,22 @@ if 'FACE' in pb:
                 bad[m] = got
         update()
         check('in-betweens peak at 0.5', not bad, f'{len(mids)} {bad}')
+    combos = [kb.name for kb in kbs if kb.name.count('_') == 1 and all(k in sliders for k in kb.name.split('_'))]
+    if combos:
+        # a combination corrective is full only with both its keys full
+        bad = {}
+        for c in combos:
+            a, b = c.split('_')
+            got = []
+            for x, y in ((1.0, 0.0), (0.0, 1.0), (1.0, 1.0)):
+                pb['FACE'][a], pb['FACE'][b] = x, y
+                update()
+                got.append(round(kbs[c].value, 3))
+            pb['FACE'][a] = pb['FACE'][b] = 0.0
+            if got != [0.0, 0.0, 1.0]:
+                bad[c] = got
+        update()
+        check('combination keys need both keys', not bad, f'{len(combos)} {bad}')
     if 'CTRL_eye_L' in pb:
         pb['CTRL_eye_L'].location.y = 0.15
         pb['CTRL_eye_L'].scale = (1.5, 1.5, 1.5)

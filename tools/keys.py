@@ -707,6 +707,8 @@ def iris_keys(h, rig, side, name, inner=20, outer=40):
 
 
 TONGUE_MID = 'tongueOut_mid'
+# combination corrective: rig.py drives it with tongueOut * jawOpen
+TONGUE_JAW = 'tongueOut_jawOpen'
 
 
 def tongue(h, rig, n_ring=14, n_len=16):
@@ -769,6 +771,17 @@ def tongue(h, rig, n_ring=14, n_len=16):
     return co, np.array(tris), w, uu
 
 
+def mouth_mid_z(rig):
+    """Halfway between the lips at the middle: the lip line arches (Paige's middle is 8 mm under its corners), and
+    a sculpted open mouth (Drifter's) puts it in the gap."""
+    p = rig.h.wco
+
+    def front(rim):
+        return rim[(p[rim, 1] < rig.lip_y + 0.012 * rig.s) & (np.abs(p[rim, 0]) < 0.006 * rig.s)]
+    zs = [p[r, 2].mean() for r in (front(rig.rim_u), front(rig.rim_l)) if len(r)]
+    return float(np.mean(zs)) if zs else rig.lip_z
+
+
 def tongue_keys(rig, co, w, u, names):
     s = rig.s
     out = {k: np.zeros_like(co) for k in names}
@@ -778,15 +791,76 @@ def tongue_keys(rig, co, w, u, names):
         out[k] = np.outer(w, np.array(v) * mm5)
     # out over the lower lip: slides forward, the front rises to lip height and thins
     lead = (1 - u) ** 1.5
-    tip_lift = max(rig.lip_z + 0.002 * s - co[0, 2], 0)
+    # each ring rises, not just the tip: a bag floor sloping down further in (Mina's) left the part that ends up at
+    # the lips under them, through the lower lip; centred a little under the middle of the mouth, it rests on the
+    # lower lip
+    _, ring = np.unique(u, return_inverse=True)
+    ring_z = (np.bincount(ring, weights=co[:, 2]) / np.bincount(ring))[ring]
+    lift = np.maximum(mouth_mid_z(rig) - 0.002 * s - ring_z, 0)
     # the front half slides out whole; the root stays and the back half stretches
     slide = 1 - smoothstep(0.35, 1.0, u)
     droop = 0.006 * s * np.clip(1 - u / 0.35, 0, 1) ** 2
-    out['tongueOut'] = np.stack([-0.1 * co[:, 0] * lead, -0.036 * s * slide, tip_lift * slide - droop], 1)
+    thin = -0.25 * (co[:, 2] - ring_z)
+    out['tongueOut'] = np.stack([-0.1 * co[:, 0] * lead, -0.036 * s * slide, (lift + thin) * slide - droop], 1)
     # a straight blend lifts and slides together, so half way the tip came out through the lower lip; this
     # corrective (rig.py drives it with a peak at tongueOut 0.5) lifts it to the lips first
-    out[TONGUE_MID] = np.stack([np.zeros(len(co)), np.zeros(len(co)), 0.5 * tip_lift * slide], 1)
+    out[TONGUE_MID] = np.stack([np.zeros(len(co)), np.zeros(len(co)), 0.5 * lift * slide], 1)
     return out
+
+
+def tongue_lips(h, rig, tongue_out):
+    """The lips parting around the tongue out over them: the lower lip pushed down and rolled out under it, the
+    upper lifted over it, each as far as the tongue goes into it, fading towards the corners.
+    tongue_out: (vertices, triangles) of the tongue at tongueOut. Returns welded (lower, upper) offsets."""
+    s, p = rig.s, h.wco
+    tco, tris = tongue_out
+    # the tongue's surface, sampled densely enough to stand in for it as a height field over x, y
+    bary = np.array([(a, b, 1 - a - b) for a in np.linspace(0, 1, 6) for b in np.linspace(0, 1, 6) if a + b <= 1])
+    surf = np.einsum('kj,tjc->tkc', bary, tco[tris]).reshape(-1, 3)
+    tree = cKDTree(surf[:, :2])
+    cx = (rig.corner_x['L'] + rig.corner_x['R']) / 2
+    grid = np.linspace(-cx, cx, 81)
+    blur = np.exp(-((grid[:, None] - grid[None]) / (0.004 * s)) ** 2)
+    blur /= blur.sum(1, keepdims=True)
+    taper = 1 - smoothstep(0.7, 1.0, np.abs(grid) / cx)
+    teeth = rig.teeth_w
+    # the bag's edge can include holes deep in the mouth (Apollo's throat): only the lips count
+    lips = (p[:, 1] < rig.lip_y + 0.012 * s) & (np.abs(p[:, 2] - rig.lip_z) < 0.015 * s)
+    rim = np.r_[rig.rim_u, rig.rim_l]
+    d_lips = fg.geodesic(h, rim[lips[rim]], limit=0.05 * s)
+    near_lips = rig.soft_w & ~teeth & lips & (d_lips < 0.012 * s)
+    out = []
+    # upper and lower by the jaw's smooth weights: the lip line's own split zigzags where the lips overlap (Paige's)
+    for sign, own in ((-1, rig.jaw_w), (1, 1 - rig.jaw_w)):
+        need = np.zeros(len(grid))
+        cand = np.where(near_lips & (own > 0.5))[0]
+        # only the front few mm show: further in, overlapping lips (Paige's inner lower lip rises behind the upper)
+        # would part the mouth far wider, and the tongue hides what they go into
+        bins = np.clip(np.searchsorted(grid, p[cand, 0]), 0, len(grid) - 1)
+        front = np.full(len(grid), np.inf)
+        np.minimum.at(front, bins, p[cand, 1])
+        front = np.minimum.reduce([np.roll(front, k) for k in range(-2, 3)])
+        for v in cand[p[cand, 1] < front[bins] + 0.004 * s]:
+            near = tree.query_ball_point(p[v, :2], 0.0015 * s)
+            if not near:
+                continue
+            z = surf[near, 2]
+            # the lower lip goes under the tongue's underside, the upper over its top
+            push = p[v, 2] - z.min() if sign < 0 else z.max() - p[v, 2]
+            if push <= 0:
+                continue
+            for x in (p[v, 0], -p[v, 0]):
+                i = np.abs(grid - x).argmin()
+                need[i] = max(need[i], push + 0.0005 * s)
+        # spread past the tongue's sides so the lip bends around it instead of creasing at its edge
+        prof = np.maximum.reduce([np.roll(need, k) for k in range(-3, 4)])
+        prof = blur @ prof * taper
+        amount = np.interp(p[:, 0], grid, prof, left=0, right=0)
+        body = (1 - smoothstep(0.006 * s, 0.035 * s, d_lips)) * own * rig.soft_w * ~teeth
+        edge_w = np.exp(-(d_lips / (0.006 * s)) ** 2) * own * rig.soft_w * ~teeth
+        roll = 0.3 if sign < 0 else 0.15
+        out.append(np.stack([np.zeros(rig.nw), -roll * amount * edge_w, sign * amount * body], 1))
+    return tuple(out)
 
 
 class Cards:
@@ -923,9 +997,18 @@ if __name__ == '__main__':
     print(len(keys), 'keys', 'scale %.3f' % rig.s, 'bag', rig.bag.sum(), 'lip line', len(rig.rim_u), len(rig.rim_l),
           'margins', [len(rig.margins[side][k]) for side in 'LR' for k in ('upper', 'lower')],
           'socket', [int(rig.sock[side].sum()) for side in 'LR'])
-    keys['tongueOut'] = np.zeros_like(h.co)
-    keys[TONGUE_MID] = np.zeros_like(h.co)
     tco, ttris, tw, tu = tongue(h, rig)
+    lower, upper = tongue_lips(h, rig, (tco + tongue_keys(rig, tco, tw, tu, [])['tongueOut'], ttris))
+    hold = hair_hold(h, rig)[:, None]
+    lips = {'tongueOut': ((lower + upper) * hold)[h.weld], TONGUE_MID: (0.5 * (lower + upper) * hold)[h.weld],
+            # with the jaw open the upper lip is already clear of the tongue
+            TONGUE_JAW: (-upper * hold)[h.weld]}
+    attach(h, rig, lips)
+    for k in sorted(lips):
+        print('%-20s max %.1f mm' % (k, np.linalg.norm(lips[k], axis=1).max() * 1000))
+    if np.linalg.norm(lips[TONGUE_JAW], axis=1).max() < 0.0005 * rig.s:
+        del lips[TONGUE_JAW]
+    keys.update(lips)
     tk = tongue_keys(rig, tco, tw, tu, keys)
     print('tongue', len(tco), 'verts, jaw weight %.2f..%.2f' % (tw.min(), tw.max()))
     np.savez_compressed(base + '_tongue.npz', co=tco, tris=ttris, **{'key_' + k: v for k, v in tk.items()})

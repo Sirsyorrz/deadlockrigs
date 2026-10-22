@@ -718,6 +718,20 @@ def build_face():
         v.targets[0].data_path = f'key_blocks["{mid[:-4]}"].value'
         d.expression = 'max(0, 1 - abs(2 * t - 1))'
         assert d.is_simple_expression, d.expression
+    # combination correctives <a>_<b> (keys.py's and bonekeys.py's tongueOut_jawOpen), full with both keys full
+    for combo in [kb.name for kb in key.key_blocks if kb.name.count('_') == 1
+                  and all(k in ARKIT for k in kb.name.split('_'))]:
+        d = key.driver_add(f'key_blocks["{combo}"].value').driver
+        d.type = 'SCRIPTED'
+        for name, k in zip('ab', combo.split('_')):
+            v = d.variables.new()
+            v.name = name
+            v.type = 'SINGLE_PROP'
+            v.targets[0].id_type = 'KEY'
+            v.targets[0].id = key
+            v.targets[0].data_path = f'key_blocks["{k}"].value'
+        d.expression = 'a * b'
+        assert d.is_simple_expression, d.expression
     # iris size from each eye control's scale
     for s, side_name in (('L', 'Left'), ('R', 'Right')):
         for k, expr in (('irisLarge', 'max(0, (sc - 1) / 0.5)'), ('irisSmall', 'max(0, (1 - sc) / 0.5)')):

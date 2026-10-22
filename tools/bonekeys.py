@@ -102,6 +102,7 @@ CENTRE = {
                           'lip_lower_outer_{R}', up=3, fwd=1.5) + mv('chin_upper', up=2.5, fwd=1.5)
     + mv('chin_mid', up=1.5, fwd=1),
     'tongueOut': [('tongue',)],
+    'tongueOut_jawOpen': [('tongue_jaw',)],
 }
 
 
@@ -123,6 +124,8 @@ class Face:
         self.s = (self.eye['L'].x - self.eye['R'].x) / REF_SPACING
         self.mm = 0.001 * 1.1 * self.s
         self.base = self.evaluate()
+        self.lips_for_tongue = None
+        self.tongue_lift = None
 
     def head(self, b):
         return self.rest[b].translation.copy()
@@ -148,6 +151,7 @@ class Face:
         for b in self.pb:
             b.location = (0, 0, 0)
             b.rotation_quaternion = (1, 0, 0, 0)
+            b.scale = (1, 1, 1)
 
     def move(self, bone, d):
         """Adds an armature-space move (metres) to a bone whose parents are at rest."""
@@ -230,7 +234,15 @@ def apply(face, op, s, sx, half):
         for b in [f'{n}_{x}' for n in LIPS_UP for x in 'LR'] + ['lip_upper_mid']:
             face.move(b, Vector((0, 0, -0.2 * drop)))
     elif kind == 'tongue':
+        moves = tongue_lips(face)
         tongue_out(face)
+        for b, d in moves.items():
+            face.move(b, d)
+    elif kind == 'tongue_jaw':
+        # with the jaw open the upper lip is already clear of the tongue
+        for b, d in tongue_lips(face).items():
+            if b.startswith('lip_upper'):
+                face.move(b, -d)
 
 
 def jaw_drop(face):
@@ -240,20 +252,96 @@ def jaw_drop(face):
     return abs(p.y * math.sin(a) + p.z * (1 - math.cos(a)))
 
 
+def tongue_points(face, posed):
+    """The tongue's vertices (any mesh, mostly on tongue bones) in posed."""
+    bones = [b.name for b in face.arm.data.bones if b.name.startswith('tongue')]
+    pts = []
+    for part, o in face.meshes.items():
+        w = sum(vertex_weights(o, bones).values())
+        if np.any(w > 0.5):
+            pts.append(posed[part][w > 0.5])
+    return np.concatenate(pts) if pts else np.zeros((0, 3))
+
+
 def tongue_out(face):
-    """Out over the lower lip: the root stays, each bone further along slides further forward and the tip rises to
-    lip height."""
+    """Out over the lower lip: the root stays, each bone further along slides further forward, and the part out
+    between the lips flattens and lies a little under the middle of the mouth, on the lower lip."""
     chain = [b for b in ('tongue_0', 'tongue_1', 'tongue_2', 'tongue_3', 'tongue_end') if face.has(b)]
-    if not chain:
+    if len(chain) < 2:
         return
     lip = face.head('lip_lower_mid')
     tip = face.head(chain[-1])
     reach = (tip.y - lip.y) + 0.03 * face.s
-    rise = max(lip.z - tip.z, 0) + 0.002 * face.s
     for i, b in enumerate(chain[1:], 1):
         t = i / (len(chain) - 1)
         prev = (i - 1) / (len(chain) - 1)
-        face.move(b, Vector((0, -(t - prev) * reach, (t - prev) * rise)))
+        face.move(b, Vector((0, -(t - prev) * reach, 0)))
+    # Abrams' tongue is 16 mm thick; out, it spreads thinner
+    rest = face.rest[chain[1]].to_3x3()
+    up = max(range(3), key=lambda k: abs(rest.col[k].z))
+    face.pb[chain[1]].scale[up] = 0.7
+    if getattr(face, 'tongue_lift', None) is None:
+        pts = tongue_points(face, face.evaluate())
+        band = np.abs(pts[:, 1] - lip.y) < 0.006 * face.s
+        mid = (face.head('lip_upper_mid').z + lip.z) / 2 if face.has('lip_upper_mid') else lip.z
+        face.tongue_lift = (mid - 0.002 * face.s - (pts[band, 2].min() + pts[band, 2].max()) / 2) if band.any() else 0.0
+    face.move(chain[1], Vector((0, 0, face.tongue_lift)))
+
+
+def vertex_weights(o, bones):
+    """Per vertex of o: the weight of each of bones (zero when o has no group for it)."""
+    out = {b: np.zeros(len(o.data.vertices)) for b in bones}
+    idx = {o.vertex_groups[b].index: b for b in bones if b in o.vertex_groups}
+    for v in o.data.vertices:
+        for g in v.groups:
+            if g.group in idx:
+                out[idx[g.group]][v.index] = g.weight
+    return out
+
+
+def tongue_lips(face):
+    """Lip bone moves (armature space) parting the lips around the tongue at tongueOut: each lower lip bone goes down
+    (and rolls out) under the tongue's underside, each upper one up over its top, as far as the skin it carries
+    went into the tongue."""
+    if face.lips_for_tongue is not None:
+        return face.lips_for_tongue
+    face.lips_for_tongue = {}
+    face.reset()
+    tongue_out(face)
+    posed = face.evaluate()
+    face.reset()
+    s = face.s
+    pts = tongue_points(face, posed)
+    if not len(pts):
+        return face.lips_for_tongue
+    lip_bones = [b for b in [f'{n}_{x}' for n in LIPS_UP + LIPS_LOW for x in 'LR'] + ['lip_upper_mid', 'lip_lower_mid']
+                 if face.has(b)]
+    skin = face.base[face.part]
+    weights = vertex_weights(face.meshes[face.part], lip_bones)
+    # Abrams' lip skin is spread over several lip bones (none over 0.55), so a vertex moves by its summed weight
+    # times the lip's move
+    push = {}
+    for lower in (True, False):
+        side = [b for b in lip_bones if b.startswith('lip_lower') == lower]
+        total = sum(weights[b] for b in side)
+        need = np.zeros(len(skin))
+        for v in np.where(total > 0.3)[0]:
+            near = np.hypot(pts[:, 0] - skin[v, 0], pts[:, 1] - skin[v, 1]) < 0.003 * s
+            if not near.any():
+                continue
+            z = pts[near, 2]
+            need[v] = max(skin[v, 2] - z.min() if lower else z.max() - skin[v, 2], 0) / total[v]
+        for b in side:
+            best = need[weights[b] > 0.1].max(initial=0)
+            push[b] = min(best + 0.0005 * s, 0.015 * s) if best > 0 else 0.0
+    for b in lip_bones:
+        # both sides alike, so a tongue a hair off centre doesn't twist the mouth
+        other = b[:-1] + {'L': 'R', 'R': 'L'}[b[-1]] if b.endswith(('_L', '_R')) else b
+        p = max(push[b], push.get(other, 0.0))
+        if p > 0:
+            lower = b.startswith('lip_lower')
+            face.lips_for_tongue[b] = Vector((0, -(0.3 if lower else 0.15) * p, -p if lower else p))
+    return face.lips_for_tongue
 
 
 def build_keys(face):
