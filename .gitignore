@@ -7,3 +7,6 @@ older-versions/
 s2v/
 build/
 dist/
+
+# per-hero work notes
+worklog/
