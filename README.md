@@ -49,7 +49,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 
 | Hero | Face rig |
 |---|---|
-| Abrams | yes (from the game's face bones) |
+| Abrams, McGinnis | yes (from the game's face bones) |
 | Apollo, Drifter, Graves, Mina, Paige, Violet | yes |
 | Billy, Rem, Victor | yes (from the game's face morphs) |
 | everyone else | not yet |
