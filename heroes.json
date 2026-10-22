@@ -295,7 +295,12 @@
   "slug": "nurse_harrow",
   "name": "Nurse Harrow",
   "codename": "nurse",
-  "model": "models/heroes_wip/nurse/nurse.vmdl"
+  "model": "models/heroes_wip/nurse/nurse.vmdl",
+  "face": {
+   "part": "nurse_head_static_model",
+   "mesh": "nurse_head_static_model",
+   "eyes": "nurse_eye"
+  }
  },
  {
   "slug": "paige",
