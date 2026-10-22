@@ -230,7 +230,22 @@
   "slug": "mirage",
   "name": "Mirage",
   "codename": "mirage",
-  "model": "models/heroes_staging/mirage_v2/mirage.vmdl"
+  "model": "models/heroes_staging/mirage_v2/mirage.vmdl",
+  "split": {
+   "Head": [
+    "miragev3_head",
+    "miragev3_vertcolor"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.035,
+    -0.02,
+    2.332
+   ]
+  }
  },
  {
   "slug": "mo_krill",

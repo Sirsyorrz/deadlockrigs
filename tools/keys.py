@@ -1094,6 +1094,9 @@ class Cards:
             small = np.ptp(h.co[sel], axis=0).max() < 0.08 * s
             # lashes, brows, liner, moustaches lie on the skin; hair and glasses stand off it and stay put
             on_skin = np.median(ds) < 0.01 * s and np.ptp(h.co[sel], axis=0).max() < 0.13 * s
+            # beards hang off the jaw (Mirage's): they go with it whatever their size
+            _, ia = soft_tree.query(h.co[sel])
+            on_skin |= np.median(ds) < 0.02 * s and rig.jaw_w[skin_soft[ia]].mean() > 0.2
             follow[sel] = float(on_skin)
             if np.median(dm) < 0.012 * s and small:
                 anchors[sel] = margin[im]
