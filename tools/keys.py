@@ -634,6 +634,9 @@ def eye_keys(h, rig):
     return out
 
 
+TONGUE_MID = 'tongueOut_mid'
+
+
 def tongue(h, rig, n_ring=14, n_len=16):
     """A tongue lying on the mouth bag floor (the heads have none): ring-by-ring along its length, each ring
     sized to the bag around it. Returns co, tris, jaw weights and u (0 tip .. 1 root) per vertex."""
@@ -708,6 +711,9 @@ def tongue_keys(rig, co, w, u, names):
     slide = 1 - smoothstep(0.35, 1.0, u)
     droop = 0.006 * s * np.clip(1 - u / 0.35, 0, 1) ** 2
     out['tongueOut'] = np.stack([-0.1 * co[:, 0] * lead, -0.036 * s * slide, tip_lift * slide - droop], 1)
+    # a straight blend lifts and slides together, so half way the tip came out through the lower lip; this
+    # corrective (rig.py drives it with a peak at tongueOut 0.5) lifts it to the lips first
+    out[TONGUE_MID] = np.stack([np.zeros(len(co)), np.zeros(len(co)), 0.5 * tip_lift * slide], 1)
     return out
 
 
@@ -815,6 +821,7 @@ if __name__ == '__main__':
           'margins', [len(rig.margins[side][k]) for side in 'LR' for k in ('upper', 'lower')],
           'socket', [int(rig.sock[side].sum()) for side in 'LR'])
     keys['tongueOut'] = np.zeros_like(h.co)
+    keys[TONGUE_MID] = np.zeros_like(h.co)
     tco, ttris, tw, tu = tongue(h, rig)
     tk = tongue_keys(rig, tco, tw, tu, keys)
     print('tongue', len(tco), 'verts, jaw weight %.2f..%.2f' % (tw.min(), tw.max()))

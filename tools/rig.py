@@ -556,6 +556,18 @@ def build_face():
         assert d.is_simple_expression, d.expression
         kb = key.key_blocks[k]
         kb.slider_max = 1
+    # keys.py's corrective for half-out tongues, peaking at tongueOut 0.5
+    if 'tongueOut_mid' in key.key_blocks:
+        d = key.driver_add('key_blocks["tongueOut_mid"].value').driver
+        d.type = 'SCRIPTED'
+        v = d.variables.new()
+        v.name = 't'
+        v.type = 'SINGLE_PROP'
+        v.targets[0].id_type = 'KEY'
+        v.targets[0].id = key
+        v.targets[0].data_path = 'key_blocks["tongueOut"].value'
+        d.expression = 'max(0, 1 - abs(2 * t - 1))'
+        assert d.is_simple_expression, d.expression
 
 
 if HAS_FACE:
