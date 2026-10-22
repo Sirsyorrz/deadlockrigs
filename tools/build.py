@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bodygroups import mesh_parts  # noqa: E402
 from collar import fix_collar  # noqa: E402
 from hero import from_argv  # noqa: E402
-from tongue_mesh import add_tongue  # noqa: E402
+from tongue_mesh import add_part, interior_material, tongue_material  # noqa: E402
 
 hero, _ = from_argv()
 os.makedirs(os.path.dirname(hero.base_blend), exist_ok=True)
@@ -89,8 +89,12 @@ if hero.face:
     me = head.data
     inv = np.array(head.matrix_world.inverted().to_3x3())
     n_head = len(me.vertices)
-    tongue_path = keys_path.replace('.npz', '_tongue.npz')
-    tongue = add_tongue(head, tongue_path) if os.path.exists(tongue_path) else {}
+    # generated parts after the head's own vertices, in the order keys.py's keys expect: mouth bag, then tongue
+    extra = []
+    for suffix, mat in (('_mouth.npz', interior_material), ('_tongue.npz', tongue_material)):
+        part_path = keys_path.replace('.npz', suffix)
+        if os.path.exists(part_path):
+            extra.append(add_part(head, part_path, mat()))
     n = len(me.vertices)
     # game morphs and face bones come with the game's own skinning; only keys.py heads get the collar fix
     if hero.face.get('builder', 'keys.py') == 'keys.py':
@@ -105,13 +109,32 @@ if hero.face:
     # per-hero strength of a key (and its in-between): a sculpted open grin (Drifter) can't take a full pucker
     tune = hero.face.get('tune', {})
     for name in keys.files:
-        d = np.concatenate([keys[name], tongue[name]]) if tongue else keys[name]
+        d = np.concatenate([keys[name]] + [part[name] for part in extra])
         d = d * tune.get(name, tune.get(name[:-4], 1.0) if name.endswith('_mid') else 1.0)
         assert d.shape == (n, 3), (name, d.shape, n)
         # a game morph can share its ARKit name (jawOpen)
         kb = me.shape_keys.key_blocks.get(name) or head.shape_key_add(name=name, from_mix=False)
         kb.data.foreach_set('co', (base.reshape(-1, 3) + d @ inv.T).astype(np.float32).ravel())
     print('shape keys', len(keys.files))
+    # props held in the mouth (Venator's cigar, heroes.json face "ride") move as one piece with the lips they touch
+    head_world = base.reshape(-1, 3)[:n_head] @ np.array(head.matrix_world)[:3, :3].T + np.array(head.matrix_world)[:3, 3]
+    for part in hero.face.get('ride', []):
+        ob = bpy.data.objects.get(hero.rename.get(part, part))
+        if ob is None:
+            print('WARNING: no mesh', part, 'to ride the lips')
+            continue
+        q = np.array([ob.matrix_world @ v.co for v in ob.data.vertices])
+        d = np.linalg.norm(head_world[:, None] - q[None], axis=2).min(1)
+        touch = d < max(d.min() + 0.002, 0.003)
+        oinv = np.array(ob.matrix_world.inverted().to_3x3())
+        ob_base = np.array([v.co for v in ob.data.vertices], np.float32)
+        if not ob.data.shape_keys:
+            ob.shape_key_add(name='Basis', from_mix=False)
+        for name in keys.files:
+            off = keys[name][:n_head][touch].mean(0)
+            kb = ob.data.shape_keys.key_blocks.get(name) or ob.shape_key_add(name=name, from_mix=False)
+            kb.data.foreach_set('co', (ob_base + off @ oinv.T).astype(np.float32).ravel())
+        print('riding the lips:', ob.name, int(touch.sum()), 'head vertices')
     # bonekeys.py: keys on the other meshes the face bones move (eyes, teeth, tongue). The head gets every key too, as
     # the one rig.py drives; the others follow it
     for f in sorted(os.listdir(hero.data)):
@@ -140,15 +163,10 @@ if hero.face:
 bag_path = os.path.join(hero.data, 'keys_bag.npy')
 if hero.face and os.path.exists(bag_path):
     bag = np.load(bag_path)
-    mat = bpy.data.materials.new('mouth_interior')
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes['Principled BSDF']
-    bsdf.inputs['Base Color'].default_value = (0.09, 0.025, 0.03, 1)
-    bsdf.inputs['Roughness'].default_value = 0.6
-    # flat, shallow bags (Apollo) otherwise just mirror the sky
-    bsdf.inputs['Specular IOR Level'].default_value = 0
-    me.materials.append(mat)
-    mi = len(me.materials) - 1
+    mat = interior_material()
+    if mat.name not in me.materials:
+        me.materials.append(mat)
+    mi = list(me.materials).index(mat)
     for poly in me.polygons:
         if poly.vertices[0] >= n_head:
             continue

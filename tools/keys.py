@@ -25,6 +25,7 @@ import os
 import sys
 
 import numpy as np
+from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 
@@ -152,6 +153,9 @@ class Rig:
         teeth[h.weld[mats[h.vmat]]] = True
         self.teeth_w = teeth & ~self.soft_w
         self._mouth()
+        if self.hole is not None:
+            # the caller builds a mouth bag onto this edge and starts over (make_bag)
+            return
         self.face_w = self.soft_w & ~self.bag
         self.handles = {}
         self.lid_specs = {}
@@ -237,6 +241,9 @@ class Rig:
         centre = np.array([0, self.jaw_pivot[1] - 0.06 * s, ez - 0.08 * s])
         win = (np.abs(p[:, 0]) < 0.05 * s) & (np.abs(p[:, 2] - centre[2]) < 0.04 * s) \
             & (p[:, 1] < self.jaw_pivot[1] + 0.05 * s)
+        self.hole = self.mouth_hole(win)
+        if self.hole is not None:
+            return
         closed = self.enclosed(win, centre, 0.12 * s)
         # the bag is the biggest closed-in piece around the middle (nostrils and folds are small)
         ids = np.where(closed)[0]
@@ -273,6 +280,38 @@ class Rig:
         upper[self.rim_l] = False
         self.bag_u = np.where(self.bag & upper)[0]
         self.bag_l = np.where(self.bag & ~upper)[0]
+
+    def mouth_hole(self, win):
+        """The skin's open edge between the lips, ordered around, when the mouth is a hole into the head with no
+        bag behind it (Venator's), else None."""
+        h, s, p = self.h, self.s, self.h.wco
+        tw = h.weld[h.tris]
+        e = np.sort(np.concatenate([tw[:, [0, 1]], tw[:, [1, 2]], tw[:, [2, 0]]]), axis=1)
+        u, cnt = np.unique(e, axis=0, return_counts=True)
+        open_e = u[cnt == 1]
+        open_e = open_e[(self.soft_w & win)[open_e].all(1)]
+        if not len(open_e):
+            return None
+        _, lab = connected_components(coo_matrix((np.ones(len(open_e)), (open_e[:, 0], open_e[:, 1])),
+                                                 shape=(self.nw, self.nw)), directed=False)
+        for k in np.unique(lab[open_e[:, 0]]):
+            loop_e = open_e[lab[open_e[:, 0]] == k]
+            ids = np.unique(loop_e)
+            # a mouth edge crosses the middle, spans both sides, and closes on itself
+            if (len(ids) < 12 or not (np.abs(p[ids, 0]) < 0.004 * s).any() or np.ptp(p[ids, 0]) < 0.03 * s
+                    or len(loop_e) != len(ids)):
+                continue
+            nbr = {i: [] for i in ids}
+            for a, b in loop_e:
+                nbr[a].append(b)
+                nbr[b].append(a)
+            order, prev = [ids[0]], None
+            while len(order) < len(ids):
+                nxt = next(n for n in nbr[order[-1]] if n != prev)
+                prev = order[-1]
+                order.append(nxt)
+            return np.array(order)
+        return None
 
     # lids
 
@@ -984,13 +1023,86 @@ def controls(rig):
     }
 
 
+def add_bag(d, h, rig, rings=10):
+    """A mouth bag for a head whose mouth is a hole into nothing (Venator's): a tube from the lips' open edge back
+    past the teeth, widening to hold them, closed at the back. Returns d with the bag appended (its first ring sits
+    on the edge, so it welds to the lips) and the bag's (co, tris)."""
+    s, p = rig.s, h.wco
+    loop = rig.hole
+    v = p[loop]
+    n = len(loop)
+    teeth = p[rig.teeth_w] if rig.teeth_w.any() else v
+    zc = (teeth[:, 2].max() + teeth[:, 2].min()) / 2 if rig.teeth_w.any() else v[:, 2].mean() - 0.004 * s
+    rx = max(np.abs(teeth[:, 0]).max(), np.abs(v[:, 0]).max()) + 0.004 * s
+    rz = max((teeth[:, 2].max() - teeth[:, 2].min()) / 2 + 0.004 * s, 0.012 * s)
+    y_back = min(max(teeth[:, 1].max(), v[:, 1].max()) + 0.008 * s, v[:, 1].min() + 0.09 * s)
+    # around the edge: upper lip 0..pi from the left corner, lower lip 0..-pi
+    hx = np.abs(v[:, 0]).max()
+    i_l, i_r = v[:, 0].argmax(), v[:, 0].argmin()
+    a, b = sorted((i_l, i_r))
+    chain = np.zeros(n, bool)
+    chain[a:b + 1] = True
+    upper_chain = v[chain, 2].mean() > v[~chain, 2].mean()
+    is_up = chain if upper_chain else ~chain
+    is_up[[i_l, i_r]] = True
+    phi = np.arccos(np.clip(v[:, 0] / hx, -1, 1)) * np.where(is_up, 1, -1)
+    ell = np.c_[rx * np.cos(phi), rz * np.sin(phi) + zc]
+    ring_pts = []
+    for k in range(rings + 1):
+        t = k / rings
+        f = smoothstep(0, 0.4, t)
+        xz = v[:, [0, 2]] * (1 - f) + ell * f
+        y = v[:, 1] + (y_back - v[:, 1]) * t
+        ring_pts.append(np.c_[xz[:, 0], y, xz[:, 1]])
+    cap = np.array([[0, y_back + 0.004 * s, zc]])
+    co = np.concatenate(ring_pts + [cap])
+    tris = []
+    for k in range(rings):
+        for i in range(n):
+            j = (i + 1) % n
+            a0, a1, b0, b1 = k * n + i, k * n + j, (k + 1) * n + i, (k + 1) * n + j
+            tris += [(a0, b0, a1), (a1, b0, b1)]
+    last, c = rings * n, len(co) - 1
+    tris += [(last + i, c, last + (i + 1) % n) for i in range(n)]
+    tris = np.array(tris)
+    # face into the mouth, like the lips' skin they continue
+    mid = np.array([0, (v[:, 1].mean() + y_back) / 2, zc])
+    fn = np.cross(co[tris[:, 1]] - co[tris[:, 0]], co[tris[:, 2]] - co[tris[:, 0]])
+    if ((mid - co[tris].mean(1)) * fn).sum(1).mean() < 0:
+        tris = tris[:, ::-1]
+        fn = -fn
+    nrm = np.zeros_like(co)
+    for kk in range(3):
+        np.add.at(nrm, tris[:, kk], fn)
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-12)
+    n0 = len(d['co'])
+    out = dict(d)
+    out['co'] = np.concatenate([d['co'], co]).astype(d['co'].dtype)
+    out['nrm'] = np.concatenate([d['nrm'], nrm]).astype(d['nrm'].dtype)
+    out['tris'] = np.concatenate([d['tris'], tris + n0])
+    out['matnames'] = np.append(d['matnames'], 'mouth_bag')
+    out['mats'] = np.concatenate([d['mats'], np.full(len(tris), len(d['matnames']))])
+    for side in 'LR':
+        out['ball_' + side] = np.concatenate([d['ball_' + side], np.zeros(len(co), bool)])
+    return out, co, tris
+
+
 if __name__ == '__main__':
-    h = fg.load(sys.argv[1])
+    arrays = dict(np.load(sys.argv[1]))
+    h = fg.from_arrays(arrays)
+    n_head = len(h.co)
+    bag_mesh = None
+    probe = Rig(h)
+    if probe.hole is not None:
+        arrays, bco, btris = add_bag(arrays, h, probe)
+        h = fg.from_arrays(arrays)
+        bag_mesh = (bco, btris)
+        print('mouth bag built on the lips\' edge:', len(bco), 'verts')
     keys, rig = build(h)
     base = sys.argv[2][:-len('.npz')]
     # the dark mouth interior starts a little in from the lip line, so the inner lips keep their colour
     interior = rig.bag & (fg.geodesic(h, np.r_[rig.rim_u, rig.rim_l], limit=0.01) > 0.003 * rig.s)
-    np.save(base + '_bag.npy', (rig.bag.astype(np.int8) + interior)[h.weld])
+    np.save(base + '_bag.npy', (rig.bag.astype(np.int8) + interior)[h.weld][:n_head])
     json.dump(controls(rig), open(os.path.join(os.path.dirname(sys.argv[2]), 'face.json'), 'w'), indent=1)
     for k in sorted(keys):
         print('%-20s max %.1f mm' % (k, np.linalg.norm(keys[k], axis=1).max() * 1000))
@@ -1012,4 +1124,10 @@ if __name__ == '__main__':
     tk = tongue_keys(rig, tco, tw, tu, keys)
     print('tongue', len(tco), 'verts, jaw weight %.2f..%.2f' % (tw.min(), tw.max()))
     np.savez_compressed(base + '_tongue.npz', co=tco, tris=ttris, **{'key_' + k: v for k, v in tk.items()})
-    np.savez_compressed(sys.argv[2], **keys)
+    mouth_path = base + '_mouth.npz'
+    if bag_mesh is not None:
+        np.savez_compressed(mouth_path, co=bag_mesh[0], tris=bag_mesh[1],
+                            **{'key_' + k: v[n_head:] for k, v in keys.items()})
+    elif os.path.exists(mouth_path):
+        os.remove(mouth_path)
+    np.savez_compressed(sys.argv[2], **{k: v[:n_head] for k, v in keys.items()})

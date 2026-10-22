@@ -279,7 +279,14 @@
   "slug": "venator",
   "name": "Venator",
   "codename": "priest",
-  "model": "models/heroes_wip/priest/priest.vmdl"
+  "model": "models/heroes_wip/priest/priest.vmdl",
+  "face": {
+   "part": "head",
+   "mesh": "head",
+   "ride": [
+    "cigar"
+   ]
+  }
  },
  {
   "slug": "victor",

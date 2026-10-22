@@ -772,6 +772,7 @@ def transform_var(d, name, bone, channel):
 if HAS_FACE:
     build_face()
     arm['face_scale'] = FS
+    arm['face_mesh'] = head_ob.name
     arm['face_morphs'] = hero.face.get('builder') == 'morphs.py'
 
 # IK

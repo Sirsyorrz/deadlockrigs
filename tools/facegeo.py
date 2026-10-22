@@ -27,7 +27,11 @@ class Head:
 
 
 def load(path: str) -> Head:
-    d = np.load(path)
+    return from_arrays(dict(np.load(path)))
+
+
+def from_arrays(d: dict) -> Head:
+    """d: head.npz's arrays (dump.py)."""
     co, tris = d['co'].astype(np.float64), d['tris']
     vmat = np.zeros(len(co), int)
     vmat[tris.ravel()] = np.repeat(d['mats'], 3)
@@ -46,12 +50,12 @@ def load(path: str) -> Head:
     lens = np.linalg.norm(wco[we[:, 0]] - wco[we[:, 1]], axis=1)
     wg = coo_matrix((lens, (we[:, 0], we[:, 1])), shape=(nw, nw)).tocsr()
     wg = wg.maximum(wg.T)
-    bones = {k[5:]: d[k] for k in d.files if k.startswith('bone_')}
+    bones = {k[5:]: d[k] for k in d if k.startswith('bone_')}
     wnrm = np.zeros((nw, 3))
     np.add.at(wnrm, weld, d['nrm'])
     wnrm /= np.maximum(np.linalg.norm(wnrm, axis=1, keepdims=True), 1e-9)
-    ball = {s: d['ball_' + s] for s in 'LR'} if 'ball_L' in d.files else None
-    return Head(co, tris, vmat, weld, wco, island, wg, bones, wnrm, ball, d['matnames'], d['other'] if 'other' in d.files else np.zeros((0, 3)))
+    ball = {s: d['ball_' + s] for s in 'LR'} if 'ball_L' in d else None
+    return Head(co, tris, vmat, weld, wco, island, wg, bones, wnrm, ball, d['matnames'], d['other'] if 'other' in d else np.zeros((0, 3)))
 
 
 def geodesic(h: Head, sources_welded, limit=np.inf) -> np.ndarray:

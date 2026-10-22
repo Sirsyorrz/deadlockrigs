@@ -1,24 +1,26 @@
-"""Adds the generated tongue (keys.py -> data/keys_tongue.npz) to the head mesh inside Blender, so the head's
-shape keys and drivers move it with no extra rigging."""
+"""Adds keys.py's generated parts (data/keys_tongue.npz, data/keys_mouth.npz: a mouth bag for heads without one) to
+the head mesh inside Blender, so the head's shape keys and drivers move them with no extra rigging."""
 import bmesh
 import bpy
 import numpy as np
 from mathutils import Matrix
 
 
-def add_tongue(head, path):
-    """Appends the tongue to head's mesh (before any shape keys exist). Returns {key: world offsets} for the
-    new vertices, which come after the original ones."""
-    t = np.load(path)
-    me = head.data
-    n = len(me.vertices)
-    base = np.empty(n * 3, np.float32)
-    me.vertices.foreach_get('co', base)
-    mw = np.array(head.matrix_world)
-    world = base.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
-    inv = np.array(Matrix(mw).inverted())
-    local = t['co'] @ inv[:3, :3].T + inv[:3, 3]
+def interior_material():
+    """The dark mouth inside, shared by the bag faces build.py darkens and a generated bag."""
+    mat = bpy.data.materials.get('mouth_interior')
+    if mat is None:
+        mat = bpy.data.materials.new('mouth_interior')
+        mat.use_nodes = True
+        bsdf = mat.node_tree.nodes['Principled BSDF']
+        bsdf.inputs['Base Color'].default_value = (0.09, 0.025, 0.03, 1)
+        bsdf.inputs['Roughness'].default_value = 0.6
+        # flat, shallow bags (Apollo) otherwise just mirror the sky
+        bsdf.inputs['Specular IOR Level'].default_value = 0
+    return mat
 
+
+def tongue_material():
     mat = bpy.data.materials.new('tongue')
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes['Principled BSDF']
@@ -30,14 +32,30 @@ def add_tongue(head, path):
     bsdf.inputs['Roughness'].default_value = 0.6
     # deep in the mouth there is nothing to reflect; full specular made it look grey
     bsdf.inputs['Specular IOR Level'].default_value = 0.08
-    me.materials.append(mat)
-    mi = len(me.materials) - 1
+    return mat
+
+
+def add_part(head, path, mat):
+    """Appends a generated part to head's mesh (before any shape keys exist). Returns {key: world offsets} for the
+    new vertices, which come after the ones already there."""
+    t = np.load(path)
+    me = head.data
+    n = len(me.vertices)
+    base = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get('co', base)
+    mw = np.array(head.matrix_world)
+    world = base.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+    inv = np.array(Matrix(mw).inverted())
+    local = t['co'] @ inv[:3, :3].T + inv[:3, 3]
+    if mat.name not in me.materials:
+        me.materials.append(mat)
+    mi = list(me.materials).index(mat)
 
     bm = bmesh.new()
     bm.from_mesh(me)
     deform = bm.verts.layers.deform.verify()
     bm.verts.ensure_lookup_table()
-    # skin weights of the nearest head vertex, so the tongue rides the same bones
+    # skin weights of the nearest head vertex, so the part rides the same bones
     near = np.argmin(((world[None] - t['co'][:, None]) ** 2).sum(-1), axis=1)
     src = [dict(bm.verts[int(j)][deform].items()) for j in near]
     new = []

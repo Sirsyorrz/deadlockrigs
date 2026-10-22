@@ -467,7 +467,9 @@ if IDLE:
 # face: every ARKit key moves the head by a sane amount, and the controls drive the keys
 if 'FACE' in pb:
     reset()
-    head = next(o for o in bpy.data.objects if o.type == 'MESH' and o.data.shape_keys and 'jawOpen' in o.data.shape_keys.key_blocks)
+    # props riding the lips (Venator's cigar) carry the same keys, so take the face mesh the rig names
+    head = bpy.data.objects.get(arm.get('face_mesh', '')) or next(
+        o for o in bpy.data.objects if o.type == 'MESH' and o.data.shape_keys and 'jawOpen' in o.data.shape_keys.key_blocks)
     kbs = head.data.shape_keys.key_blocks
     base = np.array([v.co for v in kbs[0].data])
     fs = arm.get('face_scale', 1.0)
