@@ -31,6 +31,9 @@ from scipy.spatial import cKDTree
 import facegeo as fg
 
 REF_SPACING = 0.088
+# jawOpen's turn and eyeBlink's lid fractions; the face bones' correctives are solved at the same
+JAW_DEG = 14
+BLINK_UPPER, BLINK_LOWER = 0.8, 0.2
 
 
 def smoothstep(a, b, x):
@@ -157,14 +160,19 @@ class Rig:
         self.face_w &= ~(self.sock['L'] | self.sock['R'])
         self._jaw_weights()
         self._lid_weights()
+        self.handle_vid = {}
+        self.d_lips = fg.geodesic(h, np.r_[self.rim_u, self.rim_l], limit=0.06 * self.s)
+        self.corner_x = {side: abs(h.wco[self.corner[side], 0]) for side in 'LR'}
 
     def landmark(self, x, z, r=0.004):
         """Frontmost face vertex near (x, z)."""
         p = self.h.wco
         d = np.hypot(p[:, 0] - x, p[:, 2] - z)
-        cand = np.where(self.face_w & (d < r * self.s))[0]
+        # where the face skin is sparse, the nearest vertex within r could be on the back of the head
+        front = self.face_w & (p[:, 1] < self.eye_c['L'][1])
+        cand = np.where(front & (d < r * self.s))[0]
         if len(cand) == 0:
-            cand = np.where(self.face_w)[0]
+            cand = np.where(front)[0]
             return cand[d[cand].argmin()]
         return cand[p[cand, 1].argmin()]
 
@@ -448,6 +456,26 @@ class Rig:
         w = np.exp(-(g / radius) ** 2)
         w[~self.soft_w] = 0
         self.handles[name] = w
+        self.handle_vid[name] = vid
+
+    def lip_arc(self, side, reach=0.016):
+        """The lip line following its corner on a curve: none at the middle, all of it at the corner, fading out
+        past it, so the mouth bends instead of kinking at the corner."""
+        sx = 1 if side == 'L' else -1
+        cx = self.corner_x[side]
+        t = self.h.wco[:, 0] * sx / cx
+        f = np.where(t <= 1, np.clip(t, 0, 1) ** 1.6, np.exp(-((t - 1) * cx / (0.016 * self.s)) ** 2))
+        return f * np.exp(-(self.d_lips / (reach * self.s)) ** 2) * self.soft_w
+
+    def lid_profile(self, side, x):
+        """The open gap at x as a fraction of its widest: a lid bone's turn scaled by this closes the lid like
+        lid_move's fractions."""
+        fu, fl = self.margin_phis(side, x)
+        return np.clip(fu - fl, 0, None) / self.gap_max(side)
+
+    def gap_max(self, side):
+        m = self.margins[side]
+        return np.subtract(*self.margin_phis(side, np.linspace(m['x_in'], m['x_out'], 50))).max()
 
     def moves(self, spec):
         """spec: {handle: crud-style mm vector (forward, up, towards the hero's right)}"""
@@ -508,24 +536,19 @@ def build(h: fg.Head) -> tuple:
         keys[name + 'Left'] = rig.moves(spec_left)
         keys[name + 'Right'] = rig.moves(mirror(spec_left))
 
-    lip_line = np.r_[rim_u, rim_l]
-    d_lips = fg.geodesic(h, lip_line, limit=0.06 * s)
-    cx = {side: abs(p[corner[side], 0]) for side in 'LR'}
+    d_lips = rig.d_lips
+    cx = rig.corner_x
 
-    def arc(side, up, out, back, reach=0.016):
-        """The corner pulled with the whole lip line following on a curve (none at the middle, all of it at the
-        corner, fading out past it), so the mouth bends instead of kinking at the corner. mm like moves()."""
+    def arc(side, up, out, back):
+        """The corner pulled with the lip line following (Rig.lip_arc). mm like moves()."""
         sx = 1 if side == 'L' else -1
-        t = p[:, 0] * sx / cx[side]
-        f = np.where(t <= 1, np.clip(t, 0, 1) ** 1.6, np.exp(-((t - 1) * cx[side] / (0.016 * s)) ** 2))
-        w = f * np.exp(-(d_lips / (reach * s)) ** 2) * rig.soft_w
-        return np.outer(w, np.array([sx * out, back, up]) * rig.mm)
+        return np.outer(rig.lip_arc(side), np.array([sx * out, back, up]) * rig.mm)
 
     def lr_arc(name, up, out, back, spec_left):
         keys[name + 'Left'] = arc('L', up, out, back) + rig.moves(spec_left)
         keys[name + 'Right'] = arc('R', up, out, back) + rig.moves(mirror(spec_left))
 
-    jaw_open = rig.jaw_rot(14) + rig.moves({'L_LIPCORNER': (1, -5, 0), 'R_LIPCORNER': (1, -5, 0),
+    jaw_open = rig.jaw_rot(JAW_DEG) + rig.moves({'L_LIPCORNER': (1, -5, 0), 'R_LIPCORNER': (1, -5, 0),
                                             'L_CHEEK_MID': (0, -2, 0), 'R_CHEEK_MID': (0, -2, 0)})
     keys['jawOpen'] = jaw_open
     mm5 = 5 * 0.0011 * s
@@ -565,7 +588,9 @@ def build(h: fg.Head) -> tuple:
     t_abs = np.abs(p[:, 0]) / ((cx['L'] + cx['R']) / 2)
     along = np.where(t_abs <= 1, 1, np.exp(-((t_abs - 1) / 0.45) ** 2))
     lipw = (1 - smoothstep(0.01 * s, 0.03 * s, d_lips)) * along * rig.soft_w
-    # the bag behind the corners would slide out through the cheek, so only its lip edge goes along
+    # moving out, the bag behind the corners would slide out through the cheek, so only its lip edge goes along;
+    # moving in, it has to follow, or an open mouth (Drifter's grin) shows the bag's corners behind the lips
+    lipw_in = lipw.copy()
     lipw[rig.bag] *= 1 - smoothstep(0.001 * s, 0.005 * s, d_lips[rig.bag])
     mid = (rim_z(rim_u, p[:, 0]) + rim_z(rim_l, p[:, 0])) / 2
     upper = smoothstep(-0.002 * s, 0.002 * s, p[:, 2] - mid)
@@ -575,13 +600,13 @@ def build(h: fg.Head) -> tuple:
     def field(fwd, up, x):
         return np.stack(np.broadcast_arrays(x, -fwd, up), axis=1) * mm
 
-    keys['mouthLeft'] = field(0, 0, 6 * lipw)
-    keys['mouthRight'] = field(0, 0, -6 * lipw)
+    keys['mouthLeft'] = field(0, 0, 6 * np.where(p[:, 0] < 0, lipw_in, lipw))
+    keys['mouthRight'] = field(0, 0, -6 * np.where(p[:, 0] > 0, lipw_in, lipw))
     # pucker: lips push out (most in the middle) and gather towards it
-    keys['mouthPucker'] = field(lipw * (5 + 3 * centre), 0, 0) + field(0, 0, -0.38 * p[:, 0] / mm * lipw)
+    keys['mouthPucker'] = field(lipw * (5 + 3 * centre), 0, 0) + field(0, 0, -0.38 * p[:, 0] / mm * lipw_in)
     # funnel: as pucker but rounder, with the lips flaring apart in the middle
     keys['mouthFunnel'] = (field(lipw * (3 + 2 * centre), lipw * centre * 3 * (2 * upper - 1), 0)
-                           + field(0, 0, -0.2 * p[:, 0] / mm * lipw))
+                           + field(0, 0, -0.2 * p[:, 0] / mm * lipw_in))
     keys['mouthShrugUpper'] = rig.moves({'M_UPPERLIP_OUTER': (1, 2.5, 0), 'L_UPPERLIP_OUTER': (1, 2, 0),
                                          'R_UPPERLIP_OUTER': (1, 2, 0)})
     keys['mouthShrugLower'] = rig.moves({'M_LOWERLIP_OUTER': (1.5, 3, 0), 'L_LOWERLIP_OUTER': (1.5, 2.5, 0),
@@ -595,24 +620,45 @@ def build(h: fg.Head) -> tuple:
 
     # lids on top of the bone-style moves
     for side, name in (('L', 'Left'), ('R', 'Right')):
-        keys['eyeBlink' + name] += rig.lid_move(side, 'eyeBlink' + name, upper_frac=0.8, lower_frac=0.2)
+        keys['eyeBlink' + name] += rig.lid_move(side, 'eyeBlink' + name, upper_frac=BLINK_UPPER, lower_frac=BLINK_LOWER)
         keys['eyeWide' + name] += rig.lid_move(side, 'eyeWide' + name, upper_deg=9, lower_deg=-4)
         keys['eyeSquint' + name] += rig.lid_move(side, 'eyeSquint' + name, upper_frac=0.12, lower_frac=0.3)
         keys['cheekSquint' + name] += rig.lid_move(side, 'cheekSquint' + name, lower_frac=0.12)
         keys['mouthSmile' + name] += rig.lid_move(side, 'mouthSmile' + name, lower_frac=0.06)
 
-    # hair and hats are separate meshes the keys don't move: forehead skin under them stays put so it can't
-    # come through
-    if len(h.other):
-        d_other, _ = cKDTree(h.other).query(p)
-        above = smoothstep(rig.ez + 0.01 * s, rig.ez + 0.025 * s, p[:, 2])
-        hold = 1 - above * (1 - smoothstep(0.004 * s, 0.015 * s, d_other))
-        for k in keys:
-            keys[k] *= hold[:, None]
+    hold = hair_hold(h, rig)
+    for k in keys:
+        keys[k] *= hold[:, None]
     out = {k: v[h.weld] for k, v in keys.items()}
     out.update(eye_keys(h, rig))
+    for side, name in (('L', 'Left'), ('R', 'Right')):
+        out['eyeBlink' + name] += glint_sink(h, rig, side)
     attach(h, rig, out)
     return out, rig
+
+
+def hair_hold(h, rig):
+    """Hair and hats are separate meshes the keys don't move: forehead skin under them stays put so it can't come
+    through. Per welded vertex, 1 = free."""
+    if not len(h.other):
+        return np.ones(rig.nw)
+    s = rig.s
+    d_other, _ = cKDTree(h.other).query(h.wco)
+    above = smoothstep(rig.ez + 0.01 * s, rig.ez + 0.025 * s, h.wco[:, 2])
+    return 1 - above * (1 - smoothstep(0.004 * s, 0.015 * s, d_other))
+
+
+def glint_sink(h, rig, side):
+    """Glints stand off the eyeball, in front of where the closed lid lies, and would poke through it: the upper lid
+    closing pushes them into the ball, twice as fast so they are under its surface by half way."""
+    ball = np.where(h.ball[side])[0]
+    q = h.co[ball] - rig.eye_c[side]
+    rho = np.linalg.norm(q, axis=1)
+    off = rho - rig.eye_r[side]
+    d = np.zeros((len(h.co), 3))
+    g = off > 0.0003
+    d[ball[g]] = -q[g] / rho[g, None] * (2 * off[g] + 0.0005)[:, None]
+    return d
 
 
 def eye_keys(h, rig):
@@ -631,6 +677,32 @@ def eye_keys(h, rig):
                 dl = rig.lid_move(s, key + name, upper_deg=lid_deg, lower_deg=lid_deg * 0.5)[h.weld]
                 d[~ball] += dl[~ball]
             out[key + name] = d
+        out.update(iris_keys(h, rig, s, name))
+    return out
+
+
+def iris_keys(h, rig, side, name, inner=20, outer=40):
+    """Iris (and pupil) size: the front cap of the eyeball slides over the sphere, away from or towards the gaze
+    axis, fading out between inner and outer degrees."""
+    ball = np.where(h.ball[side])[0]
+    c = rig.eye_c[side]
+    d = h.co[ball] - c
+    rho = np.linalg.norm(d, axis=1)
+    u = d / rho[:, None]
+    front = u[u[:, 1] < -np.cos(np.radians(12))]
+    pole = front.mean(0)
+    pole /= np.linalg.norm(pole)
+    alpha = np.arccos(np.clip(u @ pole, -1, 1))
+    perp = u - np.outer(u @ pole, pole)
+    perp /= np.maximum(np.linalg.norm(perp, axis=1, keepdims=True), 1e-9)
+    fade = 1 - smoothstep(np.radians(inner), np.radians(outer), alpha)
+    out = {}
+    for key, k in (('irisLarge', 1.3), ('irisSmall', 0.75)):
+        a2 = alpha * (1 + (k - 1) * fade)
+        moved = c + rho[:, None] * (np.outer(np.cos(a2), pole) + np.sin(a2)[:, None] * perp)
+        off = np.zeros((len(h.co), 3))
+        off[ball] = moved - h.co[ball]
+        out[key + name] = off
     return out
 
 
@@ -700,7 +772,7 @@ def tongue(h, rig, n_ring=14, n_len=16):
 def tongue_keys(rig, co, w, u, names):
     s = rig.s
     out = {k: np.zeros_like(co) for k in names}
-    out['jawOpen'] = rot_x(co, rig.jaw_pivot, -np.radians(14) * w) - co
+    out['jawOpen'] = rot_x(co, rig.jaw_pivot, -np.radians(JAW_DEG) * w) - co
     mm5 = 5 * 0.0011 * s
     for k, v in (('jawForward', (0, -1, 0)), ('jawLeft', (1, 0, 0)), ('jawRight', (-1, 0, 0))):
         out[k] = np.outer(w, np.array(v) * mm5)
@@ -717,46 +789,72 @@ def tongue_keys(rig, co, w, u, names):
     return out
 
 
-def attach(h, rig, keys):
-    """Cards (lashes, liner, brows: pieces not welded to the skin) ride the skin under them. Liner and
-    lash cards turn with the lid margin as one piece, else the lid skin's falloff stretches them over
-    the whole closed lid. Pieces standing off the skin (hair, glasses) stay put; teeth go with the jaw."""
-    s = rig.s
-    ball = h.ball['L'] | h.ball['R']
-    cards = ~rig.soft_w[h.weld] & ~ball & ~rig.teeth_w[h.weld]
-    margin = np.concatenate([rig.margins[side][k] for side in 'LR' for k in ('upper', 'lower')])
-    skin = np.where(rig.face_w)[0]
-    m_tree, s_tree = cKDTree(h.wco[margin]), cKDTree(h.wco[skin])
-    comp = rig.comp
-    anchors = np.zeros(len(h.co), int)
-    lid_card = np.zeros(len(h.co), bool)
-    follow = np.zeros(len(h.co))
-    skin_soft = np.where(rig.soft_w)[0]
-    soft_tree = cKDTree(h.wco[skin_soft])
-    for c in np.unique(comp[h.weld[cards]]):
-        sel = cards & (comp[h.weld] == c)
-        dm, im = m_tree.query(h.co[sel])
-        ds, _ = soft_tree.query(h.co[sel])
-        small = np.ptp(h.co[sel], axis=0).max() < 0.08 * s
-        # lashes, brows, liner, moustaches lie on the skin; hair and glasses stand off it and stay put
-        on_skin = np.median(ds) < 0.01 * s and np.ptp(h.co[sel], axis=0).max() < 0.13 * s
-        follow[sel] = float(on_skin)
-        if np.median(dm) < 0.012 * s and small:
-            anchors[sel] = margin[im]
-            lid_card[sel] = True
-        else:
-            anchors[sel] = skin[s_tree.query(h.co[sel])[1]]
-    upper_card = lid_card & np.isin(anchors, np.concatenate([rig.margins[side]['upper'] for side in 'LR']))
-    cards_idx = np.where(cards)[0]
-    # cards follow a smooth blend of the skin offsets around them; lid cards also take the closing
-    # turns rigidly (raising turns stay blended so the skin above does not poke through)
-    dist, near = soft_tree.query(h.co[cards_idx], k=8)
-    wts = 1 / np.maximum(dist, 1e-4) ** 2
-    wts /= wts.sum(1, keepdims=True)
+class Cards:
+    """Cards (lashes, liner, brows: pieces not welded to the skin) and how they ride the skin under them."""
+
+    def __init__(self, h, rig):
+        s = rig.s
+        ball = h.ball['L'] | h.ball['R']
+        cards = ~rig.soft_w[h.weld] & ~ball & ~rig.teeth_w[h.weld]
+        margin = np.concatenate([rig.margins[side][k] for side in 'LR' for k in ('upper', 'lower')])
+        skin = np.where(rig.face_w)[0]
+        m_tree, s_tree = cKDTree(h.wco[margin]), cKDTree(h.wco[skin])
+        comp = rig.comp
+        anchors = np.zeros(len(h.co), int)
+        lid_card = np.zeros(len(h.co), bool)
+        follow = np.zeros(len(h.co))
+        skin_soft = np.where(rig.soft_w)[0]
+        soft_tree = cKDTree(h.wco[skin_soft])
+        for c in np.unique(comp[h.weld[cards]]):
+            sel = cards & (comp[h.weld] == c)
+            dm, im = m_tree.query(h.co[sel])
+            ds, _ = soft_tree.query(h.co[sel])
+            small = np.ptp(h.co[sel], axis=0).max() < 0.08 * s
+            # lashes, brows, liner, moustaches lie on the skin; hair and glasses stand off it and stay put
+            on_skin = np.median(ds) < 0.01 * s and np.ptp(h.co[sel], axis=0).max() < 0.13 * s
+            follow[sel] = float(on_skin)
+            if np.median(dm) < 0.012 * s and small:
+                anchors[sel] = margin[im]
+                lid_card[sel] = True
+            else:
+                anchors[sel] = skin[s_tree.query(h.co[sel])[1]]
+        self.mask, self.idx = cards, np.where(cards)[0]
+        self.lid_card = lid_card
+        on_upper = lid_card & np.isin(anchors, np.concatenate([rig.margins[side]['upper'] for side in 'LR']))
+        # a whole lash goes with one lid: per vertex, the tips of a long upper lash (Paige's) lie nearer the lower
+        # margin and folded the other way
+        self.upper_card = np.zeros(len(h.co), bool)
+        for c in np.unique(comp[h.weld[lid_card]]):
+            sel = lid_card & (comp[h.weld] == c)
+            self.upper_card[sel] = on_upper[sel].mean() > 0.5
+        self.follow = follow
+        self.skin_soft = skin_soft
+        # cards follow a smooth blend of the skin around them
+        dist, self.near = soft_tree.query(h.co[self.idx], k=8)
+        wts = 1 / np.maximum(dist, 1e-4) ** 2
+        self.wts = wts / wts.sum(1, keepdims=True)
+
+    def spread(self, welded):
+        """Per-welded-vertex values (n,) or (n,3) blended onto the cards (unwelded rows of the card vertices)."""
+        v = welded[self.skin_soft][self.near]
+        f = self.follow[self.idx]
+        if v.ndim == 2:
+            return (self.wts * v).sum(1) * f
+        return np.einsum('ik,ikj->ij', self.wts, v) * f[:, None]
+
+
+def attach(h, rig, keys, cards=None):
+    """Cards ride the skin under them. Liner and lash cards turn with the lid margin as one piece, else the lid
+    skin's falloff stretches them over the whole closed lid. Pieces standing off the skin (hair, glasses) stay
+    put; teeth go with the jaw."""
+    cards = cards or Cards(h, rig)
+    lid_card, upper_card = cards.lid_card, cards.upper_card
     for name, d in keys.items():
         dw = np.zeros((rig.nw, 3))
-        dw[h.weld[~cards]] = d[~cards]
+        dw[h.weld[~cards.mask]] = d[~cards.mask]
         lid_ang = np.zeros(len(h.co))
+        # lid cards take the closing turns rigidly (raising turns stay blended so the skin above does not poke
+        # through)
         for side, amounts in rig.lid_specs.get(name, []):
             closing = {k: v for k, v in amounts.items() if k.endswith('_frac')}
             if not closing:
@@ -765,11 +863,16 @@ def attach(h, rig, keys):
             sel = lid_card & ((h.co[:, 0] > 0) == (side == 'L'))
             au, al = rig.lid_angles(side, h.co[sel, 0], **closing)
             lid_ang[sel] += np.where(upper_card[sel], au, al)
-        d[cards_idx] = np.einsum('ik,ikj->ij', wts, dw[skin_soft][near]) * follow[cards_idx, None]
+        d[cards.idx] = cards.spread(dw)
         for side in 'LR':
             ss = np.where(lid_card & (lid_ang != 0) & ((h.co[:, 0] > 0) == (side == 'L')))[0]
             if len(ss):
                 d[ss] += rot_x(h.co[ss], rig.eye_c[side], lid_ang[ss]) - h.co[ss]
+                # the lid skin above the margin bulges as it bunches up and came through thick liner (Paige's):
+                # the card lifts off the ball as it turns
+                out = h.co[ss] - rig.eye_c[side]
+                out /= np.linalg.norm(out, axis=1, keepdims=True)
+                d[ss] += out * (0.0025 * rig.s * np.abs(lid_ang[ss]))[:, None]
 
 
 def controls(rig):

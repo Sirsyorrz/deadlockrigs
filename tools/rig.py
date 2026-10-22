@@ -14,6 +14,7 @@ ones are turned into their mirror (mirror.py) so X-mirror posing works, which le
 hero's skeleton lacks (arms, fingers, twist bones) are skipped.
 
 """
+import collections
 import json
 import math
 import os
@@ -33,6 +34,8 @@ from hero import from_argv  # noqa: E402
 hero, _ = from_argv()
 out = hero.rig_blend
 GAMERIG = json.load(open(os.path.join(hero.data, 'gamerig.json')))
+CLOTH_JSON = os.path.join(hero.data, 'cloth.json')
+CLOTH = json.load(open(CLOTH_JSON)) if os.path.exists(CLOTH_JSON) else {'nodes': [], 'rods': []}
 bpy.context.scene.render.fps = 30
 arm = bpy.data.objects[hero.name]
 HAS_FACE = bool(hero.face)
@@ -57,23 +60,43 @@ hpos = {b.name: b.head_local.copy() for b in B}
 
 # bone categories
 
+# tails (Abrams, Calico's cat_tail, Baba's pidge_tail), not coat tails, ponytails or cloaks
+TAIL_RX = r'^(?!coat|pony|cloak)(?:[a-z]+_)?tail_\d+$'
 CATS = [
-    ('Helpers', r'_TWIST|^attach|IKTARGET|AimIntent|_target_|^eye_0|^jaw_0|^weaponHand|_aim|_up(_|$)|_offset$'),
+    ('Helpers', r'^\$cloth|_TWIST|^attach|IKTARGET|AimIntent|_target_|^eye_0|^jaw_0|^weaponHand|_aim|_up(_|$)|_offset$'),
     ('Root', r'^root_motion$'),
     ('Torso', r'^(pelvis|spine_\d|neck_0|head)$'),
     ('Arms FK', r'^(clavicle|arm_upper|arm_lower|hand)_[LR]$'),
     ('Fingers', r'^finger_'),
     ('Legs FK', r'^(leg_upper|leg_lower|ankle|ball)_[LR]$'),
     ('Weapon', r'^weapon|^brush_'),
+    ('Tail', TAIL_RX),
     ('Secondary', r'.'),
 ]
-COLL_ORDER = ['Root', 'Torso', 'Arms FK', 'Legs FK', 'IK', 'Fingers', 'Props', 'Face', 'Secondary', 'Weapon', 'Helpers']
+COLL_ORDER = ['Root', 'Torso', 'Arms FK', 'Legs FK', 'IK', 'Fingers', 'Props', 'Tail', 'Face', 'Secondary', 'Weapon',
+              'Helpers']
 HIDDEN = {'Helpers'}
 HIDDEN_BY_DEFAULT = {'Helpers', 'Secondary'}
 
 
+def skinned_bones():
+    out = set()
+    for o in bpy.data.objects:
+        if o.type != 'MESH' or not o.vertex_groups:
+            continue
+        names = {g.index: g.name for g in o.vertex_groups}
+        for v in o.data.vertices:
+            out.update(names[x.group] for x in v.groups if x.weight > 0.01)
+    return out
+
+
+# tail bones with no skin (Infernus' is flames) stay secondary
+SKINNED = skinned_bones()
+
+
 def category(name):
-    return next(c for c, rx in CATS if re.search(rx, name))
+    cat = next(c for c, rx in CATS if re.search(rx, name))
+    return 'Secondary' if cat == 'Tail' and name not in SKINNED else cat
 
 
 def side(name):
@@ -87,31 +110,45 @@ COLOURS = {'L': 'THEME04', 'R': 'THEME01', None: 'THEME09'}
 
 CTRLS = {}
 FACE = 'FACE'
+HAS_EYES = False
+FS = 1.0
 if HAS_FACE:
-    # hand-placed in heroes.json (Violet), else the positions keys.py derived from the head
+    # game-morph faces (morphs.py) only have the ARKit keys their morphs cover
+    ARKIT = [k for k in ARKIT if k in head_ob.data.shape_keys.key_blocks]
+    GROUPS = {g: [k for k in ks if k in ARKIT] for g, ks in GROUPS.items()}
+    GROUPS = {g: ks for g, ks in GROUPS.items() if ks}
+    # hand-placed in heroes.json (Violet), else the positions keys.py or morphs.py derived from the head
     FC = hero.face.get('controls') or json.load(open(os.path.join(hero.data, 'face.json')))
+    # control sizes and travel were tuned on Violet's face; bigger faces (Billy, Rem) scale them up
+    FS = FC.get('scale', 1.0)
     for s, sx in (('L', 1), ('R', -1)):
         for k, (x, y, z) in FC['landmarks'].items():
-            CTRLS[f'CTRL_{k}_{s}'] = (Vector((sx * x, y, z)), 0.0035, 0.01, 0.01, False, False)
-    CTRLS['CTRL_brow_mid'] = (Vector(FC['brow_mid']), 0.004, 0.0, 0.01, False, False)
-    CTRLS['CTRL_mouth'] = (Vector(FC['mouth']), 0.006, 0.01, 0.01, False, True)
-    CTRLS['CTRL_jaw'] = (Vector(FC['jaw']), 0.007, 0.01, 0.025, True, False)
-    EYE_TARGET = Vector(FC['eye_target'])
-    EYE_SPACING = FC['eye_spacing']
+            CTRLS[f'CTRL_{k}_{s}'] = (Vector((sx * x, y, z)), 0.0035 * FS, 0.01 * FS, 0.01 * FS, False, False)
+    CTRLS['CTRL_brow_mid'] = (Vector(FC['brow_mid']), 0.004 * FS, 0.0, 0.01 * FS, False, False)
+    CTRLS['CTRL_mouth'] = (Vector(FC['mouth']), 0.006 * FS, 0.01 * FS, 0.01 * FS, False, True)
+    CTRLS['CTRL_jaw'] = (Vector(FC['jaw']), 0.007 * FS, 0.01 * FS, 0.025 * FS, True, False)
+    HAS_EYES = 'eye_target' in FC
+    if HAS_EYES:
+        EYE_TARGET = Vector(FC['eye_target'])
+        EYE_SPACING = FC['eye_spacing']
     FACE_BONE = Vector(FC['face_box'])
 
 
+
 def terms():
-    """shape key -> list of (bone, channel, sign, travel). sign +1 counts positive motion."""
-    t = {k: [] for k in ARKIT}
+    """shape key -> list of (bone, channel, sign, travel). sign +1 counts positive motion. Only keys the head has,
+    and only controls that exist."""
+    t = collections.defaultdict(list)
     for s, side_name, out_sign in (('L', 'Left', 1), ('R', 'Right', -1)):
         t['eyeBlink' + side_name].append((f'CTRL_lid_{s}', 'LOC_Y', -1, 0.008))
         t['eyeWide' + side_name].append((f'CTRL_lid_{s}', 'LOC_Y', 1, 0.005))
         t['eyeSquint' + side_name].append((f'CTRL_lidlow_{s}', 'LOC_Y', 1, 0.005))
-        t['eyeLookUp' + side_name].append(('CTRL_eyes', 'LOC_Y', 1, 0.15))
-        t['eyeLookDown' + side_name].append(('CTRL_eyes', 'LOC_Y', -1, 0.15))
-        t['eyeLookOut' + side_name].append(('CTRL_eyes', 'LOC_X', out_sign, 0.22))
-        t['eyeLookIn' + side_name].append(('CTRL_eyes', 'LOC_X', -out_sign, 0.22))
+        # both eyes' target plus this eye's own offset
+        eyes = ('CTRL_eyes', f'CTRL_eye_{s}')
+        t['eyeLookUp' + side_name].append((eyes, 'LOC_Y', 1, 0.15))
+        t['eyeLookDown' + side_name].append((eyes, 'LOC_Y', -1, 0.15))
+        t['eyeLookOut' + side_name].append((eyes, 'LOC_X', out_sign, 0.22))
+        t['eyeLookIn' + side_name].append((eyes, 'LOC_X', -out_sign, 0.22))
         t['browDown' + side_name].append((f'CTRL_brow_{s}', 'LOC_Y', -1, 0.006))
         t['browDown' + side_name].append(('CTRL_brow_mid', 'LOC_Y', -1, 0.012))
         t['browOuterUp' + side_name].append((f'CTRL_brow_{s}', 'LOC_Y', 1, 0.008))
@@ -139,7 +176,22 @@ def terms():
         t[k].append(('CTRL_mouth', 'LOC_Y', -1, 0.005))
     t['mouthPucker'].append(('CTRL_mouth', 'SCALE_AVG', -1, 0.5))
     t['mouthFunnel'].append(('CTRL_mouth', 'SCALE_AVG', 1, 0.5))
-    return t
+    known = set(CTRLS) | ({'CTRL_eyes', 'CTRL_eye_L', 'CTRL_eye_R'} if HAS_EYES else set())
+    out = {}
+    for k in ARKIT:
+        out[k] = []
+        for bones, ch, sign, travel in t[k]:
+            if not all(b in known for b in (bones if isinstance(bones, tuple) else (bones,))):
+                continue
+            eye = isinstance(bones, tuple)
+            out[k].append((bones, ch, sign, travel * FS if ch.startswith('LOC') and not eye else travel))
+    return out
+
+
+if HAS_FACE:
+    # controls none of the head's keys use are left out
+    used = {b for tl in terms().values() for bones, *_ in tl for b in (bones if isinstance(bones, tuple) else (bones,))}
+    CTRLS = {k: v for k, v in CTRLS.items() if k in used}
 
 
 # held props (heroes.json "props"): the prop's bone becomes a visible control, its default hold comes from the first
@@ -215,10 +267,13 @@ FWD = Vector((0, -1, 0))
 UP = Vector((0, 0, 1))
 for name, (pos, *_rest) in CTRLS.items():
     new_bone(name, pos, pos + UP * 0.006, 'head', roll_to=FWD)
-if HAS_FACE:
+if HAS_EYES:
     new_bone('CTRL_eyes', EYE_TARGET, EYE_TARGET + UP * 0.03, 'head', roll_to=FWD)
-    new_bone(FACE, FACE_BONE, FACE_BONE + UP * 0.03, 'head', roll_to=FWD)
-
+    for s, sx in (('L', 1), ('R', -1)):
+        e = EYE_TARGET + Vector((sx * EYE_SPACING, 0, 0))
+        new_bone(f'CTRL_eye_{s}', e, e + UP * 0.02, 'CTRL_eyes', roll_to=FWD)
+if HAS_FACE:
+    new_bone(FACE, FACE_BONE, FACE_BONE + UP * 0.03 * FS, 'head', roll_to=FWD)
 ROOT = 'root_motion' if 'root_motion' in eb else None
 # widget sizes and pole distances were tuned on Violet, whose head bone sits 2.094 m up
 SCALE = eb['head'].head.z / 2.094 if 'head' in eb else 1.0
@@ -306,6 +361,36 @@ for prop, idle in PROP_CHAINS:
     at = (rest[prop['anchor']] @ idle[prop['anchor']].inverted() @ idle[end]).translation
     new_bone('ANC-' + end, at, at + UP * 0.02, prop['anchor'], roll_to=FWD)
 
+# Tails: FK on the deform bones, plus IK_<tail> at the tip bending a clean chain (CHC-*, built like the prop chain's)
+# that the deform bones blend to with ik_<tail>. The control rides TFK-*, a copy of that chain without IK, so it sits on
+# the FK tip: left alone, IK gives the FK pose (clips play as they are), and moving it bends the tail.
+TAILS = []
+for n in list(eb.keys()):
+    m = re.match(TAIL_RX[:-len(r'\d+$')] + '0$', n)
+    if not m:
+        continue
+    pre = n[:-2]
+    chain = [n]
+    while (nxt := eb.get(f'{pre}_{len(chain)}')) and nxt.parent and nxt.parent.name == chain[-1]:
+        chain.append(nxt.name)
+    tip = eb.get(f'{pre}_end')
+    end = tip.name if tip and tip.parent and tip.parent.name == chain[-1] else chain.pop()
+    if len(chain) < 2 or not SKINNED & set(chain):
+        continue
+    d = eb[end].head - eb[chain[-1]].head
+    # MCH-*/TFP-* have the deform bones' rest frames and take their physics; the next link hangs off them, so both
+    # chains carry the physics and IK bends the simulated tail rather than replacing it
+    for kind, phys_kind in (('CHC-', 'MCH-'), ('TFK-', 'TFP-')):
+        prev = eb[chain[0]].parent.name
+        for k, c in enumerate(chain):
+            nxt = chain[k + 1] if k + 1 < len(chain) else end
+            cb_ = new_bone(kind + c, eb[c].head.copy(), eb[nxt].head.copy(), prev, roll_to=UP)
+            prev = new_bone(phys_kind + c, None, None, cb_.name, copy=c).name
+        new_bone(kind + end, eb[end].head.copy(), eb[end].head + d.normalized() * 0.0001, prev, roll_to=UP)
+    new_bone('IK_' + pre, eb[end].head.copy(), eb[end].head + d, 'TFK-' + end, roll_to=UP)
+    TAILS.append((pre, chain, end))
+print('tails', [(t[0], len(t[1])) for t in TAILS])
+
 PHYS_CHAINS = []
 for c in GAMERIG['chains']:
     js = c['joints']
@@ -319,6 +404,12 @@ for c in GAMERIG['chains']:
     PHYS_CHAINS.append(c)
     for j in js[:-1]:
         new_bone('PHYS-' + j['bone'], None, None, None, copy=j['bone'])
+# vertex cloth (fe_extract.py): the game's $cloth_* bones are loose in the skeleton, so posed by hand the coat stayed
+# at rest. Each follows a blend of body bones; its PHYS- bone (axes along the armature's) carries the baked offset
+CLOTH_BONES = [nd for nd in CLOTH['nodes'] if nd['name'] in eb and not eb[nd['name']].parent]
+for nd in CLOTH_BONES:
+    p = eb[nd['name']].head.copy()
+    new_bone('PHYS-' + nd['name'], p, p + Vector((0, 0.02, 0)), None)
 bpy.ops.object.mode_set(mode='POSE')
 rest = {b.name: b.matrix_local.copy() for b in B}
 
@@ -331,16 +422,18 @@ for b in B:
     n = b.name
     if n.startswith(('CTRL_', FACE)):
         cat = 'Face'
+    elif n in {'IK_' + t[0] for t in TAILS}:
+        cat = 'Tail'
     elif n.startswith(('IK_', 'pole_')):
         cat = 'IK'
-    elif n.startswith(('IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-', 'CHC-', 'ANC-')):
+    elif n.startswith(('IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-', 'CHC-', 'TFK-', 'TFP-', 'ANC-', 'DEF-')):
         cat = 'Helpers'
     elif n in {p['bone'] for p in PROPS}:
         cat = 'Props'
     else:
         cat = category(n)
     colls[cat].assign(b)
-    pal = {'Face': 'THEME03', 'Secondary': 'THEME06', 'Props': 'THEME07'}.get(cat, COLOURS[side(n)])
+    pal = {'Face': 'THEME03', 'Secondary': 'THEME06', 'Props': 'THEME07', 'Tail': 'THEME10'}.get(cat, COLOURS[side(n)])
     b.color.palette = pal
     arm.pose.bones[n].color.palette = pal
 for n in HIDDEN_BY_DEFAULT:
@@ -412,6 +505,25 @@ RADIUS = {'pelvis': 0.17, 'spine': 0.15, 'neck_0': 0.06, 'head': 0.12, 'clavicle
 RADIUS = {k: v * SCALE for k, v in RADIUS.items()}
 
 
+def skin_radius(bone, default):
+    """How far the skin weighted mostly to a bone lies from it, so its ring sits just outside the mesh."""
+    a, b = hpos[bone], seg_end(B[bone])
+    axis = (b - a).normalized() if (b - a).length > 1e-6 else UP
+    dists = []
+    for o in bpy.data.objects:
+        g = o.vertex_groups.get(bone) if o.type == 'MESH' else None
+        if g is None:
+            continue
+        for v in o.data.vertices:
+            if any(x.group == g.index and x.weight > 0.5 for x in v.groups):
+                rel = o.matrix_world @ v.co - a
+                dists.append((rel - axis * rel.dot(axis)).length)
+    if not dists:
+        return default
+    dists.sort()
+    return dists[int(len(dists) * 0.9)] * 1.3
+
+
 def seg_end(b):
     if NEXT.get(b.name) in hpos:
         return hpos[NEXT[b.name]]
@@ -428,7 +540,8 @@ def seg_end(b):
 
 for b in B:
     n = b.name
-    if n.startswith(('CTRL_', 'FACE', 'IK_', 'pole_', 'IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-', 'CHC-', 'ANC-')):
+    if n.startswith(('CTRL_', 'FACE', 'face_', 'IK_', 'pole_', 'IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-', 'CHC-',
+                     'TFK-', 'TFP-', 'ANC-', 'DEF-')):
         continue
     cat = category(n)
     if cat in HIDDEN:
@@ -439,7 +552,9 @@ for b in B:
     end = seg_end(b)
     d = end - hpos[n]
     r = next((v for k, v in RADIUS.items() if n.startswith(k)), 0.018 * SCALE)
-    if n == 'pelvis':
+    if cat == 'Tail':
+        widget(n, circle(hpos[n] + d * 0.5, d, skin_radius(n, r)), 2)
+    elif n == 'pelvis':
         widget(n, circle(hpos[n], UP, r), 2.5)
     elif n == 'head':
         widget(n, circle(hpos[n] + UP * 0.1, UP, r), 2)
@@ -461,15 +576,40 @@ for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
     for a, b2 in ((a_, b_), (b_, c_)):
         p0, p1 = hpos[f'{a}_{s}'], hpos[f'{b2}_{s}']
         widget(f'IK_tweak_{a}_{s}', circle(p0.lerp(p1, 0.5), p1 - p0, RADIUS[a] * 1.15), 2)
+def build_eye_controls():
+    n_el = 48
+    ry = 0.045 * FS
+    ellipse = [EYE_TARGET + Vector(((EYE_SPACING + ry) * math.cos(a), 0, ry * math.sin(a)))
+               for a in (2 * math.pi * i / n_el for i in range(n_el))]
+    widget('CTRL_eyes', (ellipse, [(i, (i + 1) % n_el) for i in range(n_el)]), 2.5)
+    for s, sx in (('L', 1), ('R', -1)):
+        name = f'CTRL_eye_{s}'
+        widget(name, circle(EYE_TARGET + Vector((sx * EYE_SPACING, 0, 0)), FWD, 0.025 * FS), 2)
+        pb = arm.pose.bones[name]
+        pb.lock_rotation = (True, True, True)
+        pb.lock_rotation_w = True
+        pb.lock_location[2] = True
+        c = pb.constraints.new('LIMIT_SCALE')
+        c.owner_space = 'LOCAL'
+        c.use_transform_limit = True
+        for ax in 'xyz':
+            setattr(c, f'use_min_{ax}', True)
+            setattr(c, f'use_max_{ax}', True)
+            setattr(c, f'min_{ax}', 0.5)
+            setattr(c, f'max_{ax}', 1.5)
+    eyes = arm.pose.bones['CTRL_eyes']
+    eyes.lock_rotation = (True, True, True)
+    eyes.lock_rotation_w = True
+    eyes.lock_scale = (True, True, True)
+
+
 def build_face():
     """Face control widgets, limits, the FACE slider bone and the shape key drivers."""
     for name, (pos, r, *_rest) in CTRLS.items():
         widget(name, circle(pos, FWD, r), 2.5)
-    e1, e2 = EYE_TARGET + Vector((EYE_SPACING, 0, 0)), EYE_TARGET - Vector((EYE_SPACING, 0, 0))
-    p1, ed1 = circle(e1, FWD, 0.03)
-    p2, ed2 = circle(e2, FWD, 0.03)
-    widget('CTRL_eyes', (p1 + p2, ed1 + [(a + len(p1), b + len(p1)) for a, b in ed2]), 2.5)
-    widget(FACE, box(FACE_BONE, Vector((0.04, 0.002, 0.025))), 2)
+    if HAS_EYES:
+        build_eye_controls()
+    widget(FACE, box(FACE_BONE, Vector((0.04, 0.002, 0.025)) * FS), 2)
 
     # face controls: limits, locks, raw sliders, drivers
 
@@ -482,7 +622,7 @@ def build_face():
         c = pb.constraints.new('LIMIT_LOCATION')
         c.owner_space = 'LOCAL'
         c.use_transform_limit = True
-        for ax, t in (('x', tx), ('y', ty), ('z', 0.01 if fwd else 0)):
+        for ax, t in (('x', tx), ('y', ty), ('z', 0.01 * FS if fwd else 0)):
             setattr(c, f'use_min_{ax}', True)
             setattr(c, f'use_max_{ax}', True)
             setattr(c, f'min_{ax}', -t)
@@ -500,10 +640,6 @@ def build_face():
     jaw['seal'] = 0.0
     jaw.id_properties_ui('seal').update(min=0, max=1, soft_min=0, soft_max=1,
                                         description='Keep the lips together while the jaw opens (mouthClose)')
-    eyes = arm.pose.bones['CTRL_eyes']
-    eyes.lock_rotation = (True, True, True)
-    eyes.lock_rotation_w = True
-    eyes.lock_scale = (True, True, True)
     fb = arm.pose.bones[FACE]
     fb.lock_location = fb.lock_rotation = fb.lock_scale = (True, True, True)
     fb.lock_rotation_w = True
@@ -524,15 +660,13 @@ def build_face():
         v.targets[0].id = arm
         v.targets[0].data_path = f'pose.bones["{FACE}"]["{k}"]'
         parts = []
-        for i, (bone, ch, sign, travel) in enumerate(tl):
-            v = d.variables.new()
-            v.name = f'c{i}'
-            v.type = 'TRANSFORMS'
-            v.targets[0].id = arm
-            v.targets[0].bone_target = bone
-            v.targets[0].transform_type = ch
-            v.targets[0].transform_space = 'LOCAL_SPACE'
-            x = f'(c{i} - 1)' if ch == 'SCALE_AVG' else f'c{i}'
+        for i, (bones, ch, sign, travel) in enumerate(tl):
+            names = []
+            for j, bone in enumerate(bones if isinstance(bones, tuple) else (bones,)):
+                v = transform_var(d, f'c{i}_{j}', bone, ch)
+                names.append(v.name)
+            x = ' + '.join(names)
+            x = f'({x} - 1)' if ch == 'SCALE_AVG' else f'({x})'
             parts.append(f'max(0, {"-" if sign < 0 else ""}{x} / {travel})')
         if k == 'mouthClose':
             v = d.variables.new()
@@ -554,27 +688,64 @@ def build_face():
             v.targets[0].id_type = 'OBJECT'
             v.targets[0].id = arm
             v.targets[0].data_path = f'pose.bones["{FACE}"]["jawOpen"]'
-            parts.append('seal * min(1, rj + max(0, -jy / 0.025))')
+            parts.append(f'seal * min(1, rj + max(0, -jy / {0.025 * FS:.6f}))')
         d.expression = 'clamp(' + ' + '.join(['raw'] + parts) + ', 0, 1)'
         assert d.is_simple_expression, d.expression
         kb = key.key_blocks[k]
         kb.slider_max = 1
-    # keys.py's corrective for half-out tongues, peaking at tongueOut 0.5
-    if 'tongueOut_mid' in key.key_blocks:
-        d = key.driver_add('key_blocks["tongueOut_mid"].value').driver
+    # in-between correctives, peaking at their key's 0.5: keys.py's half-out tongue, morphs.py's game in-betweens
+    for mid in [kb.name for kb in key.key_blocks if kb.name.endswith('_mid') and kb.name[:-4] in ARKIT]:
+        d = key.driver_add(f'key_blocks["{mid}"].value').driver
         d.type = 'SCRIPTED'
         v = d.variables.new()
         v.name = 't'
         v.type = 'SINGLE_PROP'
         v.targets[0].id_type = 'KEY'
         v.targets[0].id = key
-        v.targets[0].data_path = 'key_blocks["tongueOut"].value'
+        v.targets[0].data_path = f'key_blocks["{mid[:-4]}"].value'
         d.expression = 'max(0, 1 - abs(2 * t - 1))'
         assert d.is_simple_expression, d.expression
+    # iris size from each eye control's scale
+    for s, side_name in (('L', 'Left'), ('R', 'Right')):
+        for k, expr in (('irisLarge', 'max(0, (sc - 1) / 0.5)'), ('irisSmall', 'max(0, (1 - sc) / 0.5)')):
+            if k + side_name not in key.key_blocks:
+                continue
+            d = key.driver_add(f'key_blocks["{k + side_name}"].value').driver
+            d.type = 'SCRIPTED'
+            transform_var(d, 'sc', f'CTRL_eye_{s}', 'SCALE_AVG')
+            d.expression = f'clamp({expr}, 0, 1)'
+            assert d.is_simple_expression, d.expression
+    # face-bone keys (bonekeys.py) on other meshes (eyes, teeth, tongue) follow the head's key of the same name
+    for o in bpy.data.objects:
+        if o.type != 'MESH' or o == head_ob or not o.data.shape_keys:
+            continue
+        for kb in o.data.shape_keys.key_blocks[1:]:
+            if kb.name not in key.key_blocks:
+                continue
+            d = o.data.shape_keys.driver_add(f'key_blocks["{kb.name}"].value').driver
+            d.type = 'AVERAGE'
+            v = d.variables.new()
+            v.type = 'SINGLE_PROP'
+            v.targets[0].id_type = 'KEY'
+            v.targets[0].id = key
+            v.targets[0].data_path = f'key_blocks["{kb.name}"].value'
+
+
+def transform_var(d, name, bone, channel):
+    v = d.variables.new()
+    v.name = name
+    v.type = 'TRANSFORMS'
+    v.targets[0].id = arm
+    v.targets[0].bone_target = bone
+    v.targets[0].transform_type = channel
+    v.targets[0].transform_space = 'LOCAL_SPACE'
+    return v
 
 
 if HAS_FACE:
     build_face()
+    arm['face_scale'] = FS
+    arm['face_morphs'] = hero.face.get('builder') == 'morphs.py'
 
 # IK
 
@@ -819,6 +990,31 @@ def prop_widget(bone):
     widget(bone, box((lo + hi) / 2, (hi - lo) / 2 + Vector((0.01, 0.01, 0.01))), 2.5)
 
 
+def chc_follow(names, kind='CHC-'):
+    """CHC-<bone> takes its deform bone's keyed rotation and location, so IK starts from the clip's shape."""
+    for n in names:
+        # CHC basis = O^-1 @ deform basis @ O, with O the (rotation-only) rest offset between the two bones
+        o = (rest[n].to_3x3().inverted() @ rest[kind + n].to_3x3()).to_quaternion()
+        oi = o.inverted()
+        # columns: the conjugated quaternion for each unit input component
+        basis = [oi @ Quaternion(e) @ o for e in ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1))]
+        to_chc = rest[kind + n].to_3x3().inverted() @ rest[n].to_3x3()
+        for prop_name, size, coef in (('rotation_quaternion', 4, lambda i, k: basis[k][i]),
+                                      ('location', 3, lambda i, k: to_chc[i][k])):
+            for i in range(size):
+                d = arm.pose.bones[kind + n].driver_add(prop_name, i).driver
+                d.type = 'SCRIPTED'
+                names_ = 'wxyz' if size == 4 else 'xyz'
+                for k in range(size):
+                    v = d.variables.new()
+                    v.name = names_[k]
+                    v.type = 'SINGLE_PROP'
+                    v.targets[0].id_type = 'OBJECT'
+                    v.targets[0].id = arm
+                    v.targets[0].data_path = f'pose.bones["{n}"].{prop_name}[{k}]'
+                d.expression = ' + '.join(f'{coef(i, k):.9f} * {names_[k]}' for k in range(size))
+
+
 for prop in PROPS:
     prop_widget(prop['bone'])
 if PROP_CHAINS:
@@ -835,33 +1031,38 @@ for prop, _ in PROP_CHAINS:
         c.subtarget = 'MCH-' + n
         influence_driver(c, 'prop_chain')
         pbn.constraints.move(len(pbn.constraints) - 1, 0)
-    for n in chain + [prop['chain_end']]:
-        # CHC basis = O^-1 @ deform basis @ O, with O the (rotation-only) rest offset between the two bones
-        o = (rest[n].to_3x3().inverted() @ rest['CHC-' + n].to_3x3()).to_quaternion()
-        oi = o.inverted()
-        # columns: the conjugated quaternion for each unit input component
-        basis = [oi @ Quaternion(e) @ o for e in ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1))]
-        to_chc = rest['CHC-' + n].to_3x3().inverted() @ rest[n].to_3x3()
-        for prop_name, size, coef in (('rotation_quaternion', 4, lambda i, k: basis[k][i]),
-                                      ('location', 3, lambda i, k: to_chc[i][k])):
-            for i in range(size):
-                d = arm.pose.bones['CHC-' + n].driver_add(prop_name, i).driver
-                d.type = 'SCRIPTED'
-                names = 'wxyz' if size == 4 else 'xyz'
-                for k in range(size):
-                    v = d.variables.new()
-                    v.name = names[k]
-                    v.type = 'SINGLE_PROP'
-                    v.targets[0].id_type = 'OBJECT'
-                    v.targets[0].id = arm
-                    v.targets[0].data_path = f'pose.bones["{n}"].{prop_name}[{k}]'
-                d.expression = ' + '.join(f'{coef(i, k):.9f} * {names[k]}' for k in range(size))
+    chc_follow(chain + [prop['chain_end']])
     eff = arm.pose.bones['CHC-' + prop['chain_end']]
     eff.lock_ik_x = eff.lock_ik_y = eff.lock_ik_z = True
     ik = eff.constraints.new('IK')
     ik.target = arm
     ik.subtarget = 'ANC-' + prop['chain_end']
     ik.chain_count = len(chain) + 1
+for pre, chain, end in TAILS:
+    ik_prop = 'ik_' + pre
+    arm[ik_prop] = 1.0
+    arm.id_properties_ui(ik_prop).update(min=0, max=1, soft_min=0, soft_max=1,
+                                         description='Move the box at the tip to bend the tail')
+    for n in chain:
+        pbn = arm.pose.bones[n]
+        c = pbn.constraints.new('COPY_TRANSFORMS')
+        c.name = 'IK'
+        c.target = arm
+        c.subtarget = 'MCH-' + n
+        influence_driver(c, ik_prop)
+        arm.pose.bones['MCH-' + n].lock_ik_x = arm.pose.bones['MCH-' + n].lock_ik_y = True
+        arm.pose.bones['MCH-' + n].lock_ik_z = True
+    chc_follow(chain + [end])
+    chc_follow(chain + [end], 'TFK-')
+    eff = arm.pose.bones['CHC-' + end]
+    eff.lock_ik_x = eff.lock_ik_y = eff.lock_ik_z = True
+    ik = eff.constraints.new('IK')
+    ik.target = arm
+    ik.subtarget = 'IK_' + pre
+    ik.chain_count = 2 * len(chain) + 1
+    r = skin_radius(chain[-1], 0.02 * SCALE) * 1.2
+    widget('IK_' + pre, box(hpos[end], Vector((r, r, r))), 2.5)
+arm['tails'] = [t[0] for t in TAILS]
 arm['prop_pose'] = PROP_POSE
 for b, v in PROP_POSE.items():
     pbn = arm.pose.bones[b]
@@ -886,6 +1087,36 @@ for c in PHYS_CHAINS:
         influence_driver(con, 'physics')
         arm.pose.bones['PHYS-' + j['bone']].rotation_mode = 'QUATERNION'
     phys_cfg['chains'].append({'name': c['name'], 'joints': js})
+# tails: the physics rides the IK chains (MCH-*, TFP-*), and the IK copy, which already holds it, goes last
+TAIL_PHYS = {(kind, n) for _pre, chain, _end in TAILS for n in chain for kind in ('MCH-', 'TFP-')
+             if 'PHYS-' + n in arm.pose.bones}
+for kind, n in sorted(TAIL_PHYS):
+    con = arm.pose.bones[kind + n].constraints.new('COPY_ROTATION')
+    con.name = 'Physics'
+    con.target = arm
+    con.subtarget = 'PHYS-' + n
+    con.target_space = con.owner_space = 'LOCAL'
+    con.mix_mode = 'AFTER'
+    influence_driver(con, 'physics')
+for _pre, chain, _end in TAILS:
+    for n in chain:
+        cons = arm.pose.bones[n].constraints
+        cons.move(cons.find('IK'), len(cons) - 1)
+for nd in CLOTH_BONES:
+    pb = arm.pose.bones[nd['name']]
+    con = pb.constraints.new('ARMATURE')
+    con.name = 'Cloth Follow'
+    tot = sum(nd['follow'].values())
+    for b, w in nd['follow'].items():
+        t = con.targets.new()
+        t.target, t.subtarget, t.weight = arm, b, w / tot
+    con = pb.constraints.new('COPY_LOCATION')
+    con.name = 'Physics'
+    con.target, con.subtarget = arm, 'PHYS-' + nd['name']
+    con.use_offset = True
+    con.target_space, con.owner_space = 'LOCAL', 'POSE'
+    influence_driver(con, 'physics')
+phys_cfg['cloth'] = CLOTH if CLOTH_BONES else {'nodes': [], 'rods': []}
 for cap in GAMERIG['capsules']:
     if cap['bone'] not in rest:
         continue

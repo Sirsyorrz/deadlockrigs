@@ -20,7 +20,15 @@
     "chain_end": "chain_end",
     "anchor": "book_scale"
    }
-  ]
+  ],
+  "face": {
+   "part": "abrams_face_model",
+   "mesh": "abrams_face_model",
+   "builder": "bonekeys.py",
+   "attach": [
+    "cig_0"
+   ]
+  }
  },
  {
   "slug": "apollo",
@@ -48,7 +56,12 @@
   "slug": "billy",
   "name": "Billy",
   "codename": "punkgoat",
-  "model": "models/heroes_wip/punkgoat/punkgoat.vmdl"
+  "model": "models/heroes_wip/punkgoat/punkgoat.vmdl",
+  "face": {
+   "part": "punkgoat_model",
+   "mesh": "punkgoat_model",
+   "builder": "morphs.py"
+  }
  },
  {
   "slug": "calico",
@@ -75,7 +88,13 @@
   "model": "models/heroes_wip/drifter/drifter.vmdl",
   "face": {
    "part": "drifter_head_neutral",
-   "mesh": "drifter_head_neutral"
+   "mesh": "drifter_head_neutral",
+   "tune": {
+    "mouthPucker": 0.6,
+    "mouthFunnel": 0.6,
+    "mouthLeft": 0.6,
+    "mouthRight": 0.6
+   }
   }
  },
  {
@@ -208,7 +227,12 @@
   "slug": "rem",
   "name": "Rem",
   "codename": "familiar",
-  "model": "models/heroes_wip/familiar/familiar_wip.vmdl"
+  "model": "models/heroes_wip/familiar/familiar_wip.vmdl",
+  "face": {
+   "part": "head",
+   "mesh": "head",
+   "builder": "morphs.py"
+  }
  },
  {
   "slug": "seven",
@@ -256,7 +280,12 @@
   "slug": "victor",
   "name": "Victor",
   "codename": "frank",
-  "model": "models/heroes_wip/frank/frank.vmdl"
+  "model": "models/heroes_wip/frank/frank.vmdl",
+  "face": {
+   "part": "frank",
+   "mesh": "frank",
+   "builder": "morphs.py"
+  }
  },
  {
   "slug": "vindicta",

@@ -14,8 +14,13 @@ Nothing extracted from the game is committed: `heroes/` is ignored and holds eve
 
 ## Build
 
-Needs Blender (Steam), Source2Viewer-CLI (from `deadlock-forge`) and the installed game. The paths are at the
-top of `make.sh` and can be overridden with `BLENDER`, `S2V` and `PAK`.
+Needs Blender (Steam), `git`, the .NET 10 SDK and the installed game. The paths are at the top of `make.sh` and can
+be overridden with `BLENDER`, `S2V` and `PAK`.
+
+`extract` uses Source2Viewer-CLI from [Source 2 Viewer](https://github.com/ValveResourceFormat/ValveResourceFormat).
+The releases (up to 20.1) leave the cloth chains, capsules and physics joints out of the decompiled vmdl, so on
+first use `make.sh` builds a pinned master commit (`S2V_COMMIT`) into `s2v/` (ignored, about 30 s). Set `S2V` to
+use an existing binary instead.
 
     ./make.sh violet                 # one hero, all steps
     ./make.sh all                    # every hero in heroes.json
@@ -51,7 +56,10 @@ with `OLD=4.4`. The output goes to `heroes/<hero>/out-4.4/` and the test log to 
   hold comes from the idle clip. An optional `chain` (with `chain_end` and `anchor`) stays attached to the prop
   through IK. `"hold": false` is for worn props (Violet's portfolio) that already sit in place at rest.
 - `face`: face shape keys. `part` is the head mesh's vmdl part, `mesh` its object name after `rename`. Optional
-  `controls` places the face controls by hand (Violet); without it they come from `data/face.json`
+  `controls` places the face controls by hand (Violet); without it they come from `data/face.json`. `tune` scales
+  a key (and its `_mid` in-between) for one hero, e.g. Drifter's open grin takes only 0.6 of `mouthPucker`.
+  `"builder": "morphs.py"` builds the keys from the game's own face morphs (Billy, Rem, Victor), `"bonekeys.py"`
+  from its FACS face bones (Abrams). `attach` lists prop bones that ride the face skin (his cigarette).
 
 ## Using a rig
 
@@ -66,15 +74,20 @@ the hero, in Pose Mode on the armature.
   bakes that into the pose. "Convert Animation to IK" keys the IK controls on every frame of an FK animation.
 - Game Animations: Load as New Action (arms/legs switch to FK), Insert at Current Frame, or Copy Pose. "Add Idle
   Motion" layers the idle's breathing and sway on top as an NLA track.
-- Physics: the game's cloth chains (goal strength, bend, gravity) and body collision capsules, baked into the
-  action. "Re-bake when playback starts" re-bakes every time you press play.
+- Physics: the game's cloth chains (goal strength, bend, gravity), vertex cloth (Abrams' coat) and body
+  collision capsules, baked into the action. "Re-bake when playback starts" re-bakes every time you press play.
 - Hands: Relaxed, Fist, Point, Peace, Thumbs Up, Open, Grip (also in the Asset Browser).
 - Held props (Abrams' book): move or rotate the box around the prop. It follows the hand, and the chain to the cuff
   follows the book. "Chain follows prop" in Arms & Legs turns that off. Reset puts the book back in his hand.
   Violet's portfolio works the same way (box around bag and strap, follows the chest); it and her brush are separate
   objects (`Portfolio`, `Brush`) you can hide or delete.
+- Tail (Abrams, Apollo, Baba's pigeon, Calico's cat, Ivy, Mirage's djinn, Rat King, Rem, Silver, Vyper; Grey Talon's
+  owl has one bone): rings along the tail for FK, and a box at the tip that rides the FK tail. Move the box to bend
+  the tail towards it; left alone it changes nothing, so clips and physics play as they are. "Tail IK" in Arms & Legs
+  turns the box off. Infernus' tail bones carry no skin (his tail is flames) and stay in Secondary.
 - Face (heroes with face keys): circles on the face, a `FACE` box with 51 ARKit sliders, expressions and mouth
-  shapes.
+  shapes. The eye target moves both eyes; the circle around each eye moves that eye alone, and scaling it sizes
+  the iris.
 
 ## How the rig works
 
@@ -97,6 +110,12 @@ per hero against the twist bones baked into its clips, when the clips have them;
 used.
 
 Physics keys `PHYS-*` helper bones; each cloth bone adds its helper's rotation on top of the animation.
+
+Vertex cloth (`$cloth_*` bones, Abrams' coat and 15 other heroes) is a Source 2 FeModel: particles held by rods and
+pulled towards the body. `make.sh data` dumps it with Source2Viewer (`-b PHYS`) and `tools/fe_extract.py` writes
+`data/cloth.json` (rest positions, which body bones each particle follows and how much, damping, rods). Each free
+particle follows its body bones through an Armature constraint and adds its `PHYS-*` helper's offset; the bake runs
+a position-based solve in the root's frame, so root motion doesn't drag the cloth.
 
 A prop chain runs on `CHC-*` bones (head to next head) whose pose copies the deform chain's own keys through drivers,
 so a clip's chain shape is the starting point; IK only bends it to keep the end on `ANC-*`, which rides the prop.
@@ -123,16 +142,19 @@ Other known gaps:
 | Hero | Face rig | Notes |
 |---|---|---|
 | Apollo | yes | |
-| Drifter | yes | lower teeth follow the jaw |
-| Graves | yes | dark lid make-up shows when the eyes close |
+| Billy | game morphs | 31 keys; no lip corner puller, so `mouthSmile` is empty |
+| Drifter | yes | lower teeth follow the jaw; the sculpt is an open grin, so pucker, funnel and mouthLeft/Right are toned down |
+| Graves | yes | her dark lid make-up shows when the eyes close |
 | Mina | yes | |
 | Paige | yes | lower teeth follow the jaw; the glasses stay put |
+| Rem | game morphs | 21 keys; the mask's eyes have no bones (no eye look) and the beak has no lip shapes |
+| Victor | game morphs | 36 keys |
 | Violet | yes | controls placed by hand |
 | Venator | not yet | the lips are parted, so the mouth is not closed off and no mouth bag is found |
 | Nurse Harrow | not yet | separate head mesh, not checked further |
 | The Doorman | not yet | separate head mesh, but the lips are one closed surface (no mouth bag), so the jaw can't open the mouth |
-| Abrams, McGinnis | no keys | real face bones (lids, lips, brows, jaw), posable directly |
-| Billy, Rem, Victor | no keys | the game ships face morphs; not wired to the face panel |
+| Abrams | game face bones | 56 keys; eyes, teeth, tongue and cigarette follow the skin |
+| McGinnis | not yet | game face bones, like Abrams |
 | everyone else | no | the face is part of the body mesh, or the hero has no eye bones |
 
 The heads have no face bones or morphs (the face is skinned to `head` only). `tools/keys.py` therefore builds 51
@@ -157,6 +179,8 @@ is found from the geometry, so a new hero usually only needs `"face": {"part": "
 rebuilds a face; `test` checks every key's size, left/right balance, and that the controls and sliders drive the
 keys.
 
+`irisLarge*`/`irisSmall*` slide the front of the eyeball over the sphere, away from or towards the gaze axis.
+
 `mouthClose` is meant to be used with `jawOpen`, like ARKit. None of the heads has a tongue, so `keys.py` builds one
 on the mouth bag floor (`data/keys_tongue.npz`), sized to the bag, and `build.py` adds it to the head mesh. It
 follows the jaw and has the 52nd ARKit key, `tongueOut` (meant with `jawOpen`; on a closed mouth it goes through
@@ -167,6 +191,21 @@ mouth interior is a plain dark material.
 Separate head meshes reach down into the collar skinned almost fully to `neck_0`, while the collar follows
 `spine_3`, so bending the neck pushed the hidden neck out through the collar (Violet). `build.py` (`tools/collar.py`)
 gives head vertices covered by a torso mesh that mesh's weights, blending back to their own over 3 cm above it.
+
+Billy, Rem and Victor ship FACS morphs (`lipCornerPuller`, `jawDrop`, ...). `tools/morphs.py` builds the ARKit keys
+as sums of them, so they work with the same panel and controls. A morph's `_50` in-between becomes a driven `_mid`
+key like `tongueOut_mid`. Eye looks turn the eyeball about its bone, and the controls go where each morph moves the
+skin most. Control sizes and travel scale with the head (`face.json` `scale`).
+
+Abrams has the game's FACS face bones (`lip_corner_L`, `brow_inner_L`, lid pivots, `tongue_*`). `tools/bonekeys.py`
+poses them per ARKit key (moves in mm, scaled by eye spacing) and bakes the skinned result into keys on every mesh
+they move: `data/keys.npz` for the face and `data/keysmesh_<part>.npz` for the eyes, teeth and tongue. The head
+drives those, so the panel and controls are the same as everywhere else. Props on the face (`face.attach`, his
+cigarette) ride the skin nearest their bone.
+
+Glints stand off the eyeball and would poke through a closed lid, so the upper lid closing pushes them into the
+ball. Lash and liner cards lift slightly off the ball as they turn, because the lid skin bunching up above the
+margin came through thick liner (Paige's).
 
 Hair, hats and other meshes around the head are dumped too: skin above the eyes that lies within a few mm of them
 stays put, so brow keys can't push it through.

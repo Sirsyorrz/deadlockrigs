@@ -67,6 +67,65 @@ def names(limb, s):
     return [f'{n}_{s}' for n in LIMB[limb]]
 
 
+# tails: visible FK rings that bend the skin, and the tip control pulling the tail with IK on
+for t in arm.get('tails', []):
+    reset()
+    chain = [b.name for b in pb if b.name.startswith(t + '_') and b.name[len(t) + 1:].isdigit()]
+    tip = next(n for n in (t + '_end', chain[-1]) if n in pb)
+    meshes = [o for o in bpy.data.objects if o.type == 'MESH' and o.vertex_groups.get(chain[1])]
+    # Mirage's tail is on the djinn hand, hidden until his ability
+    hidden = [o for o in meshes if o.hide_viewport or o.hide_get()]
+    for o in hidden:
+        o.hide_viewport = False
+        o.hide_set(False)
+    update()
+    before = [verts(o) for o in meshes]
+    pb[chain[1]].rotation_quaternion = Quaternion((1, 0, 0), math.radians(30))
+    update()
+    skin = max((np.linalg.norm(verts(o) - v, axis=1).max() for o, v in zip(meshes, before)), default=0)
+    shown = any(c.is_visible and c.name == 'Tail' for c in arm.data.bones[chain[0]].collections)
+    check(f'{t} FK bends the skin', skin > 0.01 and shown and pb[chain[1]].custom_shape is not None,
+          f'{len(chain)} bones, {skin * 1000:.0f} mm, collection shown {shown}')
+    for o in hidden:
+        o.hide_viewport = True
+        o.hide_set(True)
+    # the tip of an FK curl is in reach: the control put there pulls the straight tail onto it
+    reset()
+    arm['ik_' + t] = 0.0
+    along = arm.data.bones[tip].head_local - arm.data.bones[chain[0]].head_local
+    across = along.cross(Vector((0, 0, 1))) if abs(along.normalized().z) < 0.9 else along.cross(Vector((1, 0, 0)))
+    for n in chain:
+        axis = arm.data.bones[n].matrix_local.to_3x3().inverted() @ across
+        pb[n].rotation_quaternion = Quaternion(axis.normalized(), math.radians(60 / len(chain)))
+    update()
+    goal = pb[tip].head.copy()
+    for n in chain:
+        pb[n].rotation_quaternion = (1, 0, 0, 0)
+    update()
+    ctrl = pb['IK_' + t]
+    ctrl.matrix = Matrix.Translation(goal) @ ctrl.matrix.to_3x3().to_4x4()
+    update()
+    fk = (pb[tip].head - goal).length
+    arm['ik_' + t] = 1.0
+    update()
+    gap = (pb[tip].head - goal).length
+    check(f'{t} IK reaches its control', gap < 0.002 and fk > 0.002, f'{gap * 1000:.1f} mm off, FK tip {fk * 1000:.0f} mm away')
+    # the control rides the FK tip, so with IK on and the control left alone a curl (a clip) plays as FK
+    reset()
+    arm['ik_' + t] = 1.0
+    for n in chain:
+        axis = arm.data.bones[n].matrix_local.to_3x3().inverted() @ across
+        pb[n].rotation_quaternion = Quaternion(axis.normalized(), math.radians(60 / len(chain)))
+    update()
+    on = pb[tip].head.copy()
+    arm['ik_' + t] = 0.0
+    update()
+    off = (pb[tip].head - on).length
+    check(f'{t} IK left alone keeps the FK pose', off < 0.002, f'{off * 1000:.1f} mm')
+    arm['ik_' + t] = 0.0
+    ctrl.location = (0, 0, 0)
+    update()
+
 clips = sorted(c[0] for c in ns['clip_items'](None, bpy.context))
 
 
@@ -276,9 +335,30 @@ if RUN:
     check('game anim loads', act and act.name.startswith(RUN[5:]),
           f'{act.name if act else None}, range {sc.frame_start}-{sc.frame_end}')
 
-# physics bake on the run
+# vertex cloth follows the body when posed by hand (its bones are loose in the game's skeleton)
 phys = json.loads(bpy.data.texts['dlrig_physics.json'].as_string())
-if RUN and phys['chains']:
+cloth = [nd['name'] for nd in phys.get('cloth', {}).get('nodes', []) if nd['free'] and nd['name'] in pb]
+if cloth:
+    reset()
+    before = {b: pb[b].head.copy() for b in cloth}
+    # FK, since with the feet held by IK the legs (Grey Talon's cloth follows them) only partly follow the hips
+    for p in IK_PROPS:
+        arm[p] = 0.0
+    update()
+    before = {b: pb[b].head.copy() for b in cloth}
+    pb['pelvis'].location.z += 0.1
+    update()
+    moved = min((pb[b].head - before[b]).length for b in cloth)
+    pb['pelvis'].location.z -= 0.1
+    for p in IK_PROPS:
+        arm[p] = 1.0
+    update()
+    check('vertex cloth follows the body', moved > 0.02, f'{len(cloth)} nodes, least {moved * 1000:.0f} mm')
+    if RUN:
+        bpy.ops.dlrig.game_anim(clip=RUN, mode='NEW')
+
+# physics bake on the run
+if RUN and (phys['chains'] or cloth):
     t0 = time.time()
     sc.dlrig_phys_loop = True
     r = bpy.ops.dlrig.bake_physics()
@@ -290,7 +370,7 @@ if RUN and phys['chains']:
     check('physics no NaN', not bad, str(bad[:3]))
     sc.frame_set(sc.frame_start + 8)
     update()
-    tips = [c['joints'][-1]['bone'] for c in phys['chains']]
+    tips = [c['joints'][-1]['bone'] for c in phys['chains']] + cloth
     p1 = {b: pb[b].head.copy() for b in tips}
     for b in pb:
         for c in b.constraints:
@@ -298,12 +378,15 @@ if RUN and phys['chains']:
                 c.mute = True
     update()
     moved = max((pb[b].head - p1[b]).length for b in tips)
+    moved_cloth = max([(pb[b].head - p1[b]).length for b in cloth] or [0])
     for b in pb:
         for c in b.constraints:
             if c.name == 'Physics':
                 c.mute = False
     update()
     check('physics moves cloth', moved > 0.001, f'{moved * 1000:.1f} mm')
+    if cloth:
+        check('physics moves the vertex cloth', 0.005 < moved_cloth < 0.5, f'{moved_cloth * 1000:.1f} mm')
 
 # copy pose from a game clip with IK on
 ends = [n for n in ('hand_L', 'hand_R', 'ankle_L', 'ankle_R', 'head', 'pelvis') if n in pb]
@@ -387,14 +470,33 @@ if 'FACE' in pb:
     head = next(o for o in bpy.data.objects if o.type == 'MESH' and o.data.shape_keys and 'jawOpen' in o.data.shape_keys.key_blocks)
     kbs = head.data.shape_keys.key_blocks
     base = np.array([v.co for v in kbs[0].data])
-    sizes = {kb.name: np.linalg.norm(np.array([v.co for v in kb.data]) - base, axis=1).max() * 1000 for kb in kbs[1:]}
-    odd = {k: round(v, 1) for k, v in sizes.items() if not 0.5 < v < 45}
-    check('face keys move 0.5-45 mm', not odd, f'{len(sizes)} keys {odd}')
+    fs = arm.get('face_scale', 1.0)
+    morphs = arm.get('face_morphs', False)
+    # game-morph faces keep the game's own morphs next to the ARKit keys built from them
+    sliders = set(pb['FACE'].keys())
+    # a key's size is its largest move on any mesh (face-bone keys also move the eyes, teeth and tongue)
+    sizes = {}
+    for o in bpy.data.objects:
+        if o.type != 'MESH' or not o.data.shape_keys:
+            continue
+        ob_kbs = o.data.shape_keys.key_blocks
+        ob_base = np.array([v.co for v in ob_kbs[0].data])
+        for kb in ob_kbs[1:]:
+            if o != head and kb.name not in kbs:
+                continue
+            if morphs and kb.name not in sliders and kb.name[:-4] not in sliders:
+                continue
+            m = np.linalg.norm(np.array([v.co for v in kb.data]) - ob_base, axis=1).max() * 1000
+            sizes[kb.name] = max(sizes.get(kb.name, 0), m)
+    # in-betweens only add what the straight blend misses, so they can be small; the game's jaws open wide
+    top = 250 * fs if morphs else 50 * fs
+    odd = {k: round(v, 1) for k, v in sizes.items() if not (0.05 if k.endswith('_mid') else 0.5) < v < top}
+    check(f'face keys move 0.5-{top:.0f} mm', not odd, f'{len(sizes)} keys {odd}')
     lr = {k: (sizes[k], sizes[k[:-4] + 'Right']) for k in sizes if k.endswith('Left')}
     lop = {k: tuple(round(x, 1) for x in v) for k, v in lr.items() if abs(v[0] - v[1]) > 0.35 * max(v)}
     check('face keys left/right alike', not lop, str(lop))
     rest = verts(head)
-    pb['CTRL_jaw'].location.y = -0.025
+    pb['CTRL_jaw'].location.y = -0.025 * fs
     update()
     jaw = np.linalg.norm(verts(head) - rest, axis=1).max() * 1000
     check('jaw control opens the mouth', kbs['jawOpen'].value > 0.99 and jaw > 10, f'jawOpen {kbs["jawOpen"].value:.2f}, {jaw:.1f} mm')
@@ -404,5 +506,29 @@ if 'FACE' in pb:
     blink = np.linalg.norm(verts(head) - rest, axis=1).max() * 1000
     check('face slider drives its key', kbs['eyeBlinkLeft'].value > 0.99 and blink > 3, f'{blink:.1f} mm')
     reset()
+    mids = [kb.name for kb in kbs if kb.name.endswith('_mid') and kb.name[:-4] in sliders]
+    if mids:
+        # an in-between corrective is full at its key's 0.5 and gone at 0 and 1
+        bad = {}
+        for m in mids:
+            got = []
+            for x in (0.0, 0.5, 1.0):
+                pb['FACE'][m[:-4]] = x
+                update()
+                got.append(round(kbs[m].value, 3))
+            pb['FACE'][m[:-4]] = 0.0
+            if got != [0.0, 1.0, 0.0]:
+                bad[m] = got
+        update()
+        check('in-betweens peak at 0.5', not bad, f'{len(mids)} {bad}')
+    if 'CTRL_eye_L' in pb:
+        pb['CTRL_eye_L'].location.y = 0.15
+        pb['CTRL_eye_L'].scale = (1.5, 1.5, 1.5)
+        update()
+        iris = kbs['irisLargeLeft'].value if 'irisLargeLeft' in kbs else 1.0
+        ok = kbs['eyeLookUpLeft'].value > 0.99 and kbs['eyeLookUpRight'].value < 0.01 and iris > 0.99
+        check('eye control looks and sizes one iris', ok,
+              f'look {kbs["eyeLookUpLeft"].value:.2f}/{kbs["eyeLookUpRight"].value:.2f} iris {iris:.2f}')
+        reset()
 
 print('FAILS', fails)

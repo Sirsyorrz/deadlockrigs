@@ -14,11 +14,26 @@ if [ -n "$OLD" ]; then
   OUT=out-$OLD
 fi
 export DLRIG_OUT=$OUT
-V=${S2V:-~/Documents/GitHub/deadlock-forge/tools/vrf/Source2Viewer-CLI}
+# Releases (up to 20.1) don't decompile the vmdl's cloth/physics nodes, so build a pinned master commit.
+S2V_COMMIT=${S2V_COMMIT:-f030654ff81b352fd1bcb44d631c563f51c7dcd1}
+V=${S2V:-$ROOT/s2v/bin/Source2Viewer-CLI}
 PAK=${PAK:-~/.local/share/Steam/steamapps/common/Deadlock/game/citadel/pak01_dir.vpk}
 
 field() { python3 -c "import json,sys; h=[h for h in json.load(open('heroes.json')) if h['slug']=='$1']; print(h[0]['$2'] if h else sys.exit('unknown hero $1'))"; }
-has_face() { python3 -c "import json; h=[h for h in json.load(open('heroes.json')) if h['slug']=='$1'][0]; print(1 if h.get('face') else '')"; }
+need_s2v() {
+  [ -x "$V" ] && return
+  [ -n "$S2V" ] && { echo "S2V=$S2V is not executable"; exit 1; }
+  echo "building Source2Viewer-CLI ${S2V_COMMIT:0:9}"
+  local src=$ROOT/s2v/src
+  [ -d "$src/.git" ] || git clone -q --filter=blob:none https://github.com/ValveResourceFormat/ValveResourceFormat "$src"
+  git -C "$src" fetch -q origin "$S2V_COMMIT"
+  git -C "$src" checkout -q --detach "$S2V_COMMIT"
+  dotnet publish "$src/CLI/CLI.csproj" -c Release --self-contained -r linux-x64 -p:RunAnalyzersDuringBuild=false \
+    -o "$(dirname "$V")" > "$ROOT/s2v/build.log" 2>&1 || { echo "build failed, see s2v/build.log"; exit 1; }
+}
+
+# prints the face builder: keys.py (from the head's geometry), morphs.py (game morphs) or bonekeys.py (face bones)
+has_face() { python3 -c "import json; h=[h for h in json.load(open('heroes.json')) if h['slug']=='$1'][0]; f=h.get('face'); print(f.get('builder', 'keys.py') if f else '')"; }
 
 build() {
   local hero=$1; shift
@@ -31,6 +46,7 @@ build() {
   for step in $steps; do
     case $step in
       extract)
+        need_s2v
         [ -f "$dir/raw/$stem.glb" ] || $V -i $PAK -f "${model}_c" -o "$dir/raw" --gltf_export_format glb \
           --gltf_export_materials --gltf_textures_adapt --gltf_export_extras > "$dir/extract.log" 2>&1
         [ -f "$dir/anim/$stem.glb" ] || [ -f "$dir/$OUT/${hero}_anims.blend" ] || $V -i $PAK -f "${model}_c" \
@@ -43,7 +59,14 @@ build() {
       data)
         python3 tools/vmdl_extract.py "$dir/dec/$model" "$dir/data/gamedata.json" > /dev/null
         python3 tools/gamerig.py "$dir/data/gamedata.json" "$dir/raw/$stem.glb" "$dir/data/gamerig.json"
-        if [ -n "$(has_face "$hero")" ]; then
+        need_s2v
+        $V -i $PAK -f "${model}_c" -b PHYS > "$dir/data/phys.txt" 2>&1
+        python3 tools/fe_extract.py "$dir/data/phys.txt" "$dir/data/cloth.json"
+        rm -f "$dir/data/phys.txt"
+        local builder; builder=$(has_face "$hero")
+        if [ "$builder" = morphs.py ] || [ "$builder" = bonekeys.py ]; then
+          $B -b -P "tools/$builder" -- "$hero" 2>&1 | grep -E "^(morph|bone) keys|Error|Traceback" || true
+        elif [ -n "$builder" ]; then
           $B -b -P tools/dump.py -- "$hero" 2>&1 | grep -E "^dumped|Error|Traceback" || true
           python3 tools/keys.py "$dir/data/head.npz" "$dir/data/keys.npz"
         fi

@@ -91,23 +91,54 @@ if hero.face:
     tongue_path = keys_path.replace('.npz', '_tongue.npz')
     tongue = add_tongue(head, tongue_path) if os.path.exists(tongue_path) else {}
     n = len(me.vertices)
-    others = [o for o in bpy.data.objects if o.type == 'MESH' and o != head and not o.hide_viewport and o.vertex_groups]
-    scale = arm.data.bones['head'].head_local.z / 2.094
-    print('collar: head vertices covered', fix_collar(head, others, scale, n_head))
+    # game morphs and face bones come with the game's own skinning; only keys.py heads get the collar fix
+    if hero.face.get('builder', 'keys.py') == 'keys.py':
+        others = [o for o in bpy.data.objects if o.type == 'MESH' and o != head and not o.hide_viewport and o.vertex_groups]
+        scale = arm.data.bones['head'].head_local.z / 2.094
+        print('collar: head vertices covered', fix_collar(head, others, scale, n_head))
     base = np.empty(n * 3, np.float32)
     me.vertices.foreach_get('co', base)
     keys = np.load(keys_path)
-    head.shape_key_add(name='Basis', from_mix=False)
+    if not me.shape_keys:
+        head.shape_key_add(name='Basis', from_mix=False)
+    # per-hero strength of a key (and its in-between): a sculpted open grin (Drifter) can't take a full pucker
+    tune = hero.face.get('tune', {})
     for name in keys.files:
         d = np.concatenate([keys[name], tongue[name]]) if tongue else keys[name]
+        d = d * tune.get(name, tune.get(name[:-4], 1.0) if name.endswith('_mid') else 1.0)
         assert d.shape == (n, 3), (name, d.shape, n)
-        kb = head.shape_key_add(name=name, from_mix=False)
+        # a game morph can share its ARKit name (jawOpen)
+        kb = me.shape_keys.key_blocks.get(name) or head.shape_key_add(name=name, from_mix=False)
         kb.data.foreach_set('co', (base.reshape(-1, 3) + d @ inv.T).astype(np.float32).ravel())
     print('shape keys', len(keys.files))
+    # bonekeys.py: keys on the other meshes the face bones move (eyes, teeth, tongue). The head gets every key too, as
+    # the one rig.py drives; the others follow it
+    for f in sorted(os.listdir(hero.data)):
+        if not f.startswith('keysmesh_'):
+            continue
+        part = f[len('keysmesh_'):-len('.npz')]
+        ob = bpy.data.objects.get(hero.rename.get(part, part))
+        if ob is None:
+            continue
+        mk = np.load(os.path.join(hero.data, f))
+        oinv = np.array(ob.matrix_world.inverted().to_3x3())
+        ob_base = np.empty(len(ob.data.vertices) * 3, np.float32)
+        ob.data.vertices.foreach_get('co', ob_base)
+        if not ob.data.shape_keys:
+            ob.shape_key_add(name='Basis', from_mix=False)
+        for name in mk.files:
+            kb = ob.data.shape_keys.key_blocks.get(name) or ob.shape_key_add(name=name, from_mix=False)
+            kb.data.foreach_set('co', (ob_base.reshape(-1, 3) + mk[name] @ oinv.T).astype(np.float32).ravel())
+            if name not in me.shape_keys.key_blocks:
+                head.shape_key_add(name=name, from_mix=False)
+        print('shape keys on', ob.name, len(mk.files))
 
-    # The mouth bag shares the skin texture, so an open mouth showed a flat skin-coloured wall. Per vertex:
-    # 0 outside the bag, 1 the lips' inner faces, 2 deeper in; faces reaching deeper in go dark.
-    bag = np.load(keys_path.replace('.npz', '_bag.npy'))
+# The mouth bag shares the skin texture, so an open mouth showed a flat skin-coloured wall. Per vertex:
+# 0 outside the bag, 1 the lips' inner faces, 2 deeper in; faces reaching deeper in go dark. Game-morph faces have
+# their own mouth interior.
+bag_path = os.path.join(hero.data, 'keys_bag.npy')
+if hero.face and os.path.exists(bag_path):
+    bag = np.load(bag_path)
     mat = bpy.data.materials.new('mouth_interior')
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes['Principled BSDF']

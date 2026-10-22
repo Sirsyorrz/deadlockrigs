@@ -2,6 +2,7 @@
 
 Renders a face close-up per shape key (plus neutral.png) and a contact sheet with ImageMagick if present.
 """
+import json
 import math
 import os
 import sys
@@ -23,15 +24,31 @@ else:
 scene = bpy.context.scene
 keyed = [o for o in scene.objects if o.type == 'MESH' and o.data.shape_keys]
 arm = next(o for o in scene.objects if o.type == 'ARMATURE')
-eyes = (arm.matrix_world @ arm.pose.bones['eye_0_L'].head + arm.matrix_world @ arm.pose.bones['eye_0_R'].head) / 2
-centre = Vector((0, eyes.y, eyes.z - 0.04))
-dist = 0.6
+# face.json's scale: faces bigger than Violet's (Billy) need the camera further out
+face_json = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(src))), 'data', 'face.json')
+fjs = json.load(open(face_json)) if os.path.exists(face_json) else {}
+fs = fjs.get('scale', 1.0)
+if 'eye_0_L' in arm.pose.bones:
+    eyes = (arm.matrix_world @ arm.pose.bones['eye_0_L'].head + arm.matrix_world @ arm.pose.bones['eye_0_R'].head) / 2
+    centre = Vector((0, eyes.y, eyes.z - 0.04 * fs))
+    dist = 0.6 * fs
+else:
+    # no eye bones (Rem): frame the skin the keys move
+    ob = keyed[0]
+    moved = {i for kb in ob.data.shape_keys.key_blocks[1:] for i, (a, b) in
+             enumerate(zip(kb.data, ob.data.shape_keys.key_blocks[0].data)) if (a.co - b.co).length > 0.002}
+    pts = [ob.matrix_world @ ob.data.vertices[i].co for i in moved]
+    lo = Vector([min(p[i] for p in pts) for i in range(3)])
+    hi = Vector([max(p[i] for p in pts) for i in range(3)])
+    eyes = (lo + hi) / 2 + Vector((0, 0, 0.04))
+    centre = Vector((0, lo.y, eyes.z - 0.04))
+    dist = 0.6 * max(hi.x - lo.x, hi.z - lo.z) / 0.15
 if focus in ('L', 'R'):
     centre = arm.matrix_world @ arm.pose.bones['eye_0_' + focus].head
-    dist = 0.2
+    dist = 0.2 * fs
 elif focus == 'mouth':
-    centre = Vector((0, eyes.y, eyes.z - 0.082))
-    dist = 0.25
+    centre = Vector((0, eyes.y, fjs['mouth'][2] if 'mouth' in fjs else eyes.z - 0.082 * fs))
+    dist = 0.25 * fs
 scene.render.engine = 'BLENDER_EEVEE'
 scene.render.resolution_x = scene.render.resolution_y = 512
 world = bpy.data.worlds.new('w')

@@ -410,7 +410,9 @@ def append_clip(ob, name):
     a.use_fake_user = False
     cb = a.layers[0].strips[0].channelbags[0]
     # the twist bones with a Twist constraint are rebuilt by it from the same inputs the game uses
-    driven = {b.name for b in ob.pose.bones if 'Twist' in b.constraints}
+    # the vertex cloth bones follow the body through their Cloth Follow constraint, so the clip's keys for them
+    # would count twice
+    driven = {b.name for b in ob.pose.bones if 'Twist' in b.constraints or 'Cloth Follow' in b.constraints}
     for f in [f for f in cb.fcurves if f.data_path.startswith('pose.bones["') and f.data_path.split('"')[1] in driven]:
         cb.fcurves.remove(f)
     return a
@@ -743,8 +745,127 @@ def simulate(cfg, goals, caps, fps, settings, allow, warm, links=(), link_allow=
     return out
 
 
+def simulate_cloth(cloth, goals, caps, fps, settings, allow, seq):
+    """Vertex cloth (Abrams' coat): goals[key] -> (n, 3) world positions of every node without simulation; fixed
+    nodes stay on theirs. Position-based like simulate(): inertia, gravity, a pull towards the goal (the game's
+    per-node animation attraction), rods kept between their min and max length (the game's), capsule collisions.
+    Returns {key: (n, 3)} for the keys after the warm-up."""
+    import numpy as np
+    nodes, rods = cloth['nodes'], np.array(cloth['rods'], float).reshape(-1, 4)
+    free = np.array([nd['free'] for nd in nodes])
+    a, b = rods[:, 0].astype(int), rods[:, 1].astype(int)
+    lo, hi = rods[:, 2], rods[:, 3]
+    inv = free.astype(float)
+    wa, wb = inv[a], inv[b]
+    wsum = np.maximum(wa + wb, 1e-9)
+    count = np.maximum(np.bincount(a, wa > 0, len(nodes)) + np.bincount(b, wb > 0, len(nodes)), 1)[:, None]
+    rad = np.array([nd['radius'] for nd in nodes])
+    sub = settings['substeps']
+    dt = 1.0 / fps / sub
+    grav = np.array([0, 0, -9.81 * settings['gravity']]) * dt * dt
+    gscale = np.array([nd['gravity'] for nd in nodes])[:, None]
+    damp = 1.0 - (1.0 - settings['damping']) ** (1.0 / sub)
+    # the game's attraction applied per 1/240 s (its cloth runs several iterations a tick); slower, the coat's waist
+    # sagged off the belt and opened holes next to the fixed nodes
+    k = np.clip(np.array([nd['goal'] for nd in nodes]) * settings['stiffness'] * 2.0, 0, 1)
+    pull = (1.0 - (1.0 - k) ** (dt * 240))[:, None]
+    allow = np.asarray(allow)
+    first = goals[seq[0]]
+    P, Q = first.copy(), first.copy()
+    last = first
+    out = {}
+    for key in seq:
+        G1 = goals[key]
+        for i in range(1, sub + 1):
+            w = i / sub
+            G = last + (G1 - last) * w
+            v = (P - Q) * (1.0 - damp)
+            Q = P.copy()
+            P = P + v + grav * gscale
+            P += (G - P) * pull
+            P[~free] = G[~free]
+            for _ in range(8):
+                d = P[b] - P[a]
+                ln = np.linalg.norm(d, axis=1)
+                tgt = np.clip(ln, lo, hi)
+                corr = d * ((ln - tgt) / np.maximum(ln, 1e-9) / wsum)[:, None]
+                delta = np.zeros_like(P)
+                np.add.at(delta, a, corr * wa[:, None])
+                np.add.at(delta, b, -corr * wb[:, None])
+                P += delta / count
+            if settings['collide']:
+                for c, (a0, a1, b0, b1, r0, r1) in enumerate(caps[key]):
+                    ca = np.array(a0.lerp(a1, w))
+                    cb = np.array(b0.lerp(b1, w))
+                    ab = cb - ca
+                    t = np.clip(((P - ca) @ ab) / max(ab @ ab, 1e-12), 0, 1)
+                    q = ca + t[:, None] * ab
+                    r = np.minimum(r0 + (r1 - r0) * t + rad, allow[:, c])
+                    dv = P - q
+                    dl = np.linalg.norm(dv, axis=1)
+                    hit = free & (dl < r) & (dl > 1e-9)
+                    P[hit] = q[hit] + dv[hit] * (r[hit] / dl[hit])[:, None]
+        last = G1
+        if isinstance(key, int):
+            out[key] = P.copy()
+    return out
+
+
+def cloth_goals(cloth, m, rest_inv):
+    """Every node where the body bones' blend (its follow weights) takes it, from bone matrices m."""
+    import numpy as np
+    out = np.zeros((len(cloth['nodes']), 3))
+    for i, nd in enumerate(cloth['nodes']):
+        p = Vector(nd['rest'])
+        acc = Vector()
+        tot = 0.0
+        for bn, w in nd['follow'].items():
+            if bn in m:
+                acc += (m[bn] @ rest_inv[bn] @ p) * w
+                tot += w
+        out[i] = acc / tot if tot else p
+    return out
+
+
 def capsule_frames(cp_prev, cp):
     return [(a0, a1, b0, b1, r0, r1) for (a0, b0, r0, r1), (a1, b1, _, _) in zip(cp_prev, cp)]
+
+
+def bake_cloth(ob, cloth, mats, rest_inv, rest_caps, lcaps, root, fps, settings, seq, frames):
+    """Simulates the vertex cloth and keys each $cloth bone's PHYS- offset (armature axes). Returns the curves."""
+    import numpy as np
+    if not cloth['nodes']:
+        return []
+    world = {k: cloth_goals(cloth, mats[k], rest_inv) for k in seq}
+
+    def to_local(k, P):
+        m = np.array(root[k].inverted())
+        return P @ m[:3, :3].T + m[:3, 3]
+    goals = {k: to_local(k, world[k]) for k in seq}
+    rest_p = [Vector(nd['rest']) for nd in cloth['nodes']]
+    allow = [[(p - seg_closest(p, a, b)[0]).length for a, b in rest_caps] for p in rest_p] if rest_caps else \
+        np.zeros((len(rest_p), 0))
+    sim = simulate_cloth(cloth, goals, lcaps, fps, settings, allow, seq)
+    sim = {k: v @ np.array(root[k])[:3, :3].T + np.array(root[k])[:3, 3] for k, v in sim.items()}
+    goals = world
+    to_arm = ob.matrix_world.inverted().to_3x3()
+    cb = channelbag(ob)
+    out = []
+    for i, nd in enumerate(cloth['nodes']):
+        name = 'PHYS-' + nd['name']
+        if not nd['free'] or name not in ob.pose.bones:
+            continue
+        fcs = [new_fcurve(cb, f'pose.bones["{name}"].location', j, 'Physics') for j in range(3)]
+        for fc in fcs:
+            fc.keyframe_points.add(len(frames))
+        for fi, f in enumerate(frames):
+            d = to_arm @ Vector(sim[f][i] - goals[f][i])
+            for j, fc in enumerate(fcs):
+                kp = fc.keyframe_points[fi]
+                kp.co = (f, d[j])
+                kp.interpolation = 'LINEAR'
+        out.append(fcs)
+    return out
 
 
 class DLRIG_OT_bake_physics(bpy.types.Operator):
@@ -766,6 +887,10 @@ Uses the game's own cloth settings and body collision capsules"""
         chain_bones = [[j['bone'] for j in c['joints']] for c in cfg['chains']]
         need = {b for bones in chain_bones for b in bones} | {c['bone'] for c in cfg['capsules']}
         need |= {pb[bones[0]].parent.name for bones in chain_bones}
+        cloth = cfg.get('cloth') or {'nodes': [], 'rods': []}
+        need |= {bn for nd in cloth['nodes'] for bn in nd['follow'] if bn in pb}
+        if 'root_motion' in pb:
+            need.add('root_motion')
         cap_local = [(Vector(c['p0']), Vector(c['p1']), c['r0'], c['r1'], c['bone']) for c in cfg['capsules']]
         mats, goals, caps = {}, {}, {}
         with FastEval(ob):
@@ -782,6 +907,7 @@ Uses the game's own cloth settings and body collision capsules"""
         rest = {b: mw @ ob.data.bones[b].matrix_local for b in need}
         rest_goals = [[rest[b].translation.copy() for b in bones] for bones in chain_bones]
         rest_caps = [(rest[bn] @ p0, rest[bn] @ p1) for p0, p1, _, _, bn in cap_local]
+        rest_inv = {b: rest[b].inverted() for b in need}
         allow = [[[(p - seg_closest(p, a, b)[0]).length for a, b in rest_caps] for p in chain]
                  for chain in rest_goals]
         if sc.dlrig_phys_loop:
@@ -799,6 +925,7 @@ Uses the game's own cloth settings and body collision capsules"""
                 goals[key] = [[m[b].translation.copy() for b in bones] for bones in chain_bones]
                 caps[key] = [(m[bn] @ p0, m[bn] @ p1, r0, r1) for p0, p1, r0, r1, bn in cap_local]
                 warm.append(key)
+                mats[key] = m
         seq = warm + frames
         caps2 = {}
         for i, f in enumerate(seq):
@@ -810,7 +937,16 @@ Uses the game's own cloth settings and body collision capsules"""
         links = [(idx[a], idx[b]) for a, b in CLOTH_LINKS if a in idx and b in idx]
         link_allow = [[[((pa + pb) * 0.5 - seg_closest((pa + pb) * 0.5, a, b)[0]).length for a, b in rest_caps]
                        for pa, pb in zip(rest_goals[ca], rest_goals[cb])] for ca, cb in links]
-        sim = simulate(cfg, goals, caps2, fps, settings, allow, warm, links, link_allow)
+        # simulated in the root motion's frame: a clip's travel would otherwise drag hair and coats out behind, and a
+        # looping clip jumps back to its start every cycle
+        root = {k: mats[k]['root_motion'] if 'root_motion' in need else mw for k in seq}
+        inv = {k: m.inverted() for k, m in root.items()}
+        lgoals = {k: [[inv[k] @ p for p in ch] for ch in goals[k]] for k in seq}
+        lcaps = {k: [(inv[k] @ a0, inv[k] @ a1, inv[k] @ b0, inv[k] @ b1, r0, r1)
+                     for a0, a1, b0, b1, r0, r1 in caps2[k]] for k in seq}
+        sim = simulate(cfg, lgoals, lcaps, fps, settings, allow, warm, links, link_allow)
+        sim = {f: [[root[f] @ p for p in ch] for ch in v] for f, v in sim.items()}
+        cloth_curves = bake_cloth(ob, cloth, mats, rest_inv, rest_caps, lcaps, root, fps, settings, seq, frames)
         rest_rot = {b.name: b.matrix_local.to_quaternion() for b in ob.data.bones}
         cb = channelbag(ob)
         curves = {}
@@ -820,7 +956,6 @@ Uses the game's own cloth settings and body collision capsules"""
                 curves[b] = [new_fcurve(cb, path, i, 'Physics') for i in range(4)]
                 for fc in curves[b]:
                     fc.keyframe_points.add(len(frames))
-        mw_rot = ob.matrix_world.to_quaternion()
         last = {}
         for fi, f in enumerate(frames):
             m = mats[f]
@@ -848,7 +983,7 @@ Uses the game's own cloth settings and body collision capsules"""
                         kp.co = (f, d[i])
                         kp.interpolation = 'LINEAR'
                     anim_parent, final_parent = anim, final
-        for fcs in curves.values():
+        for fcs in list(curves.values()) + cloth_curves:
             for fc in fcs:
                 fc.update()
         ob['physics'] = 1.0
@@ -865,6 +1000,7 @@ def clear_physics(ob):
     for b in ob.pose.bones:
         if b.name.startswith('PHYS-'):
             b.rotation_quaternion = (1, 0, 0, 0)
+            b.location = (0, 0, 0)
 
 
 class DLRIG_OT_clear_physics(bpy.types.Operator):
@@ -949,6 +1085,8 @@ class DLRIG_PT_body(bpy.types.Panel):
         col.label(text='Switching keeps the pose', icon='INFO')
         col.label(text='IK: rings rotate bones too', icon='INFO')
         col.operator('dlrig.bake_ik', icon='CON_KINEMATIC').limbs = 'ALL'
+        for t in ob.get('tails', []):
+            col.prop(ob, f'["ik_{t}"]', text=f'{t.replace("_", " ").capitalize()} IK', slider=True)
         if 'prop_chain' in ob:
             col.separator()
             col.label(text='Held prop: move its box', icon='INFO')
@@ -989,7 +1127,8 @@ class DLRIG_PT_physics(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         t = bpy.data.texts.get(PHYS_TEXT)
-        return t is not None and bool(json.loads(t.as_string())['chains'])
+        cfg = json.loads(t.as_string()) if t else {}
+        return bool(cfg.get('chains') or cfg.get('cloth', {}).get('nodes'))
 
     def draw(self, context):
         ob = rig(context)
