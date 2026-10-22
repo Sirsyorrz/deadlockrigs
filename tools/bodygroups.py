@@ -40,17 +40,17 @@ def split_meshes(hero):
     import bpy
     for name, spec in hero.cfg.get('split', {}).items():
         mats = spec if isinstance(spec, list) else spec['mats']
-        src = next(o for o in bpy.data.objects if o.type == 'MESH' and any(m and m.name in mats for m in o.data.materials))
-        idx = {i for i, m in enumerate(src.data.materials) if m and m.name in mats}
-        inside = None
+        cands = [o for o in bpy.data.objects if o.type == 'MESH' and any(m and m.name in mats for m in o.data.materials)]
+        src, inside = cands[0], None
         if isinstance(spec, dict) and 'bones' in spec:
-            arm = src.find_armature()
-            under = set()
-            for b in arm.data.bones:
-                if any(b.name == r or any(p.name == r for p in b.parent_recursive) for r in spec['bones']):
-                    under.add(b.name)
-            groups = {g.index for g in src.vertex_groups if g.name in under}
-            inside = [sum(g.weight for g in v.groups if g.group in groups) >= 0.5 for v in src.data.vertices]
+            def weighted(o):
+                under = {b.name for b in o.find_armature().data.bones
+                         if any(b.name == r or any(p.name == r for p in b.parent_recursive) for r in spec['bones'])}
+                groups = {g.index for g in o.vertex_groups if g.name in under}
+                return [sum(g.weight for g in v.groups if g.group in groups) >= 0.5 for v in o.data.vertices]
+            # the material can be shared by several meshes (Warden's coat backfaces): the one holding the head
+            src, inside = max(((o, weighted(o)) for o in cands), key=lambda c: sum(c[1]))
+        idx = {i for i, m in enumerate(src.data.materials) if m and m.name in mats}
         part = src.copy()
         part.data = src.data.copy()
         part.name = part.data.name = name

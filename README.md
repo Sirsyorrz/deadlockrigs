@@ -50,7 +50,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Hero | Face rig |
 |---|---|
 | Abrams, McGinnis | yes (from the game's face bones) |
-| Apollo, Celeste, Drifter, Graves, Grey Talon, Infernus, Kelvin, Lady Geist, Mina, Mirage, Paige, Silver, The Doorman, Venator, Violet | yes |
+| Apollo, Celeste, Drifter, Graves, Grey Talon, Holliday, Infernus, Kelvin, Lady Geist, Mina, Mirage, Paige, Silver, The Doorman, Venator, Violet | yes |
 | Billy, Rem, Victor | yes (from the game's face morphs) |
 | everyone else | not yet |
 

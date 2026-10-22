@@ -419,7 +419,18 @@ class Rig:
             while seg[-1] != m:
                 seg.append(pred[seg[-1]])
             halves.append(seg)
-        path = np.array(halves[0][:-1] + halves[1][::-1])
+        path = halves[0][:-1] + halves[1][::-1]
+        # no detours: where two path vertices further apart share an edge, the faces between them would be cut
+        # off on the wrong side (Holliday's)
+        nbr = h.wgraph.tocsr()
+        i = 0
+        while i < len(path) - 2:
+            linked = set(nbr.indices[nbr.indptr[path[i]]:nbr.indptr[path[i] + 1]].tolist())
+            j = max((j for j in range(i + 2, min(i + 6, len(path))) if path[j] in linked), default=None)
+            if j is not None:
+                path = path[:i + 1] + path[j:]
+            i += 1
+        path = np.array(path)
         # the lower lip: the neighbour of the middle with the lowest point
         nb = h.wgraph.tocsr()
         cand = nb.indices[nb.indptr[m]:nb.indptr[m + 1]]

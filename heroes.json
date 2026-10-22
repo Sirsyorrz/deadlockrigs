@@ -153,7 +153,26 @@
   "slug": "holliday",
   "name": "Holliday",
   "codename": "astro",
-  "model": "models/heroes_staging/astro/astro.vmdl"
+  "model": "models/heroes_staging/astro/astro.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "astro_v2"
+    ],
+    "bones": [
+     "head"
+    ]
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.047,
+    -0.113,
+    2.123
+   ]
+  }
  },
  {
   "slug": "infernus",
