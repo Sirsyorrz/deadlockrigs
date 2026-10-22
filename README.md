@@ -2,12 +2,19 @@
 
 Blender animation rigs for Deadlock heroes built into blender.
 
+![Violet's rig in Blender](docs/violet_rig.png)
+
 Each hero gets a rig with:
 - IK/FK arms and legs
 - the game's twist bones and cloth/hair physics, including coats
 - tail controls for heroes with tails
 - hand poses
 - face shape keys, controls and expressions for the heroes listed under [Faces](#faces)
+
+| | |
+|---|---|
+| ![Abrams' rig](docs/abrams_rig.png) | ![Abrams posed from a game clip](docs/abrams_pose.png) |
+| ![Violet on a frame of her run clip](docs/violet_run.png) | ![Vyper's tail controls](docs/vyper_tail.png) |
 
 ## Install
 
@@ -16,6 +23,8 @@ Needs Blender 5.1 or newer and Deadlock installed through Steam. Works on Window
 1. Download the zip for your platform from [Releases](https://github.com/Sirsyorrz/deadlockrigs/releases).
 2. In Blender: Edit > Preferences > Get Extensions > menu at the top right > Install from Disk, and pick the zip.
 3. Open the 3D View sidebar (N) > Deadlock Rigs, pick a hero and press Build Rig.
+
+![The Deadlock Rigs panel](docs/addon_panel.png)
 
 The first build downloads Source2Viewer-CLI (about 60 MB) to read the game files. A build takes one to three
 minutes. Rigs are saved to `Documents/DeadlockRigs/<hero>/<hero>_rig.blend`, and rebuilding keeps the previous rig as
@@ -44,6 +53,17 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Apollo, Drifter, Graves, Mina, Paige, Violet | yes |
 | Billy, Rem, Victor | yes (from the game's face morphs) |
 | everyone else | not yet |
+
+![Violet's expressions](docs/faces_violet.png)
+![Abrams' expressions](docs/faces_abrams.png)
+
+| | |
+|---|---|
+| ![Violet's face controls](docs/violet_face_controls.png) | ![Abrams' face controls](docs/abrams_face_controls.png) |
+
+## Hands
+
+![Hand poses](docs/hands.png)
 
 ## Known gaps
 
