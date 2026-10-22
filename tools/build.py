@@ -12,6 +12,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 from bodygroups import mesh_parts  # noqa: E402
+from collar import fix_collar  # noqa: E402
 from hero import from_argv  # noqa: E402
 from tongue_mesh import add_tongue  # noqa: E402
 
@@ -64,6 +65,9 @@ if hero.face:
     tongue_path = keys_path.replace('.npz', '_tongue.npz')
     tongue = add_tongue(head, tongue_path) if os.path.exists(tongue_path) else {}
     n = len(me.vertices)
+    others = [o for o in bpy.data.objects if o.type == 'MESH' and o != head and not o.hide_viewport and o.vertex_groups]
+    scale = arm.data.bones['head'].head_local.z / 2.094
+    print('collar: head vertices covered', fix_collar(head, others, scale, n_head))
     base = np.empty(n * 3, np.float32)
     me.vertices.foreach_get('co', base)
     keys = np.load(keys_path)

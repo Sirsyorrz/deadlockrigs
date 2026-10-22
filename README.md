@@ -160,6 +160,10 @@ the lips). A driven corrective, `tongueOut_mid`, peaks at `tongueOut` 0.5 and li
 it slides out, so half-out tongues no longer go through the lower lip. Heads without teeth get none; the rest of the
 mouth interior is a plain dark material.
 
+Separate head meshes reach down into the collar skinned almost fully to `neck_0`, while the collar follows
+`spine_3`, so bending the neck pushed the hidden neck out through the collar (Violet). `build.py` (`tools/collar.py`)
+gives head vertices covered by a torso mesh that mesh's weights, blending back to their own over 3 cm above it.
+
 Hair, hats and other meshes around the head are dumped too: skin above the eyes that lies within a few mm of them
 stays put, so brow keys can't push it through.
 

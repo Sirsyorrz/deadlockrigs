@@ -50,7 +50,7 @@ build() {
         ;;
       base)
         rm -f "$dir/$OUT/$hero.blend"
-        $B -b -P tools/build.py -- "$hero" 2>&1 | grep -E "^(meshes|shape keys|wrote|mesh without)|Error|Traceback" || true
+        $B -b -P tools/build.py -- "$hero" 2>&1 | grep -E "^(meshes|shape keys|wrote|mesh without|collar)|Error|Traceback" || true
         [ -f "$dir/$OUT/$hero.blend" ]
         ;;
       anims)
