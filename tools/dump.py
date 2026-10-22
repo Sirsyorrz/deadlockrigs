@@ -7,13 +7,14 @@ import bpy
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
-from bodygroups import mesh_parts  # noqa: E402
+from bodygroups import mesh_parts, split_meshes  # noqa: E402
 from hero import from_argv  # noqa: E402
 
 hero, _ = from_argv()
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=hero.raw_glb)
-o = next(o for o in bpy.context.scene.objects if o.name.endswith('.' + hero.face['part']))
+split_meshes(hero)
+o = next(o for o in bpy.context.scene.objects if o.name == hero.face['part'] or o.name.endswith('.' + hero.face['part']))
 arm = next(o for o in bpy.context.scene.objects if o.type == 'ARMATURE')
 me = o.data
 n = len(me.vertices)

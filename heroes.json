@@ -73,7 +73,17 @@
   "slug": "celeste",
   "name": "Celeste",
   "codename": "unicorn",
-  "model": "models/heroes_wip/unicorn/unicorn.vmdl"
+  "model": "models/heroes_wip/unicorn/unicorn.vmdl",
+  "split": {
+   "Head": [
+    "unicorn_headv2",
+    "unicorn_eye"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head"
+  }
  },
  {
   "slug": "deadman_danny",

@@ -260,6 +260,14 @@ class Rig:
         self.bag[ids[lab == size.argmax()]] = True
         self.bag = self.fill(self.bag)
         rim = self.rim(self.bag)
+        # a shallow cup sculpted behind parted lips (Celeste's) has no room for a tongue or an open jaw: drop it and
+        # build a full bag on the lips instead, like for a closed mouth
+        if p[self.bag, 1].max() - p[rim, 1].min() < 0.03 * s:
+            tw = h.weld[h.tris]
+            inside = self.bag.copy()
+            inside[rim] = False
+            self.fused = np.where(self.bag[tw].all(1) & inside[tw].any(1))[0]
+            return
         q = p[rim]
         self.corner = {'L': rim[q[:, 0].argmax()], 'R': rim[q[:, 0].argmin()]}
         cl, cr = p[self.corner['L']], p[self.corner['R']]
@@ -554,6 +562,14 @@ class Rig:
         g = fg.geodesic(self.h, [vid], limit=radius * 3)
         w = np.exp(-(g / radius) ** 2)
         w[~self.soft_w] = 0
+        # on a coarse face (Celeste's brows) the vertex under the handle took the whole move and its neighbours a
+        # fraction, a spike that also differed left to right with where the handle landed; dense faces barely change
+        a = self.h.wgraph.copy()
+        a.data[:] = 1
+        deg = np.asarray(a.sum(1)).ravel()
+        for _ in range(2):
+            w = 0.5 * w + 0.5 * (a @ w) / np.maximum(deg, 1)
+            w[~self.soft_w] = 0
         self.handles[name] = w
         self.handle_vid[name] = vid
 
@@ -1095,7 +1111,8 @@ def add_bag(d, h, rig, rings=10):
     zc = (teeth[:, 2].max() + teeth[:, 2].min()) / 2 if rig.teeth_w.any() else v[:, 2].mean() - 0.004 * s
     rx = max(np.abs(teeth[:, 0]).max(), np.abs(v[:, 0]).max()) + 0.004 * s
     rz = max((teeth[:, 2].max() - teeth[:, 2].min()) / 2 + 0.004 * s, 0.012 * s)
-    y_back = min(max(teeth[:, 1].max(), v[:, 1].max()) + 0.008 * s, v[:, 1].min() + 0.09 * s)
+    # deep enough to pass for a real one (and the shallow-bag test) even with no teeth to go around
+    y_back = min(max(teeth[:, 1].max() + 0.008 * s, v[:, 1].min() + 0.05 * s), v[:, 1].min() + 0.09 * s)
     # around the edge: upper lip 0..pi from the left corner, lower lip 0..-pi
     hx = np.abs(v[:, 0]).max()
     i_l, i_r = v[:, 0].argmax(), v[:, 0].argmin()
