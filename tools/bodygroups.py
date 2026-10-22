@@ -19,11 +19,12 @@ def mesh_parts(vmdl_text):
 
 
 def keep_faces(o, keep):
+    """Deletes the faces keep(face) rejects, and the vertices left with none."""
     import bmesh
     import bpy
     bm = bmesh.new()
     bm.from_mesh(o.data)
-    bmesh.ops.delete(bm, geom=[f for f in bm.faces if not keep(f.material_index)], context='FACES')
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if not keep(f)], context='FACES')
     bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
     bm.to_mesh(o.data)
     bm.free()
@@ -33,16 +34,31 @@ def keep_faces(o, keep):
 
 def split_meshes(hero):
     """Pieces baked into another mesh (Violet's portfolio, heads inside a body mesh) become their own objects, named
-    after their heroes.json "split" key; build.py and dump.py split the same way, so vertex order matches."""
+    after their heroes.json "split" key; build.py and dump.py split the same way, so vertex order matches.
+    A split is a list of materials, or {"mats": [...], "bones": [...]} for a head that shares the body's material
+    (Infernus'): the faces whose every vertex is mostly weighted to those bones or below them."""
     import bpy
-    for name, mats in hero.cfg.get('split', {}).items():
+    for name, spec in hero.cfg.get('split', {}).items():
+        mats = spec if isinstance(spec, list) else spec['mats']
         src = next(o for o in bpy.data.objects if o.type == 'MESH' and any(m and m.name in mats for m in o.data.materials))
+        idx = {i for i, m in enumerate(src.data.materials) if m and m.name in mats}
+        inside = None
+        if isinstance(spec, dict) and 'bones' in spec:
+            arm = src.find_armature()
+            under = set()
+            for b in arm.data.bones:
+                if any(b.name == r or any(p.name == r for p in b.parent_recursive) for r in spec['bones']):
+                    under.add(b.name)
+            groups = {g.index for g in src.vertex_groups if g.name in under}
+            inside = [sum(g.weight for g in v.groups if g.group in groups) >= 0.5 for v in src.data.vertices]
         part = src.copy()
         part.data = src.data.copy()
         part.name = part.data.name = name
         for c in src.users_collection:
             c.objects.link(part)
-        idx = {i for i, m in enumerate(src.data.materials) if m and m.name in mats}
-        keep_faces(part, lambda i: i in idx)
-        keep_faces(src, lambda i: i not in idx)
+
+        def mine(f):
+            return f.material_index in idx and (inside is None or all(inside[v.index] for v in f.verts))
+        keep_faces(part, mine)
+        keep_faces(src, lambda f: not mine(f))
         print('split', name, 'from', src.name, len(part.data.vertices), 'vertices')

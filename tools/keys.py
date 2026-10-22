@@ -364,11 +364,13 @@ class Rig:
                 best = best[~((c[best, 0] * sx > 0) & (np.abs(c[best, 0]) > limit))]
         return best
 
-    def lip_line(self):
+    def lip_line(self, recess=False):
         """For closed lips sculpted as one surface with no band to drop (Grey Talon's, Lady Geist's): the crease
         where they meet, as the cheapest path through the mouth's middle when walking along concave skin is cheap,
         out to where the crease fades at the corners. The chin crease can be deeper (Solomon's), so of the creases
-        through the middle the widest wins. Returns (path of welded vertices, a lower-lip vertex) or None."""
+        through the middle the widest wins. Returns (path of welded vertices, a lower-lip vertex) or None.
+        A broad groove (Infernus' parted lips) is flat at the bottom; failing a crease, recess also counts how far
+        each vertex sits behind the skin around it."""
         h, s, p, nrm = self.h, self.s, self.h.wco, self.h.wnrm
         g = h.wgraph.tocoo()
         d = p[g.col] - p[g.row]
@@ -378,6 +380,11 @@ class Rig:
         np.minimum.at(val, g.row, k * s)
         band = (self.soft_w & (np.abs(p[:, 0]) < 0.07 * s) & (p[:, 2] < self.ez - 0.065 * s)
                 & (p[:, 2] > self.ez - 0.17 * s) & (nrm[:, 1] < -0.2))
+        if recess:
+            ids = np.where(band)[0]
+            soft_p = p[self.soft_w]
+            for v, nb in zip(ids, cKDTree(soft_p).query_ball_point(p[ids], 0.01 * s)):
+                val[v] = min(val[v], (p[v] - soft_p[nb].mean(0)) @ nrm[v] / s * 1e5)
         cost = np.exp(np.clip((val[g.row] + val[g.col]) / 2, -800, 200) / 250)
         keep = band[g.row] & band[g.col]
         wg = coo_matrix((np.sqrt((d * d).sum(1))[keep] * cost[keep], (g.row[keep], g.col[keep])),
@@ -404,7 +411,7 @@ class Rig:
             if best is None or width > best[0]:
                 best = (width, m, ends, pred)
         if best is None or best[0] < 0.04 * s:
-            return None
+            return None if recess else self.lip_line(recess=True)
         _, m, ends, pred = best
         halves = []
         for e in ends:

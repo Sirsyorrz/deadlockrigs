@@ -159,7 +159,26 @@
   "slug": "infernus",
   "name": "Infernus",
   "codename": "inferno",
-  "model": "models/heroes_wip/inferno/inferno.vmdl"
+  "model": "models/heroes_wip/inferno/inferno.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "inferno_body"
+    ],
+    "bones": [
+     "head"
+    ]
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.046,
+    -0.133,
+    2.335
+   ]
+  }
  },
  {
   "slug": "ivy",
