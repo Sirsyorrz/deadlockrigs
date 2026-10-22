@@ -151,6 +151,17 @@ class Rig:
         mats = np.array([any(k in str(m).lower() for k in ('teeth', 'tooth')) for m in h.matnames])
         teeth = np.zeros(self.nw, bool)
         teeth[h.weld[mats[h.vmat]]] = True
+        # or pieces of the head's own material sitting centred behind the lips (Lady Geist's)
+        p = h.wco
+        for c in np.unique(self.comp[~self.soft_w & ~self.ball_w['L'] & ~self.ball_w['R']]):
+            m = self.comp == c
+            q = p[m]
+            mid = q.mean(0)
+            if (m.sum() > 50 and abs(mid[0]) < 0.01 * self.s and 0.03 * self.s < np.ptp(q[:, 0]) < 0.09 * self.s
+                    and self.ez - 0.14 * self.s < mid[2] < self.ez - 0.05 * self.s
+                    and mid[1] > p[self.soft_w & (np.hypot(p[:, 0], p[:, 2] - mid[2]) < 0.006 * self.s), 1].min(
+                        initial=np.inf) + 0.004 * self.s):
+                teeth |= m
         self.teeth_w = teeth & ~self.soft_w
         self._mouth()
         if self.hole is not None or self.fused is not None or self.lip_cut is not None:
@@ -365,7 +376,7 @@ class Rig:
         k = ((nrm[g.col] - nrm[g.row]) * d).sum(1) / np.maximum((d * d).sum(1), 1e-12)
         val = np.full(self.nw, np.inf)
         np.minimum.at(val, g.row, k * s)
-        band = (self.soft_w & (np.abs(p[:, 0]) < 0.07 * s) & (p[:, 2] < self.ez - 0.04 * s)
+        band = (self.soft_w & (np.abs(p[:, 0]) < 0.07 * s) & (p[:, 2] < self.ez - 0.065 * s)
                 & (p[:, 2] > self.ez - 0.17 * s) & (nrm[:, 1] < -0.2))
         cost = np.exp(np.clip((val[g.row] + val[g.col]) / 2, -800, 200) / 250)
         keep = band[g.row] & band[g.col]
@@ -383,7 +394,7 @@ class Rig:
             for sx in (1, -1):
                 x = p[:, 0] * sx
                 # the crease's end: the farthest point reached while walking mostly in the valley
-                ok = np.isfinite(dist) & (x > 0.008 * s) & (dist < 0.4 * np.maximum(x, 1e-9)) & (val < -100)
+                ok = np.isfinite(dist) & (x > 0.008 * s) & (dist < 0.6 * np.maximum(x, 1e-9)) & (val < -100)
                 if not ok.any():
                     break
                 ends.append(np.where(ok)[0][x[ok].argmax()])
@@ -913,7 +924,10 @@ def tongue(h, rig, n_ring=14, n_len=16):
     if rig.teeth_w.any():
         low = rig.teeth_w & (p[:, 2] < rig.lip_z)
         if low.any():
-            y0 = max(y0, p[low & (np.abs(p[:, 0]) < 0.01 * s), 1].max(initial=y0) + 0.002 * s)
+            yl = p[low & (np.abs(p[:, 0]) < 0.01 * s), 1]
+            if len(yl):
+                # a lower piece reaching far back (Lady Geist's) is more than a row of teeth: start no deeper
+                y0 = max(y0, min(yl.max(), yl.min() + 0.03 * s) + 0.002 * s)
     ys = y0 + np.linspace(0, 0.06 * s, n_len)
     z_top = rig.lip_z - 0.002 * s
 
@@ -992,7 +1006,10 @@ def tongue_keys(rig, co, w, u, names):
     slide = 1 - smoothstep(0.35, 1.0, u)
     droop = 0.006 * s * np.clip(1 - u / 0.35, 0, 1) ** 2
     thin = -0.25 * (co[:, 2] - ring_z)
-    out['tongueOut'] = np.stack([-0.1 * co[:, 0] * lead, -0.036 * s * slide, (lift + thin) * slide - droop], 1)
+    # a tongue starting far behind the lips (behind Lady Geist's deep lower teeth) slides further to get out
+    lip_y = rig.h.wco[np.r_[rig.rim_u, rig.rim_l], 1].mean()
+    reach = 0.036 * s + max(0.0, co[u == 0, 1].min() - lip_y - 0.022 * s)
+    out['tongueOut'] = np.stack([-0.1 * co[:, 0] * lead, -reach * slide, (lift + thin) * slide - droop], 1)
     # a straight blend lifts and slides together, so half way the tip came out through the lower lip; this
     # corrective (rig.py drives it with a peak at tongueOut 0.5) lifts it to the lips first
     out[TONGUE_MID] = np.stack([np.zeros(len(co)), np.zeros(len(co)), 0.5 * lift * slide], 1)

@@ -188,7 +188,16 @@
   "slug": "lady_geist",
   "name": "Lady Geist",
   "codename": "ghost",
-  "model": "models/heroes_wip/geist/geist.vmdl"
+  "model": "models/heroes_wip/geist/geist.vmdl",
+  "split": {
+   "Head": [
+    "geist_head"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head"
+  }
  },
  {
   "slug": "lash",
