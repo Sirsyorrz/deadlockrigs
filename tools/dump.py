@@ -35,7 +35,14 @@ mats = np.empty(len(me.polygons), np.int32)
 me.polygons.foreach_get('material_index', mats)
 assert (counts == 3).all(), 'expected triangles'
 tris = loops.reshape(-1, 3)
-bones = {b: np.array(arm.matrix_world @ arm.pose.bones[b].head) for b in ('head', 'jaw_0', 'eye_0_L', 'eye_0_R', 'neck_0')}
+bones = {b: np.array(arm.matrix_world @ arm.pose.bones[b].head) for b in ('head', 'jaw_0', 'eye_0_L', 'eye_0_R', 'neck_0')
+         if b in arm.pose.bones}
+if 'jaw_0' not in bones:
+    # no jaw bone (Silver): where the others' sits from their eyes, behind and below them by eye spacing
+    eyes = (bones['eye_0_L'] + bones['eye_0_R']) / 2
+    s = abs(bones['eye_0_L'][0] - bones['eye_0_R'][0]) / 0.088
+    bones['jaw_0'] = np.array([0, eyes[1] + 0.07 * s, eyes[2] - 0.047 * s])
+    print('no jaw_0: jaw pivot placed at', bones['jaw_0'])
 balls = {}
 for s in 'LR':
     gi = o.vertex_groups[f'eye_0_{s}'].index

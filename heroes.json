@@ -265,7 +265,18 @@
   "slug": "silver",
   "name": "Silver",
   "codename": "werewolf",
-  "model": "models/heroes_wip/werewolf/werewolf.vmdl"
+  "model": "models/heroes_wip/werewolf/werewolf.vmdl",
+  "split": {
+   "Head": [
+    "werewolf_head",
+    "werewolf_eye",
+    "werewolf_teeth"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head"
+  }
  },
  {
   "slug": "sinclair",
