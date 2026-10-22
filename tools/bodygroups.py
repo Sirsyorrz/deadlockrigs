@@ -36,11 +36,13 @@ def split_meshes(hero):
     """Pieces baked into another mesh (Violet's portfolio, heads inside a body mesh) become their own objects, named
     after their heroes.json "split" key; build.py and dump.py split the same way, so vertex order matches.
     A split is a list of materials, or {"mats": [...], "bones": [...]} for a head that shares the body's material
-    (Infernus'): the faces whose every vertex is mostly weighted to those bones or below them."""
+    (Infernus'): the faces whose every vertex is mostly weighted to those bones or below them; "mesh" picks the
+    mesh by name when several share the material."""
     import bpy
     for name, spec in hero.cfg.get('split', {}).items():
         mats = spec if isinstance(spec, list) else spec['mats']
-        cands = [o for o in bpy.data.objects if o.type == 'MESH' and any(m and m.name in mats for m in o.data.materials)]
+        cands = [o for o in bpy.data.objects if o.type == 'MESH' and any(m and m.name in mats for m in o.data.materials)
+                 and (not isinstance(spec, dict) or 'mesh' not in spec or o.name.endswith('.' + spec['mesh']))]
         src, inside = cands[0], None
         if isinstance(spec, dict) and 'bones' in spec:
             def weighted(o):

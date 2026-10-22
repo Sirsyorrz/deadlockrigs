@@ -415,7 +415,21 @@
   "slug": "vindicta",
   "name": "Vindicta",
   "codename": "hornet",
-  "model": "models/heroes_staging/hornet_v3/hornet.vmdl"
+  "model": "models/heroes_staging/hornet_v3/hornet.vmdl",
+  "split": {
+   "Head": [
+    "vindicta_headv2"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.039,
+    -0.086,
+    2.155
+   ]
+  }
  },
  {
   "slug": "violet",
