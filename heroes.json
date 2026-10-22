@@ -165,7 +165,12 @@
   "slug": "mcginnis",
   "name": "McGinnis",
   "codename": "forge",
-  "model": "models/heroes_wip/mcginnis/mcginnis.vmdl"
+  "model": "models/heroes_wip/mcginnis/mcginnis.vmdl",
+  "face": {
+   "part": "face",
+   "mesh": "face",
+   "builder": "bonekeys.py"
+  }
  },
  {
   "slug": "mina",

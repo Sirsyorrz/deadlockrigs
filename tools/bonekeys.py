@@ -126,6 +126,7 @@ class Face:
         self.base = self.evaluate()
         self.lips_for_tongue = None
         self.tongue_lift = None
+        self.tongue_reach = None
 
     def head(self, b):
         return self.rest[b].translation.copy()
@@ -270,12 +271,16 @@ def tongue_out(face):
     if len(chain) < 2:
         return
     lip = face.head('lip_lower_mid')
-    tip = face.head(chain[-1])
-    reach = (tip.y - lip.y) + 0.03 * face.s
-    for i, b in enumerate(chain[1:], 1):
-        t = i / (len(chain) - 1)
-        prev = (i - 1) / (len(chain) - 1)
-        face.move(b, Vector((0, -(t - prev) * reach, 0)))
+    if getattr(face, 'tongue_reach', None) is None:
+        # from the tongue's own front, not its last bone: McGinnis' chain stops well short of her tip
+        pts = tongue_points(face, face.base)
+        tip_y = pts[:, 1].min() if len(pts) else face.head(chain[-1]).y
+        face.tongue_reach = max(tip_y - lip.y, 0) + 0.035 * face.s
+    # the bone after the root carries most of the slide, so the tongue comes out whole instead of stretching
+    links = len(chain) - 1
+    share = [0.6] + [0.4 / (links - 1)] * (links - 1) if links > 1 else [1.0]
+    for b, f in zip(chain[1:], share):
+        face.move(b, Vector((0, -f * face.tongue_reach, 0)))
     # Abrams' tongue is 16 mm thick; out, it spreads thinner
     rest = face.rest[chain[1]].to_3x3()
     up = max(range(3), key=lambda k: abs(rest.col[k].z))
@@ -407,8 +412,12 @@ def mouth_bag(face):
     depth = np.array([sk[i, 1] - front.get(tuple(key[i]), sk[i, 1]) if box[i] else 0 for i in range(len(sk))])
     # behind the lips, so deep folds in front of them (nostrils) stay skin
     behind = sk[:, 1] - min(face.head('lip_upper_mid').y, face.head('lip_lower_mid').y)
-    return np.where((depth > 0.007 * s) & (behind > 0.014 * s), 2,
-                    np.where((depth > 0.004 * s) & (behind > 0.006 * s), 1, 0)).astype(np.int8)
+    bag = np.where((depth > 0.007 * s) & (behind > 0.014 * s), 2,
+                   np.where((depth > 0.004 * s) & (behind > 0.006 * s), 1, 0)).astype(np.int8)
+    # a tongue and teeth in the face mesh (McGinnis') keep their colour, else tongueOut pulls out a dark tongue
+    own = [b.name for b in face.arm.data.bones if b.name.startswith('tongue') or b.name.endswith('_teeth')]
+    bag[sum(vertex_weights(face.meshes[face.part], own).values()) > 0.5] = 0
+    return bag
 
 
 def iris_keys(face, part, inner=30, outer=55):
@@ -493,8 +502,9 @@ if __name__ == '__main__':
     hero, _ = from_argv()
     face = Face(hero)
     keys = build_keys(face)
-    eye_part = next(p for p, o in face.meshes.items()
-                    if o.vertex_groups.get('eye_L') or o.vertex_groups.get('eye_0_L'))
+    # every mesh lists every vertex group, so pick the one actually skinned to the eyes
+    eye_bones = [b for b in ('eye_L', 'eye_0_L') if face.has(b)]
+    eye_part = max(face.meshes, key=lambda p: (sum(vertex_weights(face.meshes[p], eye_bones).values()) > 0.5).sum())
     for k, v in iris_keys(face, eye_part).items():
         keys[k] = {eye_part: v}
     attach(face, keys, hero.face.get('attach', []))

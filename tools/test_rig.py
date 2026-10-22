@@ -490,7 +490,9 @@ if 'FACE' in pb:
             sizes[kb.name] = max(sizes.get(kb.name, 0), m)
     # in-betweens only add what the straight blend misses, so they can be small; the game's jaws open wide
     top = 250 * fs if morphs else 50 * fs
-    odd = {k: round(v, 1) for k, v in sizes.items() if not (0.05 if k.endswith('_mid') else 0.5) < v < top}
+    # the tongue slides out its own length, more than any skin moves
+    odd = {k: round(v, 1) for k, v in sizes.items()
+           if not (0.05 if k.endswith('_mid') else 0.5) < v < (2 * top if k.startswith('tongueOut') else top)}
     check(f'face keys move 0.5-{top:.0f} mm', not odd, f'{len(sizes)} keys {odd}')
     lr = {k: (sizes[k], sizes[k[:-4] + 'Right']) for k in sizes if k.endswith('Left')}
     lop = {k: tuple(round(x, 1) for x in v) for k, v in lr.items() if abs(v[0] - v[1]) > 0.35 * max(v)}
