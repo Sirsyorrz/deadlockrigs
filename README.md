@@ -82,6 +82,12 @@ lower bones' roll from the pole, so when switching FK to IK (or converting a cli
 the limb axis goes into the tweaks, which keeps clothing and props parented to the arm/thigh in place. The deform bones copy
 `MCH-*` children of the tweaks, so their rest pose (and the skinning) is untouched.
 
+Many of the game's right-side bones have rest frames turned (mostly 180 degrees) against the mirrored left ones, which
+made X-mirror posing and Paste Flipped bend the other side the wrong way. The rig turns those rest frames into the
+mirror of the left ones (`tools/mirror.py`; positions stay, so the skinning doesn't change), and `anims.py` converts
+the clips' keys to match. The clip library is therefore meant for the rig, not the plain `<hero>.blend`, and
+right-side bones exported from the rig don't have the game's bone orientations.
+
 Twist uses `TW-*` helpers and a Transformation constraint (swing/twist about the limb axis). The weights are fitted
 per hero against the twist bones baked into its clips, when the clips have them; otherwise Violet's weights are
 used.

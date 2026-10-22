@@ -64,7 +64,7 @@ build() {
       rig)
         rm -f "$dir/$OUT/${hero}_rig.blend"
         $B -b "$dir/$OUT/$hero.blend" -P tools/rig.py -- "$hero" 2>&1 \
-          | grep -E "^(IK|skipping|WARNING|wrote|twist)|Error|Traceback" || true
+          | grep -E "^(IK|skipping|WARNING|wrote|twist|mirror)|Error|Traceback" || true
         [ -f "$dir/$OUT/${hero}_rig.blend" ]
         ;;
       test)

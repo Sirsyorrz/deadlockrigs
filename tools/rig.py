@@ -9,8 +9,9 @@ Adds an animation rig on top of the exported model:
 - the game's procedural twist bones (forearm, upper arm, thigh) as constraints,
 - the game's cloth chains (hair, apron, ribbons, tassel, shirt flaps) as bakeable secondary motion,
 - a loader for the game's animation clips (<hero>_anims.blend, built by anims.py).
-The deform bones keep their imported rest pose, so the skinning is untouched. Parts a hero's skeleton lacks
-(arms, fingers, twist bones) are skipped.
+The deform bones keep their imported rest positions; right-side rest frames the game has turned against the left
+ones are turned into their mirror (mirror.py) so X-mirror posing works, which leaves the skinning untouched. Parts a
+hero's skeleton lacks (arms, fingers, twist bones) are skipped.
 
 """
 import json
@@ -26,6 +27,7 @@ from mathutils import Quaternion, Vector
 sys.path.insert(0, os.path.dirname(__file__))
 from expressions import ARKIT, EXPRESSIONS, GROUPS, VISEMES  # noqa: E402
 import hands  # noqa: E402
+import mirror  # noqa: E402
 from hero import from_argv  # noqa: E402
 
 hero, _ = from_argv()
@@ -38,6 +40,18 @@ head_ob = bpy.data.objects[hero.face['mesh']] if HAS_FACE else None
 bpy.context.view_layer.objects.active = arm
 arm.select_set(True)
 B = arm.data.bones
+TURNS = mirror.turns({b.name: b.matrix_local for b in B})
+bpy.ops.object.mode_set(mode='EDIT')
+mirror.turn_rest(arm.data.edit_bones, TURNS)
+bpy.ops.object.mode_set(mode='OBJECT')
+print('mirror: turned', len(TURNS), 'right-side rest frames')
+if TURNS and os.path.exists(hero.anims_blend):
+    with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
+        dst.actions = src.actions[:1]
+    if dst.actions and not dst.actions[0].get('mirror_keys'):
+        print('WARNING: the clip library predates the mirrored rest frames, rebuild it with the anims step')
+    for a in dst.actions:
+        bpy.data.actions.remove(a)
 rest = {b.name: b.matrix_local.copy() for b in B}
 hpos = {b.name: b.head_local.copy() for b in B}
 

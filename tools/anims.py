@@ -12,6 +12,7 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(__file__))
 from hero import from_argv  # noqa: E402
+import mirror  # noqa: E402
 
 hero, _ = from_argv()
 src, out = hero.anim_glb, hero.anims_blend
@@ -37,6 +38,13 @@ for a in list(bpy.data.actions):
         continue
     keep_names[n] = a
 
+# the rig turns these right-side rest frames (mirror.py), so the keys are stored for the turned bones
+TURNS = mirror.turns({b.name: b.matrix_local for b in arm.data.bones})
+uneven = set()
+for a in keep_names.values():
+    uneven.update(mirror.turn_keys(a.layers[0].strips[0].channelbags[0], TURNS))
+if uneven:
+    print('clips: non-uniform scale on turned bones, not exact:', sorted(uneven))
 
 
 def channels(a):
@@ -86,6 +94,7 @@ for n, a in keep_names.items():
     a.use_frame_range = True
     a.frame_start, a.frame_end = r[0], max(r[1], r[0] + 1)
     a['game_clip'] = True
+    a['mirror_keys'] = True
 
 for o in list(bpy.data.objects):
     bpy.data.objects.remove(o, do_unlink=True)

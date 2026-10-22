@@ -6,7 +6,7 @@ import time
 
 import bpy
 import numpy as np
-from mathutils import Quaternion, Vector
+from mathutils import Matrix, Quaternion, Vector
 
 t = bpy.data.texts['dlrig_ui.py']
 ns = {'__name__': 'dlrig_ui'}
@@ -97,6 +97,24 @@ for ob in [o for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewpo
 
 if 'prop_chain' in arm:
     arm['prop_chain'] = 1.0
+
+# X-mirror and Paste Flipped copy a left bone's pose to the right one as (w, x, -y, -z); some skeletons are not
+# symmetric in position, so only the resulting rotations are compared
+FLIP_X = Matrix.Diagonal((-1, 1, 1))
+for limb, s in limbs:
+    if s != 'L' or (limb, 'R') not in limbs:
+        continue
+    reset()
+    arm[f'ik_{limb}_L'] = arm[f'ik_{limb}_R'] = 0.0
+    q = Quaternion(Vector((0.3, -0.5, 0.7)).normalized(), 0.8)
+    for n in LIMB[limb][:3]:
+        pb[n + '_L'].rotation_quaternion = q
+        pb[n + '_R'].rotation_quaternion = (q.w, q.x, -q.y, -q.z)
+    update()
+    err = max((FLIP_X @ pb[n + '_L'].matrix.to_3x3() @ FLIP_X).to_quaternion().rotation_difference(
+        pb[n + '_R'].matrix.to_quaternion()).angle for n in LIMB[limb][:3])
+    check(f'x-mirror {limb}', err < math.radians(0.1), f'{math.degrees(err):.3f} deg')
+reset()
 
 # a held prop's chain stays on the prop when the prop is moved, and matches the game clips' chain
 for name, rot in (('object_hand_L', 0.0), ('object_hand_L', 0.8)):
