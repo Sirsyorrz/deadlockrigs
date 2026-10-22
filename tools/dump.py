@@ -35,8 +35,13 @@ mats = np.empty(len(me.polygons), np.int32)
 me.polygons.foreach_get('material_index', mats)
 assert (counts == 3).all(), 'expected triangles'
 tris = loops.reshape(-1, 3)
-bones = {b: np.array(arm.matrix_world @ arm.pose.bones[b].head) for b in ('head', 'jaw_0', 'eye_0_L', 'eye_0_R', 'neck_0')
-         if b in arm.pose.bones}
+# some skeletons name the eye bones eye_L/R (Wraith); keys.py reads them as eye_0_L/R
+ALIAS = {'eye_0_L': 'eye_L', 'eye_0_R': 'eye_R'}
+bones = {}
+for b in ('head', 'jaw_0', 'eye_0_L', 'eye_0_R', 'neck_0'):
+    name = b if b in arm.pose.bones else ALIAS.get(b)
+    if name and name in arm.pose.bones:
+        bones[b] = np.array(arm.matrix_world @ arm.pose.bones[name].head)
 if 'jaw_0' not in bones:
     # no jaw bone (Silver): where the others' sits from their eyes, behind and below them by eye spacing
     eyes = (bones['eye_0_L'] + bones['eye_0_R']) / 2
@@ -45,8 +50,37 @@ if 'jaw_0' not in bones:
     print('no jaw_0: jaw pivot placed at', bones['jaw_0'])
 balls = {}
 for s in 'LR':
-    gi = o.vertex_groups[f'eye_0_{s}'].index
+    gi = o.vertex_groups[f'eye_0_{s}'].index if f'eye_0_{s}' in o.vertex_groups else -1
     balls['ball_' + s] = np.array([any(g.group == gi and g.weight > 0.5 for g in v.groups) for v in me.vertices])
+if not (balls['ball_L'].any() and balls['ball_R'].any()):
+    # eyeballs skinned to the head, not the eye bones (Lady Geist's): the separate piece around each eye bone
+    # pieces by position-welded edges (Blender's Python has no scipy): labels spread to the smallest until stable
+    key = np.round(co / 1e-5).astype(np.int64)
+    _, weld = np.unique(key, axis=0, return_inverse=True)
+    weld = weld.ravel()
+    e = weld[np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]]])]
+    lab = np.arange(weld.max() + 1)
+    while True:
+        m = np.minimum(lab[e[:, 0]], lab[e[:, 1]])
+        new = lab.copy()
+        np.minimum.at(new, e[:, 0], m)
+        np.minimum.at(new, e[:, 1], m)
+        new = new[new]
+        if (new == lab).all():
+            break
+        lab = new
+    comp = lab[weld]
+    for s in 'LR':
+        best, best_d = None, 0.02
+        for c in np.unique(comp[np.linalg.norm(co - bones[f'eye_0_{s}'], axis=1) < 0.03]):
+            m = comp == c
+            size = np.ptp(co[m], axis=0).max()
+            d = np.linalg.norm(co[m].mean(0) - bones[f'eye_0_{s}'])
+            if m.sum() > 50 and size < 0.06 and d < best_d:
+                best, best_d = m, d
+        if best is not None:
+            balls['ball_' + s] = best
+    print('eyeballs found by shape:', int(balls['ball_L'].sum()), int(balls['ball_R'].sum()))
 # other shown meshes around the head (hair, hats, collars): the face keys must not push skin through them
 parts = mesh_parts(open(hero.vmdl).read())
 others = []
