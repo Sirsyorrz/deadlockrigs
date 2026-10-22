@@ -1,6 +1,8 @@
 """Packages the Blender add-on and the Source2Viewer-CLI builds it downloads.
 
-python tools/release.py addon   dist/deadlock_rigs-<version>-<platform>.zip, one per platform (scipy wheels differ)
+python tools/release.py addon [patch|minor|major|X.Y.Z]
+                                dist/deadlock_rigs-<version>-<platform>.zip, one per platform (scipy wheels differ);
+                                bumps the version in addon/blender_manifest.toml first if given one
 python tools/release.py s2v     dist/s2v/<runtime>.zip for each platform, to upload to the GitHub release
                                 tagged pipeline.S2V_TAG (needs git and the .NET SDK)
 
@@ -33,9 +35,28 @@ WHEEL_PLATFORMS = {
 S2V_RIDS = ['linux-x64', 'win-x64', 'osx-arm64', 'osx-x64']
 
 
+MANIFEST = os.path.join(ROOT, 'addon', 'blender_manifest.toml')
+VERSION_LINE = re.compile(r'^version = "([^"]+)"', re.M)
+
+
 def version():
-    text = open(os.path.join(ROOT, 'addon', 'blender_manifest.toml'), encoding='utf-8').read()
-    return re.search(r'^version = "([^"]+)"', text, re.M).group(1)
+    text = open(MANIFEST, encoding='utf-8').read()
+    return VERSION_LINE.search(text).group(1)
+
+
+def bump(how):
+    old = version()
+    if re.fullmatch(r'\d+\.\d+\.\d+', how):
+        new = how
+    elif how in ('major', 'minor', 'patch'):
+        major, minor, patch = map(int, old.split('.'))
+        new = {'major': f'{major + 1}.0.0', 'minor': f'{major}.{minor + 1}.0',
+               'patch': f'{major}.{minor}.{patch + 1}'}[how]
+    else:
+        sys.exit(f'bad version bump {how!r}: use patch, minor, major or X.Y.Z')
+    text = open(MANIFEST, encoding='utf-8').read()
+    open(MANIFEST, 'w', encoding='utf-8').write(VERSION_LINE.sub(f'version = "{new}"', text, count=1))
+    print(f'version {old} -> {new}')
 
 
 def download_wheels(dest):
@@ -67,7 +88,7 @@ def addon():
     shutil.copy(os.path.join(ROOT, 'LICENSE'), stage)
     shutil.copytree(os.path.join(ROOT, 'rigdata'), os.path.join(stage, 'rigdata'))
     wheels = download_wheels(os.path.join(stage, 'wheels'))
-    manifest = open(os.path.join(ROOT, 'addon', 'blender_manifest.toml'), encoding='utf-8').read()
+    manifest = open(MANIFEST, encoding='utf-8').read()
     # top-level keys have to come before the first [table]
     top = ('platforms = [' + ', '.join(f'"{p}"' for p in WHEEL_PLATFORMS) + ']\n'
            'wheels = [\n' + ''.join(f'  "./wheels/{w}",\n' for w in wheels) + ']\n\n')
@@ -114,6 +135,8 @@ def s2v():
 if __name__ == '__main__':
     target = sys.argv[1] if len(sys.argv) > 1 else ''
     if target == 'addon':
+        if len(sys.argv) > 2:
+            bump(sys.argv[2])
         addon()
     elif target == 's2v':
         s2v()

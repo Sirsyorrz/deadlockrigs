@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "deadlock_rigs"
-version = "0.1.0"
+version = "0.1.1"
 name = "Deadlock Rigs"
 tagline = "Build animation rigs of Deadlock heroes from your own game files"
 maintainer = "Sirsyorrz"
