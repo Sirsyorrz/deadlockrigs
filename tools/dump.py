@@ -42,6 +42,20 @@ for b in ('head', 'jaw_0', 'eye_0_L', 'eye_0_R', 'neck_0'):
     name = b if b in arm.pose.bones else ALIAS.get(b)
     if name and name in arm.pose.bones:
         bones[b] = np.array(arm.matrix_world @ arm.pose.bones[name].head)
+vmat = np.zeros(len(co), int)
+vmat[tris.ravel()] = np.repeat(mats, 3)
+eye_mat = hero.face.get('eyes')
+if eye_mat:
+    # eyeballs by material (heroes.json face "eyes"), for heads with no eye bones (Kelvin): each side's eye bone is
+    # the centre of the sphere through its vertices
+    idx = [i for i, m in enumerate(me.materials) if m and m.name == eye_mat]
+    on = np.isin(vmat, idx)
+    for s, sx in (('L', 1), ('R', -1)):
+        q = co[on & (co[:, 0] * sx > 0)]
+        a = np.c_[2 * q, np.ones(len(q))]
+        c = np.linalg.lstsq(a, (q ** 2).sum(1), rcond=None)[0][:3]
+        bones[f'eye_0_{s}'] = c
+        print('eye', s, 'from', eye_mat, np.round(c, 4))
 if 'jaw_0' not in bones:
     # no jaw bone (Silver): where the others' sits from their eyes, behind and below them by eye spacing
     eyes = (bones['eye_0_L'] + bones['eye_0_R']) / 2
@@ -49,7 +63,10 @@ if 'jaw_0' not in bones:
     bones['jaw_0'] = np.array([0, eyes[1] + 0.07 * s, eyes[2] - 0.047 * s])
     print('no jaw_0: jaw pivot placed at', bones['jaw_0'])
 balls = {}
-for s in 'LR':
+for s, sx in (('L', 1), ('R', -1)):
+    if eye_mat:
+        balls['ball_' + s] = np.isin(vmat, idx) & (co[:, 0] * sx > 0)
+        continue
     gi = o.vertex_groups[f'eye_0_{s}'].index if f'eye_0_{s}' in o.vertex_groups else -1
     balls['ball_' + s] = np.array([any(g.group == gi and g.weight > 0.5 for g in v.groups) for v in me.vertices])
 if not (balls['ball_L'].any() and balls['ball_R'].any()):
