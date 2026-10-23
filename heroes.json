@@ -420,7 +420,24 @@
   "slug": "solomon",
   "name": "Solomon",
   "codename": "chessmaster",
-  "model": "models/heroes_wip/chessmaster/chessmaster.vmdl"
+  "model": "models/heroes_wip/chessmaster/chessmaster.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "chessmaster_head",
+     "chessmaster_eyes"
+    ],
+    "bones": [
+     "head"
+    ],
+    "mesh": "chessmaster"
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": "chessmaster_eyes"
+  }
  },
  {
   "slug": "the_doorman",
