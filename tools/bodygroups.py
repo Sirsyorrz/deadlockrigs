@@ -42,7 +42,7 @@ def split_meshes(hero):
     for name, spec in hero.cfg.get('split', {}).items():
         mats = spec if isinstance(spec, list) else spec['mats']
         cands = [o for o in bpy.data.objects if o.type == 'MESH' and any(m and m.name in mats for m in o.data.materials)
-                 and (not isinstance(spec, dict) or 'mesh' not in spec or o.name.endswith('.' + spec['mesh']))]
+                 and (not isinstance(spec, dict) or 'mesh' not in spec or o.name.split('.')[-1] == spec['mesh'])]
         src, inside = cands[0], None
         if isinstance(spec, dict) and 'bones' in spec:
             def weighted(o):

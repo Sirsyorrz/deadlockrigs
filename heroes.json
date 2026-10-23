@@ -201,6 +201,15 @@
     "bones": [
      "head"
     ]
+   },
+   "Toothpick": {
+    "mats": [
+     "inferno_clothes"
+    ],
+    "bones": [
+     "toothpick_0"
+    ],
+    "mesh": "inferno"
    }
   },
   "face": {
@@ -210,6 +219,9 @@
     0.046,
     -0.133,
     2.335
+   ],
+   "ride": [
+    "Toothpick"
    ]
   }
  },
