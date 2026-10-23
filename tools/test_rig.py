@@ -19,7 +19,7 @@ fails = []
 LIMB = {'arm': ('arm_upper', 'arm_lower', 'hand', 'IK_hand'), 'leg': ('leg_upper', 'leg_lower', 'ankle', 'IK_foot')}
 limbs = [(limb, s) for limb in LIMB for s in 'LR' if f'ik_{limb}_{s}' in arm]
 IK_PROPS = [f'ik_{limb}_{s}' for limb, s in limbs]
-HELPERS = ('IK_', 'pole_', 'IKC-', 'IKE-', 'IKT-', 'MCH-')
+HELPERS = ('IK_', 'pole_', 'IKC-', 'IKE-', 'IKT-', 'IKR-', 'IKS-', 'MCH-')
 
 
 def check(name, ok, detail=''):
@@ -243,7 +243,10 @@ for limb, s in limbs:
     update()
     err = (pb[end].head - goal).length * 1000
     check(f'IK reach {ctrl}', err < 1, f'{err:.2f} mm')
-    rot = pb[end].matrix.to_quaternion().rotation_difference(pb[ctrl].matrix.to_quaternion()).angle
+    # the foot control lies flat, so the end keeps its rest angle to the control
+    bones = arm.data.bones
+    want = pb[ctrl].matrix @ bones[ctrl].matrix_local.inverted() @ bones[end].matrix_local
+    rot = pb[end].matrix.to_quaternion().rotation_difference(want.to_quaternion()).angle
     check(f'IK rotation {ctrl}', math.degrees(rot) < 0.5, f'{math.degrees(rot):.3f} deg')
 
 # FK <-> IK snapping keeps the pose
@@ -272,6 +275,195 @@ for limb, s in limbs:
     after = mats()
     worst = max((before[n].translation - after[n].translation).length for n in before if not n.startswith(HELPERS))
     check(f'snap IK->FK {limb}_{s}', worst < 0.001 and arm[f'ik_{limb}_{s}'] == 0.0, f'{worst * 1000:.2f} mm')
+
+# the foot rolls on its heel, ball, toe tip and edges: the pivot stays put while the ankle moves
+FEET = [s for s in 'LR' if f'IK_heel_{s}' in pb]
+
+
+def moved_point(bone, p, before):
+    """Where a rest-pose point carried by bone has gone."""
+    return pb[bone].matrix @ before[bone].inverted() @ p
+
+
+for s in FEET:
+    brk = arm['foot_roll_break']
+    for label, rot, pivot, bone in (('back onto the heel', (0.4, 0, 0), 'heel', f'ankle_{s}'),
+                                    ('forward onto the ball', (-0.5 * brk, 0, 0), 'ball', f'ankle_{s}'),
+                                    ('past the break onto the toe tip', (-brk - 0.15, 0, 0), 'tip', f'ball_{s}'),
+                                    ('bank in', (0, 0.3 if s == 'L' else -0.3, 0), 'in', f'ankle_{s}'),
+                                    ('bank out', (0, -0.3 if s == 'L' else 0.3, 0), 'out', f'ankle_{s}')):
+        reset()
+        before = mats()
+        p = pb[f'MCH-foot_{pivot}_{s}'].head.copy()
+        lifted = pb[f'ankle_{s}'].head.copy()
+        pb[f'IK_heel_{s}'].rotation_euler = rot
+        update()
+        slide = (moved_point(bone, p, before) - p).length
+        lift = (pb[f'ankle_{s}'].head - lifted).length
+        check(f'foot {s} rolls {label}', slide < 0.0005 and lift > 0.005, f'pivot slides {slide * 1000:.2f} mm, '
+              f'ankle moves {lift * 1000:.0f} mm')
+    # rolling onto the ball keeps the toes flat on the ground
+    reset()
+    before = mats()
+    pb[f'IK_heel_{s}'].rotation_euler = (-0.5 * brk, 0, 0)
+    update()
+    turn = before[f'ball_{s}'].to_quaternion().rotation_difference(pb[f'ball_{s}'].matrix.to_quaternion()).angle
+    check(f'foot {s} roll keeps the toes flat', math.degrees(turn) < 0.1, f'{math.degrees(turn):.3f} deg')
+    reset()
+    q = Quaternion((1, 0, 0), 0.5)
+    pb[f'IK_toe_{s}'].rotation_quaternion = q
+    update()
+    got = (pb[f'IK_toe_{s}'].matrix.to_quaternion().rotation_difference(pb[f'ball_{s}'].matrix.to_quaternion())).angle
+    check(f'IK toe {s} bends the toes', math.degrees(got) < 0.1, f'{math.degrees(got):.3f} deg')
+    # the ankle control turns the foot, toes and all, about the ankle; the leg stays
+    reset()
+    before = mats()
+    pb[f'IK_ankle_{s}'].rotation_quaternion = Quaternion((1, 0, 0), 0.4)
+    update()
+
+    def world_turn(n):
+        return pb[n].matrix.to_quaternion() @ before[n].to_quaternion().inverted()
+    turn = math.degrees(world_turn(f'ankle_{s}').angle)
+    toe = math.degrees(world_turn(f'ball_{s}').rotation_difference(world_turn(f'ankle_{s}')).angle)
+    leg = max((before[n].translation - pb[n].matrix.translation).length for n in (f'leg_lower_{s}', f'ankle_{s}'))
+    check(f'IK ankle {s} turns the foot alone', abs(turn - math.degrees(0.4)) < 0.1 and leg < 1e-4 and toe < 0.1,
+          f'{turn:.2f} deg, toes off by {toe:.3f} deg, leg {leg * 1000:.3f} mm')
+    # snapping keeps an FK toe bend and a rolled foot comes back to FK as it was
+    reset()
+    arm[f'ik_leg_{s}'] = 0.0
+    pb[f'leg_upper_{s}'].rotation_quaternion = Quaternion((1, 0.2, 0.1, 0.1)).normalized()
+    pb[f'ball_{s}'].rotation_quaternion = Quaternion((1, 0.3, 0, 0)).normalized()
+    update()
+    ball = pb[f'ball_{s}'].matrix.copy()
+    bpy.ops.dlrig.snap(limb='leg', side=s, to_ik=True)
+    update()
+    err = ball.to_quaternion().rotation_difference(pb[f'ball_{s}'].matrix.to_quaternion()).angle
+    check(f'snap FK->IK keeps the toe {s}', math.degrees(err) < 0.1, f'{math.degrees(err):.3f} deg')
+    pb[f'IK_heel_{s}'].rotation_euler = (-0.6, 0.1, 0)
+    pb[f'IK_ankle_{s}'].rotation_quaternion = Quaternion((0, 0, 1), 0.3)
+    update()
+    before = mats()
+    bpy.ops.dlrig.snap(limb='leg', side=s, to_ik=False)
+    update()
+    worst = max((before[n].translation - pb[n].matrix.translation).length +
+                before[n].to_quaternion().rotation_difference(pb[n].matrix.to_quaternion()).angle
+                for n in (f'ankle_{s}', f'ball_{s}'))
+    check(f'snap a rolled foot to FK {s}', worst < 0.001, f'{worst:.5f}')
+
+# soft IK eases the limb straight, stretch reaches past its length, and both snap without a jump
+for limb, s in limbs:
+    up, lo, end, ctrl = names(limb, s)
+    length = arm['limb_length'][end]
+    root = pb[f'IKR-{end}'].head.copy()
+    reset()
+    out = (pb[end].head - root).normalized()
+    m = pb[ctrl].matrix.copy()
+    m.translation = root + out * length * 1.2 + (m.translation - pb[f'IKE-{end}'].head)
+    pb[ctrl].matrix = m
+    update()
+    short = (pb[end].head - root).length
+    arm[f'stretch_{limb}_{s}'] = 1.0
+    update()
+    gap = (pb[end].head - pb[f'IKE-{end}'].head).length
+    check(f'stretch {limb}_{s} reaches the control', gap < 0.001 and short < length * 1.01,
+          f'{gap * 1000:.2f} mm off, unstretched end at {short / length:.3f} of the length')
+    hand = pb[f'IK_hand_{s}' if limb == 'arm' else f'ankle_{s}'].matrix.to_scale()
+    check(f'stretch {limb}_{s} leaves the {end} unscaled', max(abs(x - 1) for x in pb[end].matrix.to_scale()) < 1e-3,
+          str(tuple(round(x, 4) for x in pb[end].matrix.to_scale())))
+    arm[f'stretch_{limb}_{s}'] = 0.0
+    arm[f'soft_{limb}_{s}'] = 0.2
+    m.translation = root + out * length * 0.97 + (m.translation - pb[f'IKE-{end}'].head)
+    pb[ctrl].matrix = m
+    update()
+    lag = (pb[f'IKE-{end}'].head - pb[end].head).length
+    check(f'soft IK {limb}_{s} eases off before straight', lag > 0.002, f'end {lag * 1000:.1f} mm short')
+    reset()
+    arm[f'soft_{limb}_{s}'] = 0.2
+    arm[f'stretch_{limb}_{s}'] = 0.5
+    arm[f'ik_{limb}_{s}'] = 0.0
+    pb[up].rotation_quaternion = Quaternion((1, 0.1, 0.05, 0.0)).normalized()
+    update()
+    before = pb[end].head.copy()
+    bpy.ops.dlrig.snap(limb=limb, side=s, to_ik=True)
+    update()
+    moved = (pb[end].head - before).length
+    check(f'snap FK->IK with soft and stretch {limb}_{s}', moved < 0.001, f'{moved * 1000:.2f} mm')
+    arm[f'soft_{limb}_{s}'] = arm[f'stretch_{limb}_{s}'] = 0.0
+
+# parent switching keeps the control where it is, then it follows its new parent
+for bone, opts in arm.get('parent_options', {}).items():
+    reset()
+    before = pb[bone].matrix.copy()
+    last = len(opts) - 1
+    bpy.ops.dlrig.switch_parent(bone=bone, index=last)
+    update()
+    jump = (pb[bone].matrix.translation - before.translation).length
+    target = pb['MCH-parent_' + bone].constraints['Parent'].targets[last].subtarget
+    pb[target].location.z += 0.05 if target not in ('torso',) else 0.0
+    if target == 'torso':
+        pb[target].location.y += 0.05
+    pb[target].rotation_quaternion = Quaternion((0, 0, 1), 0.3) @ pb[target].rotation_quaternion
+    update()
+    follows = (pb[bone].matrix.translation - before.translation).length
+    check(f'{bone} switches to {opts[last]}', jump < 1e-4 and follows > 0.01 and arm[bone + '_parent'] == last,
+          f'jump {jump * 1000:.3f} mm, follows {follows * 1000:.0f} mm')
+    arm[bone + '_parent'] = 0
+
+# with its follow switch off the head (or FK upper arm) keeps its angle when the spine turns, and switching keeps it
+for prop, bone in arm.get('isolate', {}).items():
+    reset()
+    for p in IK_PROPS:
+        arm[p] = 0.0
+    pb[bone].rotation_quaternion = Quaternion((1, 0.1, 0.2, 0)).normalized()
+    update()
+    before = pb[bone].matrix.copy()
+    bpy.ops.dlrig.switch_follow(prop=prop)
+    update()
+    jump = before.to_quaternion().rotation_difference(pb[bone].matrix.to_quaternion()).angle
+    spine = 'spine_1' if 'spine_1' in pb else 'pelvis'
+    pb[spine].rotation_quaternion = Quaternion((1, 0, 0), 0.4) @ pb[spine].rotation_quaternion
+    update()
+    turn = before.to_quaternion().rotation_difference(pb[bone].matrix.to_quaternion()).angle
+    check(f'{bone} keeps its angle', arm[prop] == 0.0 and math.degrees(jump) < 0.05 and math.degrees(turn) < 0.05,
+          f'switch {math.degrees(jump):.3f} deg, spine turn {math.degrees(turn):.3f} deg')
+    arm[prop] = 1.0
+reset()
+
+# torso carries the body but not the IK feet, hips swing the pelvis alone, chest bends the spine
+if 'torso' in pb:
+    reset()
+    before = mats()
+    pb['torso'].location = (0, 0, -0.1)
+    update()
+    feet = [names('leg', s)[2] for s in 'LR' if ('leg', s) in limbs]
+    lowered = (pb['head'].head - before['head'].translation).length if 'head' in pb else 0.1
+    stay = max([(pb[n].head - before[n].translation).length for n in feet] or [0])
+    check('torso moves the body, not the IK feet', abs(lowered - 0.1) < 0.002 and stay < 0.001,
+          f'head {lowered * 1000:.1f} mm, feet {stay * 1000:.2f} mm')
+    reset()
+    before = mats()
+    pb['hips'].rotation_quaternion = Quaternion((0, 1, 0), 0.3)
+    update()
+    pelvis = before['pelvis'].to_quaternion().rotation_difference(pb['pelvis'].matrix.to_quaternion()).angle
+    pelvis = min(pelvis, 2 * math.pi - pelvis)
+    spine = max((before['spine_0'].to_3x3() - pb['spine_0'].matrix.to_3x3()).col[i].length for i in range(3)) + \
+        (before['spine_0'].translation - pb['spine_0'].matrix.translation).length
+    check('hips swing the pelvis alone', abs(math.degrees(pelvis) - math.degrees(0.3)) < 0.1 and spine < 1e-4,
+          f'pelvis {math.degrees(pelvis):.2f} deg, spine_0 moved {spine:.6f}')
+if 'chest' in pb:
+    reset()
+    before = mats()
+    q = Quaternion((1, 0, 0), 0.4)
+    pb['chest'].rotation_quaternion = q
+    update()
+    rest_c = arm.data.bones['chest'].matrix_local.to_quaternion()
+    world = rest_c @ q @ rest_c.inverted()
+    got = pb['spine_3'].matrix.to_quaternion() @ before['spine_3'].to_quaternion().inverted()
+    err = got.rotation_difference(world).angle
+    err = min(err, 2 * math.pi - err)
+    still = (before['spine_0'].translation - pb['spine_0'].matrix.translation).length
+    check('chest bends the spine by its own turn', math.degrees(err) < 0.5 and still < 1e-5,
+          f'{math.degrees(err):.3f} deg off')
 
 # snapping to the mode a limb is already in leaves the pose alone
 for limb, s in limbs:
@@ -458,6 +650,16 @@ if RUN and limbs:
         turn = max(turn, max(q.rotation_difference(pb[n].matrix.to_quaternion()).angle for n, q in fk_rot[f].items()))
     check('convert to IK keeps the clip', worst < 0.003 and math.degrees(turn) < 0.1 and arm[IK_PROPS[0]] == 1.0,
           f'{worst * 1000:.2f} mm, upper bones {math.degrees(turn):.3f} deg')
+
+# and back to FK: the FK bones are keyed where the IK had them
+if RUN and limbs:
+    bpy.ops.dlrig.bake_fk(limbs='ALL')
+    worst = 0
+    for f in (0, 5, 10):
+        sc.frame_set(sc.frame_start + f)
+        update()
+        worst = max(worst, max((pb[n].head - p).length for n, p in fk[f].items()))
+    check('convert back to FK keeps the clip', worst < 0.003 and arm[IK_PROPS[0]] == 0.0, f'{worst * 1000:.2f} mm')
 
 # insert a clip into an existing action
 if IDLE and JUMP:

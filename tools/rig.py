@@ -3,7 +3,9 @@
 Adds an animation rig on top of the exported model:
 - face controls (CTRL_* bones in front of the face) and raw ARKit sliders (custom properties on the
   FACE bone) that drive the head's shape keys, for heroes with a face config,
-- IK legs and arms with pole targets and FK/IK switches (custom properties on the armature object),
+- IK legs and arms with pole targets and FK/IK switches (custom properties on the armature object), soft IK and
+  stretch, a reverse foot (heel/ball/toe roll, bank, swivel, IK toe) and parent switching for the IK controls,
+- torso, hips and chest controls, and follow switches for the head and FK upper arms,
 - bone collections, colours and widget shapes,
 - expression, viseme and hand poses as Pose Library assets and in a sidebar panel (rig_ui.py),
 - the game's procedural twist bones (forearm, upper arm, thigh) as constraints,
@@ -335,9 +337,79 @@ LIMB_DEFS = (('leg', 'knee', 'leg_upper', 'leg_lower', 'ankle', 'IK_foot', 0.55 
              ('arm', 'elbow', 'arm_upper', 'arm_lower', 'hand', 'IK_hand', 0.45 * SCALE))
 LIMBS = [(s, d) for s in 'LR' for d in LIMB_DEFS if all(f'{n}_{s}' in eb for n in d[2:5])]
 print('IK limbs', [f'{d[0]}_{s}' for s, d in LIMBS])
+
+
+def foot_pivots(s):
+    """Where the foot rolls: heel, toe tip and the sole's inner and outer edges (on the ground under the ball), from
+    the rest-pose skin of the ankle and toes. Forward is the ankle-to-ball direction flattened onto the ground."""
+    a, ball = hpos[f'ankle_{s}'], hpos[f'ball_{s}']
+    f = Vector((ball.x - a.x, ball.y - a.y, 0))
+    f = f.normalized() if f.length > 1e-4 else FWD.copy()
+    across = UP.cross(f)
+    pts = weighted_points(set(descendants(f'ankle_{s}')) - {b.name for b in B if b.name.startswith(('$', 'weapon'))})
+    ball_along = (ball - a).dot(f)
+    if len(pts) < 20:
+        print(f'foot {s}: no skin to find the sole on, guessing it')
+        z = min(ball.z - 0.04 * SCALE, 0.0)
+        flat = Vector((a.x, a.y, z))
+        heel, tip = flat - f * 0.07 * SCALE, flat + f * (ball_along + 0.09 * SCALE)
+        edges = [flat + f * ball_along + across * k * 0.055 * SCALE for k in (-1, 1)]
+    else:
+        along = [(p - a).dot(f) for p in pts]
+        side = [(p - a).dot(across) for p in pts]
+
+        def extreme(key, lo):
+            vals = along if key == 'along' else side
+            lo_v, hi_v = min(vals), max(vals)
+            band = 0.15 * (hi_v - lo_v)
+            sel = [i for i, v in enumerate(vals) if (v < lo_v + band if lo else v > hi_v - band)]
+            z = min(pts[i].z for i in sel)
+            if key == 'along':
+                lat = sorted(side[i] for i in sel)[len(sel) // 2]
+                return Vector((a.x, a.y, z)) + f * (lo_v if lo else hi_v) + across * lat
+            return Vector((a.x, a.y, z)) + f * ball_along + across * (lo_v if lo else hi_v)
+        heel, tip = extreme('along', True), extreme('along', False)
+        edges = [extreme('side', True), extreme('side', False)]
+    # across points to +X for both feet, so the edge on the body's side is the low one for the left foot
+    inner, outer = edges if a.x > 0 else edges[::-1]
+    return {'f': f, 'heel': heel, 'tip': tip, 'in': inner, 'out': outer, 'ball': ball.copy()}
+
+
+# The reverse foot: IK_foot is flat on the ground at the ankle; under it a chain of pivots (heel, inner and outer edge,
+# toe tip, ball) carries the IK target, so IK_heel's rotation rolls the foot on whichever point stays planted. IK_toe
+# hangs off the tip pivot, so the toes stay flat while the heel peels off. IK_ankle, at the end of the pivots, turns the
+# foot about the ankle on top of the roll; the IK target stays on the ball pivot, so the leg does not move with it.
+FEET = {s: foot_pivots(s) for s, d in LIMBS if d[0] == 'leg' and f'ball_{s}' in eb}
+FOOT_PIVOTS = ('heel', 'in', 'out', 'tip', 'ball')
+
+
+def build_foot(s):
+    ft = FEET[s]
+    f, size = ft['f'], 0.06 * SCALE
+    a = eb[f'ankle_{s}'].head.copy()
+    new_bone(f'IK_foot_{s}', a, a + f * (ft['tip'] - ft['heel']).dot(f) * 0.6, ROOT, roll_to=UP)
+    new_bone(f'IK_heel_{s}', ft['heel'], ft['heel'] + f * size, f'IK_foot_{s}', roll_to=UP)
+    parent = f'IK_foot_{s}'
+    for k in FOOT_PIVOTS:
+        parent = new_bone(f'MCH-foot_{k}_{s}', ft[k], ft[k] + f * size, parent, roll_to=UP).name
+    new_bone(f'IK_ankle_{s}', a, a + f * size, parent, roll_to=UP)
+    new_bone(f'MCH-foot_ankle_{s}', None, None, f'IK_ankle_{s}', copy=f'ankle_{s}')
+    # the toes keep the tip pivot's angle through a roll but turn with IK_ankle, from wherever it puts the ball
+    ball = ft['ball']
+    new_bone(f'MCH-foot_ballpos_{s}', ball, ball + f * size, f'IK_ankle_{s}', roll_to=UP)
+    new_bone(f'MCH-foot_toe_{s}', ball, ball + f * size, f'MCH-foot_tip_{s}', roll_to=UP)
+    new_bone(f'IK_toe_{s}', None, None, f'MCH-foot_toe_{s}', copy=f'ball_{s}')
+    return parent
+
+
 POLES = {}
+IK_LEN = {}
 for s, (_lname, limb, a, b_, c, ik_name, dist) in LIMBS:
-    new_bone(f'{ik_name}_{s}', None, None, ROOT, copy=f'{c}_{s}')
+    if s in FEET and limb == 'knee':
+        target_parent = build_foot(s)
+    else:
+        new_bone(f'{ik_name}_{s}', None, None, ROOT, copy=f'{c}_{s}')
+        target_parent = f'{ik_name}_{s}'
     pa, pb_, pc = (eb[f'{n}_{s}'].head.copy() for n in (a, b_, c))
     t = (pb_ - pa).dot(pc - pa) / (pc - pa).length_squared
     off = pb_ - (pa + (pc - pa) * t)
@@ -360,15 +432,74 @@ for s, (_lname, limb, a, b_, c, ik_name, dist) in LIMBS:
     eps = (pc - pb_).normalized() * 0.0001
     en_ = new_bone(f'IKC-{c}_{s}', pc, pc + eps, lo_.name)
     en_.align_roll(off)
-    new_bone(f'IKE-{c}_{s}', pc + eps, pc + eps + UP * 0.01, f'{ik_name}_{s}', roll_to=FWD)
+    new_bone(f'IKE-{c}_{s}', pc + eps, pc + eps + UP * 0.01, target_parent, roll_to=FWD)
+    # Soft IK and stretch: IKR-<end> sits on the limb's root, and the IK aims at IKS-<end>, which copies IKE-<end> but
+    # is held within the softened reach of the chain (drivers below)
+    new_bone(f'IKR-{c}_{s}', pa, pa + UP * 0.01, up_.parent.name, roll_to=FWD)
+    new_bone(f'IKS-{c}_{s}', pc + eps, pc + eps + UP * 0.01, None, roll_to=FWD)
+    IK_LEN[f'{c}_{s}'] = (pb_ - pa).length + (pc + eps - pb_).length
     # Tweaks copy the IK chain's local transforms and add their own rotation on top, so the upper/lower
-    # bones can still be rotated by hand in IK mode (the lower one follows the upper's tweak).
+    # bones can still be rotated by hand in IK mode (the lower one follows the upper's tweak). Stretch scales the
+    # tweaks along the limb; the lower bones take only their own scale, else the upper's stretch would shear them.
     tu = new_bone(f'IK_tweak_{a}_{s}', None, None, up_.parent.name, copy=up_.name)
     tl = new_bone(f'IK_tweak_{b_}_{s}', None, None, tu.name, copy=lo_.name)
     te = new_bone(f'IKT-{c}_{s}', None, None, tl.name, copy=en_.name)
+    tl.inherit_scale = te.inherit_scale = 'NONE'
     new_bone(f'MCH-{a}_{s}', None, None, tu.name, copy=f'{a}_{s}')
     new_bone(f'MCH-{b_}_{s}', None, None, tl.name, copy=f'{b_}_{s}')
     new_bone(f'MCH-{c}_{s}', None, None, te.name, copy=f'{c}_{s}')
+
+# Torso: 'torso' carries the whole body except the IK hands and feet, 'hips' swings the pelvis about the waist with the
+# spine left where it was, 'chest' bends the upper spine spread over its bones. The pelvis and spine_0 keep their own
+# keys (drivers copy them onto MCH bones under these controls) and copy those MCH bones, so the game's hierarchy and
+# clips are untouched.
+SPINE = [n for n in ('spine_1', 'spine_2', 'spine_3') if n in eb]
+HAS_TORSO = 'pelvis' in eb and 'spine_0' in eb and eb['spine_0'].parent.name == 'pelvis'
+HAS_CHEST = HAS_TORSO and len(SPINE) == 3 and all(eb[n].parent.name == p for n, p in zip(SPINE, ['spine_0'] + SPINE))
+TORSO_CTRLS = []
+if HAS_TORSO:
+    pp = eb['pelvis'].parent.name if eb['pelvis'].parent else None
+    p0, w0 = eb['pelvis'].head.copy(), eb['spine_0'].head.copy()
+    new_bone('torso', p0, p0 + UP * 0.12 * SCALE, pp, roll_to=FWD)
+    new_bone('hips', w0, w0 - UP * 0.1 * SCALE, 'torso', roll_to=FWD)
+    new_bone('MCH-pelvis_hips', None, None, 'hips', copy='pelvis')
+    new_bone('MCH-pelvis_body', None, None, 'torso', copy='pelvis')
+    new_bone('MCH-spine_0', None, None, 'MCH-pelvis_body', copy='spine_0')
+    TORSO_CTRLS += ['torso', 'hips']
+if HAS_CHEST:
+    c0 = eb['spine_2'].head.copy()
+    # under spine_0, not the spine bones it bends, which would make a dependency cycle
+    new_bone('chest', c0, c0 + UP * 0.1 * SCALE, 'spine_0', roll_to=FWD)
+    TORSO_CTRLS.append('chest')
+BODY = 'torso' if HAS_TORSO else ROOT
+
+# Isolation: with <bone>_follow at 0 the head (or FK upper arm) keeps its angle to the body instead of following the
+# neck (or shoulder). MCH-<bone>_iso hangs off the torso with the bone's rest and takes its keys.
+ISOLATE = {}
+for n, prop in [('head', 'head_follow')] + [(f'arm_upper_{s}', f'arm_follow_{s}') for s in 'LR']:
+    if n in eb and BODY:
+        new_bone(f'MCH-{n}_iso', None, None, BODY, copy=n)
+        ISOLATE[prop] = n
+
+# Parent switching: a control under MCH-parent_<control> follows one of a few bones (an Armature constraint whose
+# weights the <control>_parent property picks). The first choice is what it was parented to before.
+CHEST_BONE = SPINE[-1] if SPINE else None
+PARENTS = {}
+for s, (lname, limb, a, b_, c, ik_name, _dist) in LIMBS:
+    ctrl, pole = f'{ik_name}_{s}', f'pole_{limb}_{s}'
+    if lname == 'arm':
+        head = 'head' if 'head' in eb else None
+        PARENTS[ctrl] = [('Root', ROOT), ('Torso', BODY), ('Chest', CHEST_BONE), ('Head', head)]
+        PARENTS[pole] = [('Root', ROOT), ('Torso', BODY), ('Chest', CHEST_BONE)]
+    else:
+        PARENTS[ctrl] = [('Root', ROOT), ('Torso', BODY)]
+        PARENTS[pole] = [('Foot', ctrl), ('Root', ROOT), ('Torso', BODY)]
+PARENTS = {k: [(lbl, b) for lbl, b in v if b] for k, v in PARENTS.items()}
+PARENTS = {k: [o for i, o in enumerate(v) if o[1] not in [b for _, b in v[:i]]] for k, v in PARENTS.items()}
+PARENTS = {k: v for k, v in PARENTS.items() if len(v) > 1}
+for ctrl in PARENTS:
+    m = new_bone('MCH-parent_' + ctrl, None, None, None, copy=ctrl)
+    eb[ctrl].parent = m
 
 # Twist bones, as the game's AnimConstraintTiltTwist: (twist bone, weight, bone whose twist is read,
 # frame bone, limb start, limb end). TW-ref rides the frame bone along the limb, TW-src the source bone
@@ -472,6 +603,8 @@ rest = {b.name: b.matrix_local.copy() for b in B}
 for c in list(arm.data.collections_all):
     arm.data.collections.remove(c)
 colls = {n: arm.data.collections.new(n) for n in COLL_ORDER}
+HELPER_PREFIXES = ('IKC-', 'IKE-', 'IKT-', 'IKR-', 'IKS-', 'MCH-', 'TW-', 'PHYS-', 'CHC-', 'TFK-', 'TFP-', 'ANC-',
+                   'DEF-')
 for b in B:
     n = b.name
     if n.startswith(('CTRL_', FACE)):
@@ -480,14 +613,18 @@ for b in B:
         cat = 'Tail'
     elif n.startswith(('IK_', 'pole_')):
         cat = 'IK'
-    elif n.startswith(('IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-', 'CHC-', 'TFK-', 'TFP-', 'ANC-', 'DEF-')):
+    elif n.startswith(HELPER_PREFIXES):
         cat = 'Helpers'
+    elif n in TORSO_CTRLS:
+        cat = 'Torso'
     elif n in {p['bone'] for p in PROPS}:
         cat = 'Props'
     else:
         cat = category(n)
     colls[cat].assign(b)
     pal = {'Face': 'THEME03', 'Secondary': 'THEME06', 'Props': 'THEME07', 'Tail': 'THEME10'}.get(cat, COLOURS[side(n)])
+    if n in TORSO_CTRLS:
+        pal = 'THEME11'
     b.color.palette = pal
     arm.pose.bones[n].color.palette = pal
 for n in HIDDEN_BY_DEFAULT:
@@ -594,8 +731,7 @@ def seg_end(b):
 
 for b in B:
     n = b.name
-    if n.startswith(('CTRL_', 'FACE', 'face_', 'IK_', 'pole_', 'IKC-', 'IKE-', 'IKT-', 'MCH-', 'TW-', 'PHYS-', 'CHC-',
-                     'TFK-', 'TFP-', 'ANC-', 'DEF-')):
+    if n.startswith(('CTRL_', 'FACE', 'face_', 'IK_', 'pole_') + HELPER_PREFIXES) or n in TORSO_CTRLS:
         continue
     cat = category(n)
     if cat in HIDDEN:
@@ -615,8 +751,32 @@ for b in B:
     else:
         widget(n, circle(hpos[n] + d * 0.5, d, r), 2 if cat != 'Secondary' else 1.2)
 
+def foot_widgets(s):
+    ft = FEET[s]
+    f, a = ft['f'], hpos[f'ankle_{s}']
+    across = UP.cross(f)
+    lift = UP * 0.005 * SCALE
+    t0, t1 = (ft['heel'] - a).dot(f), (ft['tip'] - a).dot(f)
+    s0, s1 = sorted(((ft['in'] - a).dot(across), (ft['out'] - a).dot(across)))
+    z = min(ft[k].z for k in ('heel', 'tip', 'in', 'out'))
+    c = 0.25 * (s1 - s0)
+    outline = [(t0, s0 + c), (t0 + c, s0), (t1 - c, s0), (t1, s0 + c),
+               (t1, s1 - c), (t1 - c, s1), (t0 + c, s1), (t0, s1 - c)]
+    pts = [Vector((a.x, a.y, z)) + f * t + across * w + lift for t, w in outline]
+    widget(f'IK_foot_{s}', (pts, [(i, (i + 1) % len(pts)) for i in range(len(pts))]), 2.5)
+    r = 0.5 * (s1 - s0)
+    arc = [ft['heel'] + lift * 2 + (across * math.cos(t) - f * math.sin(t)) * r * 0.8
+           for t in (math.pi * i / 12 for i in range(13))]
+    widget(f'IK_heel_{s}', (arc, [(i, i + 1) for i in range(12)]), 2.5)
+    toe = ft['ball'].lerp(Vector((ft['tip'].x, ft['tip'].y, ft['ball'].z)), 0.5)
+    widget(f'IK_toe_{s}', circle(toe, f, RADIUS['ball']), 2)
+    widget(f'IK_ankle_{s}', circle(a, across, RADIUS['ankle'] * 1.3), 2)
+
+
 for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
-    if lname == 'leg':
+    if lname == 'leg' and s in FEET:
+        foot_widgets(s)
+    elif lname == 'leg':
         a = hpos[f'ankle_{s}']
         ball = hpos.get(f'ball_{s}', a + FWD * 0.12 * SCALE)
         toe_y, heel_y = ball.y - 0.09 * SCALE, a.y + 0.07 * SCALE
@@ -630,6 +790,13 @@ for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
     for a, b2 in ((a_, b_), (b_, c_)):
         p0, p1 = hpos[f'{a}_{s}'], hpos[f'{b2}_{s}']
         widget(f'IK_tweak_{a}_{s}', circle(p0.lerp(p1, 0.5), p1 - p0, RADIUS[a] * 1.15), 2)
+if HAS_TORSO:
+    widget('torso', circle(hpos['pelvis'], UP, RADIUS['pelvis'] * 1.7), 3)
+    widget('hips', circle(hpos['pelvis'] - UP * 0.06 * SCALE, UP, RADIUS['pelvis'] * 1.25), 2.5)
+if HAS_CHEST:
+    widget('chest', circle(hpos['spine_3'], UP, RADIUS['spine'] * 1.45), 2.5)
+
+
 def build_eye_controls():
     n_el = 48
     ry = 0.045 * FS
@@ -833,10 +1000,130 @@ def influence_driver(con, prop):
     v.targets[0].data_path = f'["{prop}"]'
 
 
+def prop_var(d, name, path):
+    v = d.variables.new()
+    v.name = name
+    v.type = 'SINGLE_PROP'
+    v.targets[0].id_type = 'OBJECT'
+    v.targets[0].id = arm
+    v.targets[0].data_path = path
+    return v
+
+
+def expr_driver(owner, path, index, expr, props=(), setup=None):
+    """A scripted driver on owner.path[index] from armature properties (name, data path), kept to Blender's simple
+    expressions so it runs without Python scripts allowed. setup(driver) adds other variables."""
+    d = (owner.driver_add(path, index) if index is not None else owner.driver_add(path)).driver
+    d.type = 'SCRIPTED'
+    for name, p in props:
+        prop_var(d, name, p)
+    if setup:
+        setup(d)
+    d.expression = expr
+    assert d.is_simple_expression, expr
+    return d
+
+
+def follow_basis(dst, src):
+    """dst (same rest as src) takes src's keys, so it poses like src under its own parent."""
+    dst_pb = arm.pose.bones[dst]
+    dst_pb.rotation_mode = 'QUATERNION'
+    for path, n in (('location', 3), ('rotation_quaternion', 4), ('scale', 3)):
+        for i in range(n):
+            expr_driver(dst_pb, path, i, 'v', props=[('v', f'pose.bones["{src}"].{path}[{i}]')])
+
+
 def chain_error(names):
     bpy.context.view_layer.update()
     return sum(arm.pose.bones[n].matrix.to_quaternion().rotation_difference(rest[n].to_quaternion()).angle
                for n in names)
+
+
+arm['foot_roll_break'] = math.radians(35)
+arm.id_properties_ui('foot_roll_break').update(
+    min=0, max=math.pi / 2, soft_min=0, soft_max=math.pi / 2, subtype='ANGLE',
+    description='How far the foot rolls on the ball before it rolls onto the toe tip')
+
+
+def build_reach(lname, s, end, bones):
+    """Soft IK and stretch for one limb: IKS-<end> copies IKE-<end> but is held to the softened reach dp of the
+    distance d from the limb's root, and the tweaks stretch the limb by (dp + stretch * (d - dp)) / dp. With both at 0
+    the IK aims at IKE-<end> as before (clips that lengthen the limb stay as they are)."""
+    soft, stretch = f'soft_{lname}_{s}', f'stretch_{lname}_{s}'
+    arm[soft] = 0.0
+    arm.id_properties_ui(soft).update(min=0, max=0.5, soft_min=0, soft_max=0.5,
+                                      description='Ease the limb into straightening, so it does not snap straight')
+    arm[stretch] = 0.0
+    arm.id_properties_ui(stretch).update(min=0, max=1, soft_min=0, soft_max=1,
+                                         description='Let the limb stretch past its length to reach the control')
+    length = IK_LEN[end]
+    dist = '(d / sc)'
+    iks = arm.pose.bones['IKS-' + end]
+    c = iks.constraints.new('COPY_LOCATION')
+    c.target, c.subtarget = arm, 'IKE-' + end
+    c = iks.constraints.new('LIMIT_DISTANCE')
+    c.name = 'Reach'
+    c.target, c.subtarget = arm, 'IKR-' + end
+    c.owner_space = c.target_space = 'POSE'
+    c.limit_mode = 'LIMITDIST_INSIDE'
+    # driver expressions are capped at 256 characters, so the soft zone and the reach go through properties on IKS
+    path = f'pose.bones["IKS-{end}"]'
+    props = [('soft', f'["{soft}"]'), ('st', f'["{stretch}"]'),
+             ('ds', path + '["soft_zone"]'), ('r', path + '["reach"]')]
+
+    def reach_vars(d):
+        v = d.variables.new()
+        v.name, v.type = 'd', 'LOC_DIFF'
+        for t, b in zip(v.targets, ('IKR-' + end, 'IKE-' + end)):
+            t.id, t.bone_target = arm, b
+        v = d.variables.new()
+        v.name, v.type = 'sc', 'TRANSFORMS'
+        v.targets[0].id = arm
+        v.targets[0].transform_type = 'SCALE_Y'
+        v.targets[0].transform_space = 'WORLD_SPACE'
+
+    def reach_driver(owner, path, index, expr, n_props):
+        expr_driver(owner, path, index, expr, props=props[:n_props], setup=reach_vars)
+    iks['soft_zone'] = iks['reach'] = 1.0
+    # the simple expression evaluator works out both sides of an 'if', so exp() is kept from overflowing, and driver
+    # values under about 1e-3 come out as 0, so nothing is divided by less
+    reach_driver(iks, '["soft_zone"]', None, f'max({length:.6f} * soft, 0.001)', 2)
+    start = f'({length:.6f} - ds)'
+    eased = f'{start} + ds * (1 - exp(min(({start} - {dist}) / ds, 0)))'
+    reach_driver(iks, '["reach"]', None, f'max({dist} if {dist} <= {start} else {eased}, 0.001)', 3)
+    reach_driver(c, 'distance', None, 'r', 4)
+    reach_driver(c, 'influence', None, 'max(soft, st) > 0', 2)
+    for n in bones:
+        reach_driver(arm.pose.bones['IK_tweak_' + n], 'scale', 1, f'(r + st * ({dist} - r)) / max(r, 0.001)', 4)
+
+
+def build_foot_roll(s, prop):
+    """IK_heel rotation: X rolls the foot (back onto the heel, forward onto the ball and past foot_roll_break onto the
+    toe tip), Y banks it onto an edge, Z swivels it on the ball. IK_toe bends the toes, IK_ankle turns the foot."""
+    heel = arm.pose.bones[f'IK_heel_{s}']
+    heel.rotation_mode = 'XYZ'
+    heel.lock_location = heel.lock_scale = (True, True, True)
+    props = [('brk', '["foot_roll_break"]')] + [(k, f'pose.bones["IK_heel_{s}"].rotation_euler[{i}]')
+                                                 for i, k in enumerate('xyz')]
+    # the bones' X axis points to -X for both feet, so a positive bank lifts the +X side onto the -X edge
+    neg_edge, pos_edge = ('in', 'out') if FEET[s]['in'].x < FEET[s]['out'].x else ('out', 'in')
+    for k, index, expr in (('heel', 0, 'max(x, 0)'), ('ball', 0, 'max(min(x, 0), -brk)'), ('tip', 0, 'min(x + brk, 0)'),
+                           ('ball', 2, 'z'), (neg_edge, 1, 'max(y, 0)'), (pos_edge, 1, 'min(y, 0)')):
+        pb_ = arm.pose.bones[f'MCH-foot_{k}_{s}']
+        pb_.rotation_mode = 'XYZ'
+        expr_driver(pb_, 'rotation_euler', index, expr, props=props)
+    for n in (f'IK_toe_{s}', f'IK_ankle_{s}'):
+        arm.pose.bones[n].lock_location = arm.pose.bones[n].lock_scale = (True, True, True)
+    toe_parent = arm.pose.bones[f'MCH-foot_toe_{s}']
+    c = toe_parent.constraints.new('COPY_LOCATION')
+    c.target, c.subtarget = arm, f'MCH-foot_ballpos_{s}'
+    c = toe_parent.constraints.new('COPY_ROTATION')
+    c.target, c.subtarget = arm, f'IK_ankle_{s}'
+    c.target_space = c.owner_space = 'LOCAL'
+    c = arm.pose.bones[f'ball_{s}'].constraints.new('COPY_ROTATION')
+    c.name = 'IK toe'
+    c.target, c.subtarget = arm, f'IK_toe_{s}'
+    influence_driver(c, prop)
 
 
 for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
@@ -844,9 +1131,10 @@ for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
                                              f'ik_{lname}_{s}')
     eff = arm.pose.bones['IKC-' + end]
     eff.lock_ik_x = eff.lock_ik_y = eff.lock_ik_z = True
+    build_reach(lname, s, end, (upper, lower))
     ik = eff.constraints.new('IK')
     ik.target = arm
-    ik.subtarget = 'IKE-' + end
+    ik.subtarget = 'IKS-' + end
     ik.pole_target = arm
     ik.pole_subtarget = pole
     ik.chain_count = 3
@@ -872,11 +1160,20 @@ for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
         c.target = arm
         c.subtarget = 'MCH-' + n
         influence_driver(c, prop)
+    rot_src = f'MCH-foot_ankle_{s}' if lname == 'leg' and s in FEET else target
     cr = arm.pose.bones[end].constraints.new('COPY_ROTATION')
     cr.name = 'IK rotation'
     cr.target = arm
-    cr.subtarget = target
+    cr.subtarget = rot_src
     influence_driver(cr, prop)
+    # a stretched forearm/shin would otherwise scale the hand/foot it parents
+    cs = arm.pose.bones[end].constraints.new('COPY_SCALE')
+    cs.name = 'IK scale'
+    cs.target = arm
+    cs.subtarget = rot_src
+    influence_driver(cs, prop)
+    if lname == 'leg' and s in FEET:
+        build_foot_roll(s, prop)
     # the end bone's own location offset is already in the chain (IKC-<end>), so it sits on the chain end
     cl = arm.pose.bones[end].constraints.new('COPY_LOCATION')
     cl.name = 'IK location'
@@ -906,6 +1203,9 @@ POSE_HIDE = 'hide' in bpy.types.PoseBone.bl_rna.properties
 for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
     fk = (a_, b_, c_)
     ik_bones = (ik_name, f'pole_{limb}', f'IK_tweak_{a_}', f'IK_tweak_{b_}')
+    if lname == 'leg' and s in FEET:
+        fk += ('ball',)
+        ik_bones += ('IK_heel', 'IK_toe', 'IK_ankle')
     for names, expr in ((fk, 'ik > 0.5'), (ik_bones, 'ik < 0.5')):
         for n in names:
             d = (arm.driver_add(f'pose.bones["{n}_{s}"].hide') if POSE_HIDE else
@@ -918,6 +1218,56 @@ for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
             v.targets[0].id = arm
             v.targets[0].data_path = f'["ik_{lname}_{s}"]'
             d.expression = expr
+
+# torso, isolation, parent switching
+
+if HAS_TORSO:
+    follow_basis('MCH-pelvis_hips', 'pelvis')
+    follow_basis('MCH-pelvis_body', 'pelvis')
+    follow_basis('MCH-spine_0', 'spine_0')
+    for n, src in (('pelvis', 'MCH-pelvis_hips'), ('spine_0', 'MCH-spine_0')):
+        c = arm.pose.bones[n].constraints.new('COPY_TRANSFORMS')
+        c.name = 'Torso'
+        c.target, c.subtarget = arm, src
+        arm.pose.bones[n].constraints.move(len(arm.pose.bones[n].constraints) - 1, 0)
+    for n in ('torso', 'hips'):
+        arm.pose.bones[n].lock_scale = (True, True, True)
+    arm.pose.bones['hips'].lock_location = (True, True, True)
+if HAS_CHEST:
+    chest = arm.pose.bones['chest']
+    chest.lock_location = chest.lock_scale = (True, True, True)
+    for n in SPINE:
+        # each spine bone turns by a third of the chest's turn, about the same axis
+        c = arm.pose.bones[n].constraints.new('COPY_ROTATION')
+        c.name = 'Chest'
+        c.target, c.subtarget = arm, 'chest'
+        c.target_space, c.owner_space = 'LOCAL_OWNER_ORIENT', 'LOCAL'
+        c.mix_mode = 'BEFORE'
+        c.influence = 1 / len(SPINE)
+for prop, n in ISOLATE.items():
+    arm[prop] = 1.0
+    what = n.split('_')[0]
+    arm.id_properties_ui(prop).update(min=0, max=1, soft_min=0, soft_max=1,
+                                      description=f'1: the {what} follows the body, 0: it keeps its own angle')
+    follow_basis(f'MCH-{n}_iso', n)
+    c = arm.pose.bones[n].constraints.new('COPY_ROTATION')
+    c.name = 'Isolate'
+    c.target, c.subtarget = arm, f'MCH-{n}_iso'
+    expr_driver(c, 'influence', None, '1 - f', props=[('f', f'["{prop}"]')])
+    arm.pose.bones[n].constraints.move(len(arm.pose.bones[n].constraints) - 1, 0)
+for ctrl, opts in PARENTS.items():
+    prop = ctrl + '_parent'
+    arm[prop] = 0
+    arm.id_properties_ui(prop).update(min=0, max=len(opts) - 1, description=' / '.join(lbl for lbl, _ in opts))
+    c = arm.pose.bones['MCH-parent_' + ctrl].constraints.new('ARMATURE')
+    c.name = 'Parent'
+    for i, (_lbl, b) in enumerate(opts):
+        t = c.targets.new()
+        t.target, t.subtarget = arm, b
+        expr_driver(t, 'weight', None, f'p == {i}', props=[('p', f'["{prop}"]')])
+arm['limb_length'] = IK_LEN
+arm['parent_options'] = {ctrl: [lbl for lbl, _ in opts] for ctrl, opts in PARENTS.items()}
+arm['isolate'] = ISOLATE
 
 # twist constraints
 

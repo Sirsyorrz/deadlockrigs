@@ -5,7 +5,11 @@ Blender animation rigs for Deadlock heroes built into blender.
 ![Violet's rig in Blender](docs/violet_rig.png)
 
 Each hero gets a rig with:
-- IK/FK arms and legs
+- IK/FK arms and legs, with soft IK, stretch, and switchable parents for the IK hands, feet and poles
+- feet that roll on the heel, ball and toe tip, bank onto either edge and swivel (the arc behind the heel), with an
+  IK ankle control that turns the foot on its own and an IK toe control
+- torso, hips and chest controls on top of the FK spine
+- head and FK arms that can keep their own angle instead of following the body
 - the game's twist bones and cloth/hair physics, including coats
 - tail controls for heroes with tails
 - hand poses
@@ -70,7 +74,6 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 
 - Sinclair's arm twist doesn't fully match his game animations.
 - Baba only gets leg IK, and Bebop and Mo & Krill get no hand poses (their skeletons lack the bones).
-- Limbs can't be stretched by hand in IK.
 
 ## Build from source
 

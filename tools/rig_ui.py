@@ -237,6 +237,59 @@ def limb_names(limb, s):
     return f'{up}_{s}', f'{lo}_{s}', f'{end}_{s}', f'{ik}_{s}', f'{pole}_{s}', dist
 
 
+def foot_names(ob, limb, s):
+    """IK heel, toe and ankle controls and the FK toe, for legs with a foot rig."""
+    if limb == 'leg' and f'IK_heel_{s}' in ob.pose.bones:
+        return f'IK_heel_{s}', f'IK_toe_{s}', f'IK_ankle_{s}', f'ball_{s}'
+    return ()
+
+
+def isolate_prop(ob, name):
+    return next((p for p, b in ob.get('isolate', {}).items() if b == name), None)
+
+
+def set_matrix(context, ob, name, m):
+    """pb.matrix = m, also for a bone whose follow switch is off: its rotation then comes from MCH-<bone>_iso, which
+    takes the bone's keys under the torso, so the keys are solved for that."""
+    pb = ob.pose.bones[name]
+    pb.matrix = m
+    prop = isolate_prop(ob, name)
+    if prop is None or ob[prop] >= 0.5:
+        return
+    update(context)
+    iso = ob.pose.bones[f'MCH-{name}_iso']
+    frame = iso.matrix.to_3x3().normalized() @ pb.rotation_quaternion.to_matrix().inverted()
+    pb.rotation_quaternion = (frame.inverted() @ m.to_3x3().normalized()).to_quaternion()
+
+
+def keyed_anyway(ob, props, bones):
+    """Without auto-key a change would still be thrown away on the next frame change wherever the action already
+    animates these properties or bones, so those get keyed anyway."""
+    cb = channelbag(ob, create=False)
+    return cb is not None and any(f.data_path in [f'["{p}"]' for p in props] or
+                                  (f.data_path.startswith('pose.bones["') and f.data_path.split('"')[1] in bones)
+                                  for f in cb.fcurves)
+
+
+def reach_of(length, soft, stretch, d):
+    """Where the soft/stretchy IK puts the limb's end for a control at distance d from its root (rig.py's drivers)."""
+    ds = max(length * soft, 0.001)
+    start = length - ds
+    dp = d if d <= start else start + ds * (1 - math.exp(min((start - d) / ds, 0)))
+    return dp + stretch * (d - dp)
+
+
+def control_distance(length, soft, stretch, want):
+    """The control distance whose reach is want (bisection; the reach grows with the distance)."""
+    lo, hi = 0.0, max(want, length) * 4 + 1
+    if reach_of(length, soft, stretch, hi) < want:
+        return hi
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if reach_of(length, soft, stretch, mid) < want else (lo, mid)
+    return (lo + hi) / 2
+
+
 def tweak_names(limb, s):
     up, lo = LIMBS[limb][:2]
     return f'IK_tweak_{up}_{s}', f'IK_tweak_{lo}_{s}'
@@ -256,38 +309,78 @@ def match_twist(context, ob, limb, s, fk, key=False):
     (which moves clothing and props parented to the arm/thigh) goes into the IK tweak bones instead. IK must be on;
     fk holds the FK matrices of the upper and lower bones."""
     pb = ob.pose.bones
-    for n, tw in zip(limb_names(limb, s)[:2], tweak_names(limb, s)):
+    bones = ob.data.bones
+    pairs = list(zip(limb_names(limb, s)[:2], tweak_names(limb, s)))
+
+    def world(tw):
+        # the stretch scales the tweaks along their length only
+        return pb[tw].matrix.to_3x3().normalized().to_quaternion()
+    update(context)
+    # The tweaks take the FK bones' angles, which also absorbs what IK misses of a clip's lengthened limbs. With soft IK
+    # or stretch the IK bend is meant to differ from the FK one, so they take only the twist about each bone's length,
+    # decided before either turns (IK may roll the upper bone half a turn from FK, which the lower one takes back).
+    exact = not (ob.get(f'soft_{limb}_{s}', 0.0) or ob.get(f'stretch_{limb}_{s}', 0.0))
+    want = {}
+    for n, tw in pairs:
+        rel = (bones[tw].matrix_local.inverted() @ bones[n].matrix_local).to_quaternion()
+        fk_tw = fk[n].to_quaternion() @ rel.inverted()
+        _swing, twist = (world(tw).inverted() @ fk_tw).to_swing_twist('Y')
+        want[tw] = fk_tw if exact else world(tw) @ Quaternion((0, 1, 0), twist)
+    for _n, tw in pairs:
         update(context)
-        t = pb[tw].matrix
-        x = t.inverted() @ fk[n] @ pb[n].matrix.inverted() @ t
         pb[tw].rotation_mode = 'QUATERNION'
-        pb[tw].rotation_quaternion = pb[tw].rotation_quaternion @ x.to_quaternion()
+        pb[tw].rotation_quaternion = pb[tw].rotation_quaternion @ (world(tw).inverted() @ want[tw])
         if key:
             key_bone(pb[tw], loc=False)
     update(context)
 
 
 def ik_from_fk(context, ob, limb, s, key=False):
-    """Move the IK target and pole to where the FK chain currently is (FK must be active)."""
+    """Move the IK target, pole and foot controls to where the FK chain currently is (FK must be active)."""
     up, lo, end, ik, pole, dist = limb_names(limb, s)
     pb = ob.pose.bones
+    feet = foot_names(ob, limb, s)
+    ball_m = pb[feet[3]].matrix.copy() if feet else None
     a, b, c = pb[up].head.copy(), pb[lo].head.copy(), pb[end].head.copy()
     end_m = pb[end].matrix.copy()
+    for n in feet[:3]:
+        pb[n].rotation_euler = (0, 0, 0)
+        pb[n].rotation_quaternion = (1, 0, 0, 0)
     t = (b - a).dot(c - a) / max((c - a).length_squared, 1e-9)
     off = b - (a + (c - a) * t)
     if off.length < 1e-4:
         # straight limb: keep the pole on the side it already is
         off = pb[pole].head - b
         off -= (c - a).normalized() * off.dot((c - a).normalized())
-    pb[ik].matrix = end_m
+    # the control's rest differs from the end bone's (the foot control lies flat)
+    bones = ob.data.bones
+    pb[ik].matrix = end_m @ bones[end].matrix_local.inverted() @ bones[ik].matrix_local
     update(context)
+    soft, stretch = ob.get(f'soft_{limb}_{s}', 0.0), ob.get(f'stretch_{limb}_{s}', 0.0)
+    if soft > 0 or stretch > 0:
+        # with soft IK the end lags behind the control, so the control goes as far out as puts the end on the FK end
+        root, goal = pb[f'IKR-{end}'].head, pb[f'IKE-{end}'].head
+        want = (goal - root).length
+        d = control_distance(ob['limb_length'][end], soft, stretch, want)
+        m = pb[ik].matrix.copy()
+        m.translation += (goal - root).normalized() * (d - want)
+        pb[ik].matrix = m
+        update(context)
     m = pb[pole].matrix.copy()
     m.translation = b + off.normalized() * dist * ob.get('rig_scale', 1.0)
     pb[pole].matrix = m
     update(context)
+    if feet:
+        toe = pb[feet[1]]
+        m = ball_m.to_3x3().normalized().to_4x4()
+        m.translation = toe.matrix.translation
+        toe.matrix = m
+        update(context)
     if key:
         key_bone(pb[ik])
         key_bone(pb[pole], rot=False)
+        for n in feet[:3]:
+            key_bone(pb[n], loc=False)
 
 
 class DLRIG_OT_snap(bpy.types.Operator):
@@ -304,14 +397,10 @@ class DLRIG_OT_snap(bpy.types.Operator):
         prop = f'ik_{self.limb}_{self.side}'
         up, lo, end, ik, pole, dist = limb_names(self.limb, self.side)
         pb = ob.pose.bones
-        # without auto-key, the snapped pose would still be thrown away on the next frame change wherever the
-        # action already animates these bones (or the switch itself), so those get keyed anyway
-        cb = channelbag(ob, create=False)
-        names = (up, lo, end, ik, pole) + tweak_names(self.limb, self.side)
-        animated = cb is not None and any(f.data_path == f'["{prop}"]' or
-                                          (f.data_path.startswith('pose.bones["') and f.data_path.split('"')[1] in names)
-                                          for f in cb.fcurves)
-        key = autokey(context) or animated
+        feet = foot_names(ob, self.limb, self.side)
+        fk_bones = (up, lo, end) + feet[3:]
+        names = (up, lo, end, ik, pole) + tweak_names(self.limb, self.side) + feet
+        key = autokey(context) or keyed_anyway(ob, [prop], names)
         # snapping "to IK" while already in IK would rebuild the IK pose from the FK bones, which have not
         # moved (usually the rest pose), so the limb would jump back
         if (ob[prop] >= 0.5) == self.to_ik:
@@ -326,12 +415,12 @@ class DLRIG_OT_snap(bpy.types.Operator):
             ob[prop] = 1.0
             match_twist(context, ob, self.limb, self.side, fk, key)
         else:
-            mats = {n: pb[n].matrix.copy() for n in (up, lo, end)}
+            mats = {n: pb[n].matrix.copy() for n in fk_bones}
             ob[prop] = 0.0
             clear_tweaks(ob, self.limb, self.side, key)
             update(context)
-            for n in (up, lo, end):
-                pb[n].matrix = mats[n]
+            for n in fk_bones:
+                set_matrix(context, ob, n, mats[n])
                 update(context)
                 if key:
                     key_bone(pb[n])
@@ -358,7 +447,7 @@ Use it on game animations to edit them with IK"""
             ob[f'ik_{limb}_{s}'] = 0.0
         cb = channelbag(ob)
         for limb, s in todo:
-            for n in limb_names(limb, s)[3:5] + tweak_names(limb, s):
+            for n in limb_names(limb, s)[3:5] + tweak_names(limb, s) + foot_names(ob, limb, s)[:3]:
                 for f in [f for f in cb.fcurves if f.data_path.startswith(f'pose.bones["{n}"]')]:
                     cb.fcurves.remove(f)
             clear_tweaks(ob, limb, s)
@@ -382,6 +471,95 @@ Use it on game animations to edit them with IK"""
             ob[f'ik_{limb}_{s}'] = 1.0
         sc.frame_set(keep)
         self.report({'INFO'}, f'IK keyed on frames {f0}-{f1}')
+        return {'FINISHED'}
+
+
+class DLRIG_OT_bake_fk(bpy.types.Operator):
+    """Key the FK arm and leg bones on every frame so they follow the current (IK) animation, then switch to FK"""
+    bl_idname = 'dlrig.bake_fk'
+    bl_label = 'Convert Animation to FK'
+    bl_options = {'REGISTER', 'UNDO'}
+    limbs: bpy.props.EnumProperty(items=[('ALL', 'Arms and legs', ''), ('LEGS', 'Legs', ''), ('ARMS', 'Arms', '')])
+
+    def execute(self, context):
+        ob = rig(context)
+        sc = context.scene
+        todo = [(limb, s) for limb in ('arm', 'leg') for s in 'LR' if f'ik_{limb}_{s}' in ob and
+                (self.limbs == 'ALL' or (self.limbs == 'LEGS') == (limb == 'leg'))]
+        bones = {t: limb_names(*t)[:3] + foot_names(ob, *t)[3:] for t in todo}
+        f0, f1 = frame_range(context)
+        keep = sc.frame_current
+        channelbag(ob)
+        with FastEval(ob):
+            for f in range(f0, f1 + 1):
+                sc.frame_set(f)
+                for limb, s in todo:
+                    ob[f'ik_{limb}_{s}'] = 1.0
+                update(context)
+                mats = {t: {n: ob.pose.bones[n].matrix.copy() for n in bones[t]} for t in todo}
+                for limb, s in todo:
+                    ob[f'ik_{limb}_{s}'] = 0.0
+                update(context)
+                for t in todo:
+                    for n in bones[t]:
+                        set_matrix(context, ob, n, mats[t][n])
+                        update(context)
+                        key_bone(ob.pose.bones[n])
+        cb = channelbag(ob)
+        for limb, s in todo:
+            f = cb.fcurves.find(f'["ik_{limb}_{s}"]')
+            if f:
+                cb.fcurves.remove(f)
+            ob[f'ik_{limb}_{s}'] = 0.0
+        sc.frame_set(keep)
+        self.report({'INFO'}, f'FK keyed on frames {f0}-{f1}')
+        return {'FINISHED'}
+
+
+class DLRIG_OT_switch_parent(bpy.types.Operator):
+    """Make this control follow another bone, without it jumping"""
+    bl_idname = 'dlrig.switch_parent'
+    bl_label = 'Switch Parent'
+    bl_options = {'REGISTER', 'UNDO'}
+    bone: bpy.props.StringProperty()
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        ob = rig(context)
+        prop = self.bone + '_parent'
+        pb = ob.pose.bones[self.bone]
+        key = autokey(context) or keyed_anyway(ob, [prop], [self.bone])
+        m = pb.matrix.copy()
+        ob[prop] = self.index
+        update(context)
+        pb.matrix = m
+        update(context)
+        if key:
+            ob.keyframe_insert(f'["{prop}"]', group='Parents')
+            key_bone(pb)
+        return {'FINISHED'}
+
+
+class DLRIG_OT_switch_follow(bpy.types.Operator):
+    """Switch whether this bone follows the body or keeps its own angle, without it jumping"""
+    bl_idname = 'dlrig.switch_follow'
+    bl_label = 'Switch Follow'
+    bl_options = {'REGISTER', 'UNDO'}
+    prop: bpy.props.StringProperty()
+
+    def execute(self, context):
+        ob = rig(context)
+        bone = ob['isolate'][self.prop]
+        pb = ob.pose.bones[bone]
+        key = autokey(context) or keyed_anyway(ob, [self.prop], [bone])
+        m = pb.matrix.copy()
+        ob[self.prop] = 0.0 if ob[self.prop] >= 0.5 else 1.0
+        update(context)
+        set_matrix(context, ob, bone, m)
+        update(context)
+        if key:
+            ob.keyframe_insert(f'["{self.prop}"]', group='Follow')
+            key_bone(pb, loc=False)
         return {'FINISHED'}
 
 
@@ -424,7 +602,8 @@ def append_clip(ob, name):
 
 
 def body_bones(ob):
-    return [b for b in ob.pose.bones if not b.name.startswith(('CTRL_', FACE, 'PHYS-', 'TW-', 'IKC-', 'IKE-', 'IKT-', 'MCH-'))]
+    helpers = ('CTRL_', FACE, 'PHYS-', 'TW-', 'IKC-', 'IKE-', 'IKT-', 'IKR-', 'IKS-', 'MCH-')
+    return [b for b in ob.pose.bones if not b.name.startswith(helpers)]
 
 
 class DLRIG_OT_game_anim(bpy.types.Operator):
@@ -1099,7 +1278,9 @@ class DLRIG_PT_body(bpy.types.Panel):
                 op.limb, op.side, op.to_ik = limb, s, not is_ik
         col.label(text='Switching keeps the pose', icon='INFO')
         col.label(text='IK: rings rotate bones too', icon='INFO')
-        col.operator('dlrig.bake_ik', icon='CON_KINEMATIC').limbs = 'ALL'
+        row = col.row(align=True)
+        row.operator('dlrig.bake_ik', text='Animation to IK', icon='CON_KINEMATIC').limbs = 'ALL'
+        row.operator('dlrig.bake_fk', text='Animation to FK', icon='BONE_DATA').limbs = 'ALL'
         for t in ob.get('tails', []):
             col.prop(ob, f'["ik_{t}"]', text=f'{t.replace("_", " ").capitalize()} IK', slider=True)
         if 'prop_chain' in ob:
@@ -1109,6 +1290,75 @@ class DLRIG_PT_body(bpy.types.Panel):
         if 'weapon_hold' in ob:
             col.separator()
             col.prop(ob, '["weapon_hold"]', text='Weapon in hand', slider=True)
+
+
+def parent_row(layout, ob, bone, label):
+    opts = ob.get('parent_options', {}).get(bone)
+    if not opts:
+        return
+    row = layout.row(align=True)
+    row.label(text=label)
+    for i, lbl in enumerate(opts):
+        op = row.operator('dlrig.switch_parent', text=lbl, depress=ob[bone + '_parent'] == i)
+        op.bone, op.index = bone, i
+
+
+class DLRIG_PT_ik(bpy.types.Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = HERO
+    bl_label = 'IK Options'
+    bl_parent_id = 'DLRIG_PT_body'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(ik_props(rig(context)))
+
+    def draw(self, context):
+        ob = rig(context)
+        layout = self.layout
+        for limb in ('arm', 'leg'):
+            for s, side in (('L', 'Left'), ('R', 'Right')):
+                if f'ik_{limb}_{s}' not in ob:
+                    continue
+                box = layout.box()
+                col = box.column(align=True)
+                col.label(text=f'{side} {limb}')
+                row = col.row(align=True)
+                row.prop(ob, f'["soft_{limb}_{s}"]', text='Soft', slider=True)
+                row.prop(ob, f'["stretch_{limb}_{s}"]', text='Stretch', slider=True)
+                _up, _lo, _end, ik, pole, _dist = limb_names(limb, s)
+                parent_row(col, ob, ik, 'Follows')
+                parent_row(col, ob, pole, 'Pole')
+        if any(foot_names(ob, 'leg', s) for s in 'LR'):
+            col = layout.column(align=True)
+            col.prop(ob, '["foot_roll_break"]', text='Foot roll break')
+            col.label(text='Heel arc: X rolls, Y banks, Z swivels', icon='INFO')
+            col.label(text='Ankle ring turns the foot alone', icon='INFO')
+
+
+class DLRIG_PT_follow(bpy.types.Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = HERO
+    bl_label = 'Head & Arms Follow'
+    bl_parent_id = 'DLRIG_PT_body'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(rig(context).get('isolate'))
+
+    def draw(self, context):
+        ob = rig(context)
+        col = self.layout.column(align=True)
+        for prop, bone in ob['isolate'].items():
+            follows = ob[prop] >= 0.5
+            name = {'head': 'Head'}.get(bone, f'{"Left" if bone.endswith("_L") else "Right"} FK arm')
+            row = col.row(align=True)
+            row.label(text=f'{name}: {"follows body" if follows else "keeps its angle"}')
+            row.operator('dlrig.switch_follow', text='Keep Angle' if follows else 'Follow').prop = prop
 
 
 class DLRIG_PT_game(bpy.types.Panel):
@@ -1230,8 +1480,10 @@ def make_group_panel(title):
 
 
 classes = [DLRIG_OT_expression, DLRIG_OT_reset_face, DLRIG_OT_key_face, DLRIG_OT_hand, DLRIG_OT_reset_pose,
-           DLRIG_OT_snap, DLRIG_OT_bake_ik, DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
-           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_PT_main, DLRIG_PT_body, DLRIG_PT_game, DLRIG_PT_physics]
+           DLRIG_OT_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
+           DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
+           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_PT_main, DLRIG_PT_body, DLRIG_PT_ik, DLRIG_PT_follow,
+           DLRIG_PT_game, DLRIG_PT_physics]
 if HAS_FACE:
     classes += [DLRIG_PT_expressions]
 if any(HAND_POSES.values()):
