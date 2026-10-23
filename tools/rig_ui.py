@@ -754,9 +754,10 @@ def simulate(cfg, goals, caps, fps, settings, allow, warm, links=(), link_allow=
 
 def simulate_cloth(cloth, goals, caps, fps, settings, allow, seq):
     """Vertex cloth (Abrams' coat): goals[key] -> (n, 3) world positions of every node without simulation; fixed
-    nodes stay on theirs. Position-based like simulate(): inertia, gravity, a pull towards the goal (the game's
-    per-node animation attraction), rods kept between their min and max length (the game's), capsule collisions.
-    Returns {key: (n, 3)} for the keys after the warm-up."""
+    nodes stay on theirs. Position-based like simulate(): inertia, gravity, the game's two animation attractions
+    (force: the share of the goal's own motion a node takes along, vertex: a pull towards the goal), rods kept
+    between their min and max length (the game's), capsule collisions. Returns {key: (n, 3)} for the keys after the
+    warm-up."""
     import numpy as np
     nodes, rods = cloth['nodes'], np.array(cloth['rods'], float).reshape(-1, 4)
     free = np.array([nd['free'] for nd in nodes])
@@ -772,21 +773,28 @@ def simulate_cloth(cloth, goals, caps, fps, settings, allow, seq):
     grav = np.array([0, 0, -9.81 * settings['gravity']]) * dt * dt
     gscale = np.array([nd['gravity'] for nd in nodes])[:, None]
     damp = 1.0 - (1.0 - settings['damping']) ** (1.0 / sub)
-    # the game's attraction applied per 1/240 s (its cloth runs several iterations a tick); slower, the coat's waist
-    # sagged off the belt and opened holes next to the fixed nodes
-    k = np.clip(np.array([nd['goal'] for nd in nodes]) * settings['stiffness'] * 2.0, 0, 1)
-    pull = (1.0 - (1.0 - k) ** (dt * 240))[:, None]
+    # both attractions applied per 1/240 s (the game's cloth runs several iterations a tick; at 60 Hz Grey Talon's
+    # apron flew up to his waist). Nodes near a belt take all of the body's motion (force 1) and are barely pulled;
+    # without the force term they hung in world space and sagged off it, and a stiffer pull to make up for that
+    # locked Pocket's coat hem to his hips so his knees went through it
+    tick = dt * 240
+    k = np.clip(np.array([nd['goal'] for nd in nodes]) * settings['stiffness'], 0, 1)
+    pull = (1.0 - (1.0 - k) ** tick)[:, None]
+    fa = np.clip(np.array([nd.get('force', 0.0) for nd in nodes]), 0, 1)
+    keep = ((1.0 - fa) ** tick)[:, None] * (1.0 - damp)
     allow = np.asarray(allow)
     first = goals[seq[0]]
     P, Q = first.copy(), first.copy()
     last = first
+    G = first
     out = {}
     for key in seq:
         G1 = goals[key]
         for i in range(1, sub + 1):
             w = i / sub
-            G = last + (G1 - last) * w
-            v = (P - Q) * (1.0 - damp)
+            Gp, G = G, last + (G1 - last) * w
+            vg = G - Gp
+            v = vg + (P - Q - vg) * keep
             Q = P.copy()
             P = P + v + grav * gscale
             P += (G - P) * pull

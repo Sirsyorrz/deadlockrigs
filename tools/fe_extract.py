@@ -88,7 +88,8 @@ def extract(fe):
     names = fe['m_CtrlName']
     inv = fe['m_NodeInvMasses']
     integ = fe['m_NodeIntegrator']
-    radii = fe.get('m_NodeCollisionRadii') or []
+    # per dynamic node: indexed by node minus the static node count
+    radii = [0.0] * fe.get('m_nStaticNodes', 0) + (fe.get('m_NodeCollisionRadii') or [])
     pose = [to_blender(p[:3]) for p in fe['m_InitPose'][:n]]
     follow = follow_weights(fe, names)
     cloth = {k for k in range(n) if names[k].startswith('$cloth')}
@@ -105,6 +106,8 @@ def extract(fe):
             'follow': {b: round(w, 5) for b, w in follow.get(k, {names[k]: 1.0}).items() if w > 1e-4},
             'damping': it.get('flPointDamping', 0.0),
             'goal': it.get('flAnimationVertexAttraction', 0.0),
+            # the share of the animation's own motion the node takes along (goal strength cubed)
+            'force': it.get('flAnimationForceAttraction', 0.0),
             'gravity': it.get('flGravity', 360.0) / 360.0,
             'radius': round(radii[k] * IN, 5) if k < len(radii) else 0.0,
         })
