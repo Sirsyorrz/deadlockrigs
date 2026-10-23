@@ -336,7 +336,21 @@
   "slug": "pocket",
   "name": "Pocket",
   "codename": "synth",
-  "model": "models/heroes_wip/pocket/pocket.vmdl"
+  "model": "models/heroes_wip/pocket/pocket.vmdl",
+  "split": {
+   "Head": [
+    "pocket_head"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.044,
+    -0.12,
+    2.17
+   ]
+  }
  },
  {
   "slug": "rat_king",
