@@ -446,7 +446,12 @@
   "model": "models/heroes_wip/doorman_v2/doorman.vmdl",
   "face": {
    "part": "head",
-   "mesh": "head"
+   "mesh": "head",
+   "follow": {
+    "doorman": [
+     "head"
+    ]
+   }
   }
  },
  {

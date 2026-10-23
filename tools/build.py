@@ -141,6 +141,44 @@ if hero.face:
             kb = ob.data.shape_keys.key_blocks.get(name) or ob.shape_key_add(name=name, from_mix=False)
             kb.data.foreach_set('co', (ob_base + off @ oinv.T).astype(np.float32).ravel())
         print('riding the lips:', ob.name, int(touch.sum()), 'head vertices')
+    # straps on the face (The Doorman's chinstrap, heroes.json face "follow": {mesh: [bones]}) take the keys of the
+    # skin under them, fading out where they lift off it
+    if hero.face.get('follow'):
+        from mathutils.kdtree import KDTree
+        tree = KDTree(n_head)
+        for i, c in enumerate(head_world):
+            tree.insert(c, i)
+        tree.balance()
+        scale = arm.data.bones['head'].head_local.z / 2.094
+        near_d, far_d = 0.006 * scale, 0.015 * scale
+    for part, bones in hero.face.get('follow', {}).items():
+        ob = bpy.data.objects.get(hero.rename.get(part, part))
+        if ob is None:
+            print('WARNING: no mesh', part, 'to follow the face')
+            continue
+        groups = {g.index for g in ob.vertex_groups if g.name in bones}
+        nv = len(ob.data.vertices)
+        wts, nears = np.zeros(nv), np.zeros((nv, 6), int)
+        for v in ob.data.vertices:
+            if sum(g.weight for g in v.groups if g.group in groups) < 0.5:
+                continue
+            found = tree.find_n(ob.matrix_world @ v.co, 6)
+            wts[v.index] = np.clip((far_d - found[0][2]) / (far_d - near_d), 0, 1)
+            nears[v.index] = [f[1] for f in found]
+        moving = np.where(wts > 0)[0]
+        if not len(moving):
+            print('WARNING:', part, 'does not touch the face')
+            continue
+        oinv = np.array(ob.matrix_world.inverted().to_3x3())
+        ob_base = np.array([v.co for v in ob.data.vertices], np.float32)
+        if not ob.data.shape_keys:
+            ob.shape_key_add(name='Basis', from_mix=False)
+        for name in keys.files:
+            off = np.zeros((nv, 3))
+            off[moving] = keys[name][:n_head][nears[moving]].mean(1) * wts[moving, None]
+            kb = ob.data.shape_keys.key_blocks.get(name) or ob.shape_key_add(name=name, from_mix=False)
+            kb.data.foreach_set('co', (ob_base + off @ oinv.T).astype(np.float32).ravel())
+        print('following the face:', ob.name, len(moving), 'vertices')
     # bonekeys.py: keys on the other meshes the face bones move (eyes, teeth, tongue). The head gets every key too, as
     # the one rig.py drives; the others follow it
     for f in sorted(os.listdir(hero.data)):
