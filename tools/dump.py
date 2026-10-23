@@ -110,10 +110,13 @@ if not (balls['ball_L'].any() and balls['ball_R'].any()):
             a = np.c_[2 * q, np.ones(len(q))]
             fit = np.linalg.lstsq(a, (q ** 2).sum(1), rcond=None)[0]
             c, r = fit[:3], np.sqrt(fit[3] + fit[:3] @ fit[:3])
-            # the cornea shell over the ball (Shiv's) is another small piece: everything small that sits on the sphere
+            # the cornea shell over the ball (Shiv's) and glints are other small pieces: everything small that sits on
+            # the sphere. Not the tear duct in the inner corner (Pocket's), which reaches well off it and turned
+            # with the eye onto its white
             for k in np.unique(comp[np.linalg.norm(co - c, axis=1) < r * 1.3]):
                 m = comp == k
-                if np.ptp(co[m], axis=0).max() < 2.5 * r and (np.linalg.norm(co[m] - c, axis=1) < r * 1.3).all():
+                if np.ptp(co[m], axis=0).max() < 2.5 * r and \
+                        (np.abs(np.linalg.norm(co[m] - c, axis=1) / r - 1) < 0.15).all():
                     balls['ball_' + s] |= m
             q = co[balls['ball_' + s]]
             a = np.c_[2 * q, np.ones(len(q))]
