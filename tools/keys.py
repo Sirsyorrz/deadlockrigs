@@ -881,22 +881,45 @@ def glint_sink(h, rig, side):
     return d
 
 
+EYE_PITCH = {'eyeLookUp': 15, 'eyeLookDown': -15}
+EYE_YAW = {'eyeLookOut': 22, 'eyeLookIn': -22}
+
+
+def eye_turn(q, piv, pitch, yaw):
+    """Eyeball points q turned by pitch (degrees, up positive) then yaw (degrees about +z)."""
+    n = np.ones(len(q))
+    # rot about +x lifts the front (-y) for positive angles: -y turns to +z
+    q = rot_axis(q, piv, np.array((1.0, 0, 0)), n * -np.radians(pitch))
+    return rot_axis(q, piv, np.array((0, 0, 1.0)), n * np.radians(yaw))
+
+
 def eye_keys(h, rig):
     out = {}
     for s, name, sx in (('L', 'Left', 1), ('R', 'Right', -1)):
         ball = h.ball[s]
         piv = h.bones['eye_0_' + s]
-        for key, axis, deg, lid_deg in (('eyeLookUp', (1, 0, 0), 15, 5), ('eyeLookDown', (1, 0, 0), -15, -7),
-                                        ('eyeLookOut', (0, 0, 1), sx * 22, 0), ('eyeLookIn', (0, 0, 1), -sx * 22, 0)):
+        q = h.co[ball]
+        for key, pitch, yaw, lid_deg in (('eyeLookUp', 15, 0, 5), ('eyeLookDown', -15, 0, -7),
+                                         ('eyeLookOut', 0, sx * 22, 0), ('eyeLookIn', 0, -sx * 22, 0)):
             d = np.zeros((len(h.co), 3))
-            # rot about +x lifts the front (-y) for positive angles: -y turns to +z
-            q = h.co[ball]
-            d[ball] = rot_axis(q, piv, np.array(axis, float), np.full(len(q), np.radians(deg) * (-1 if axis[0] else 1))) - q
+            d[ball] = eye_turn(q, piv, pitch, yaw) - q
             if lid_deg:
                 # the lids follow vertical gaze a little
                 dl = rig.lid_move(s, key + name, upper_deg=lid_deg, lower_deg=lid_deg * 0.5)[h.weld]
                 d[~ball] += dl[~ball]
             out[key + name] = d
+            # half way the straight-line move cuts under the sphere too
+            mid = np.zeros((len(h.co), 3))
+            mid[ball] = eye_turn(q, piv, pitch / 2, yaw / 2) - q - d[ball] / 2
+            out[key + name + '_mid'] = mid
+        # a diagonal look adds two turns' straight-line moves, which sinks the ball's front into its socket (Pocket's
+        # inner eye showed through looking up and out); these correctives (rig.py drives them with both keys'
+        # product) put it back on the sphere
+        for up, pitch in EYE_PITCH.items():
+            for side, yaw in EYE_YAW.items():
+                d = np.zeros((len(h.co), 3))
+                d[ball] = eye_turn(q, piv, pitch, sx * yaw) - q - out[up + name][ball] - out[side + name][ball]
+                out[f'{up}{name}_{side}{name}'] = d
         out.update(iris_keys(h, rig, s, name))
     return out
 

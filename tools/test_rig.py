@@ -526,7 +526,7 @@ if 'FACE' in pb:
     odd = {k: round(v, 1) for k, v in sizes.items()
            if not (0.05 if k.endswith('_mid') else 0.5) < v < reach.get(k.split('_')[0], 1.0) * top}
     check(f'face keys move 0.5-{top:.0f} mm', not odd, f'{len(sizes)} keys {odd}')
-    lr = {k: (sizes[k], sizes[k[:-4] + 'Right']) for k in sizes if k.endswith('Left')}
+    lr = {k: (sizes[k], sizes[k.replace('Left', 'Right')]) for k in sizes if 'Left' in k}
     lop = {k: tuple(round(x, 1) for x in v) for k, v in lr.items() if abs(v[0] - v[1]) > 0.35 * max(v)}
     check('face keys left/right alike', not lop, str(lop))
     rest = verts(head)
