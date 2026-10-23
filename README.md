@@ -9,6 +9,7 @@ Each hero gets a rig with:
 - the game's twist bones and cloth/hair physics, including coats
 - tail controls for heroes with tails
 - hand poses
+- weapons held in hand by default (the `weapon_hold` property; loading a game clip switches it off)
 - face shape keys, controls and expressions for the heroes listed under [Faces](#faces)
 
 | | |

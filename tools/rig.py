@@ -209,16 +209,18 @@ def descendants(name):
     return [name] + [c.name for c in B[name].children_recursive]
 
 
-def sample_hold(key, bones):
+def sample_hold(key, bones, clips=HOLD_CLIPS):
     """Basis (of the keyed bones) and armature-space matrices of bones on the first frame of the hold clip."""
     if not HAVE_CLIPS:
         saved = RIGDATA.get('hold', {}).get(key)
         if saved is None:
-            print(f'WARNING: no clips and no saved grip for {key}, it stays at rest')
+            # a None entry is a hold the clips showed is not used
+            if key not in RIGDATA.get('hold', {}):
+                print(f'WARNING: no clips and no saved grip for {key}, it stays at rest')
             return None, None
         return saved['basis'], {b: Matrix(m) for b, m in saved['mats'].items()}
     with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
-        dst.actions = [next(n for n in HOLD_CLIPS if n in src.actions)]
+        dst.actions = [next(n for n in clips if n in src.actions)]
     a = dst.actions[0]
     arm.animation_data_create()
     arm.animation_data.action = a
@@ -255,6 +257,45 @@ for prop in PROPS:
     if chain:
         PROP_CHAINS.append((prop, idle))
 PROP_CHAIN_BONES = {b for prop, _ in PROP_CHAINS for b in prop['chain'] + [prop['chain_end']]}
+
+
+def weighted_points(bones):
+    pts = []
+    for o in bpy.data.objects:
+        if o.type != 'MESH':
+            continue
+        groups = {g.index for g in o.vertex_groups if g.name in bones}
+        if groups:
+            pts += [o.matrix_world @ v.co for v in o.data.vertices
+                    if any(g.group in groups and g.weight > 0.5 for g in v.groups)]
+    return pts
+
+
+# the weapon hangs off root_motion and sits at the origin at rest. In game the hand is IK'd onto the weapon's
+# weaponHand_* bone, so by default the weapon rides that hand where the idle has it (a Child Of switched by
+# weapon_hold, which game clips turn off since they place the weapon themselves)
+WEAPON_CLIPS = ('game_primary_stand_idle', 'game_weapon_stand_idle') + HOLD_CLIPS
+WEAPON_HOLD = None
+if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('weaponPivot') for p in PROPS):
+    held = descendants('weaponPivot')
+    grips = [b for b in held if re.match(r'weapon_?hand_[LR](_|$)', b, re.I)]
+    gun = weighted_points(set(held))
+    if grips and len(gun) > 50:
+        basis, idle = sample_hold('weapon', held, WEAPON_CLIPS)
+        if basis is not None:
+            gun = gun[::max(1, len(gun) // 400)]
+            to_clip = idle['weapon'] @ rest['weapon'].inverted()
+            near = {g: min((to_clip @ p - idle[g].translation).length for p in gun) for g in grips}
+            grip = min(near, key=near.get)
+            hand = 'hand_L' if '_L' in grip else 'hand_R'
+            print(f'weapon grip {grip} is {near[grip]:.3f} m from the weapon in the idle')
+            if near[grip] < 0.2 * (B['head'].head_local.z / 2.094 if 'head' in B else 1.0):
+                # the parts (hammer, cylinder) take the idle's pose; the weapon itself only moves through the hold,
+                # so with it off the weapon is back at the origin
+                PROP_POSE.update({b: v for b, v in basis.items() if b in held and b not in ('weaponPivot', 'weapon')})
+                WEAPON_HOLD = (hand, idle[grip], idle['weapon'])
+            elif HAVE_CLIPS:
+                RIGDATA['hold']['weapon'] = None
 
 # edit mode: new bones
 
@@ -1106,6 +1147,21 @@ arm['prop_pose'] = PROP_POSE
 for b, v in PROP_POSE.items():
     pbn = arm.pose.bones[b]
     pbn.location, pbn.rotation_quaternion, pbn.scale = v[0:3], v[3:7], v[7:10]
+if WEAPON_HOLD:
+    hand, grip_idle, weapon_idle = WEAPON_HOLD
+    bpy.context.view_layer.update()
+    pivot = arm.pose.bones['weaponPivot']
+    arm['weapon_hold'] = 1.0
+    arm.id_properties_ui('weapon_hold').update(min=0, max=1, soft_min=0, soft_max=1,
+                                               description='Keep the weapon in the hand (game clips place it themselves)')
+    c = pivot.constraints.new('CHILD_OF')
+    c.name = 'Weapon hold'
+    c.target = arm
+    c.subtarget = hand
+    # the hand takes the grip bone's place
+    weapon_in_pivot = rest['weaponPivot'].inverted() @ rest['weapon']
+    c.inverse_matrix = grip_idle.inverted() @ weapon_idle @ weapon_in_pivot.inverted() @ pivot.matrix.inverted()
+    influence_driver(c, 'weapon_hold')
 
 # physics: each simulated bone gets its baked offset from PHYS-<bone> on top of the animation
 

@@ -1,4 +1,7 @@
 {
+ "hold": {
+  "weapon": null
+ },
  "twist_fitted": [
   "arm_upper_L_TWIST",
   "arm_lower_L_TWIST",

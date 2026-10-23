@@ -449,6 +449,8 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
         sc = context.scene
         clip = append_clip(ob, self.clip)
         cb_src = clip.layers[0].strips[0].channelbags[0]
+        if 'weapon_hold' in ob:
+            ob['weapon_hold'] = 0.0
         start = clip.frame_range[0]
         if self.mode == 'NEW':
             clip.name = self.clip[5:] if self.clip.startswith('game_') else self.clip

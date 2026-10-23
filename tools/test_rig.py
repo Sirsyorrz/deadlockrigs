@@ -142,11 +142,13 @@ POSE = find_clip('game_ui_hero_select', contains='ui_') or IDLE
 JUMP = find_clip('game_jump_ground', contains='jump')
 print('clips', len(clips), 'run', RUN, 'idle', IDLE, 'pose', POSE, 'jump', JUMP, 'limbs', limbs)
 
-# rest pose untouched by the rig (a held prop's chain would reach for the prop, which sits at the origin at rest)
+# rest pose untouched by the rig (a held prop's chain would reach for the prop, which sits at the origin at rest, and
+# a held weapon leaves the origin for the hand)
 reset()
-if 'prop_chain' in arm:
-    arm['prop_chain'] = 0.0
-    update()
+for p in ('prop_chain', 'weapon_hold'):
+    if p in arm:
+        arm[p] = 0.0
+        update()
 for ob in [o for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewport and not o.name.startswith('WGT-')]:
     base = np.array([v.co for v in ob.data.vertices])
     if not len(base):
@@ -156,6 +158,33 @@ for ob in [o for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewpo
 
 if 'prop_chain' in arm:
     arm['prop_chain'] = 1.0
+
+# a held weapon stays in the hand when the arm moves, and game clips switch the hold off
+if 'weapon_hold' in arm:
+    hand = pb['weaponPivot'].constraints['Weapon hold'].subtarget
+    reset()
+    bpy.ops.dlrig.reset_pose()
+    arm['weapon_hold'] = 1.0
+    ik = f'ik_arm_{hand[-1]}'
+    if ik in arm:
+        arm[ik] = 0.0
+    update()
+    rel = pb[hand].matrix.inverted() @ pb['weapon'].matrix
+    near = (pb['weapon'].head - pb[hand].head).length
+    pb[hand].parent.rotation_quaternion = Quaternion((1, 0, 0), 0.7)
+    pb[hand].rotation_quaternion = Quaternion((0, 0, 1), 0.5)
+    update()
+    moved = (pb[hand].matrix.inverted() @ pb['weapon'].matrix).translation - rel.translation
+    check(f'weapon follows {hand}', moved.length < 0.0005, f'{moved.length * 1000:.3f} mm')
+    reset()
+    if IDLE:
+        bpy.ops.dlrig.game_anim(clip=IDLE, mode='NEW')
+        check('game clip lets go of the weapon', arm['weapon_hold'] == 0.0, str(arm['weapon_hold']))
+        arm.animation_data.action = None
+    arm['weapon_hold'] = 1.0
+    if ik in arm:
+        arm[ik] = 1.0
+    reset()
 
 # X-mirror and Paste Flipped copy a left bone's pose to the right one as (w, x, -y, -z); some skeletons are not
 # symmetric in position, so only the resulting rotations are compared
