@@ -24,6 +24,14 @@ os.makedirs(os.path.dirname(hero.base_blend), exist_ok=True)
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=hero.raw_glb)
 
+# Source2Viewer writes the game's sRGB vertex colours (hair tints) unconverted, and glTF colours are linear, so they
+# came out washed out (Pocket's dark brown hair as grey); the game's shader linearises them
+for me in {o.data for o in bpy.data.objects if o.type == 'MESH'}:
+    for ca in me.color_attributes:
+        c = np.empty(len(ca.data) * 4, np.float32)
+        ca.data.foreach_get('color', c)
+        ca.data.foreach_set('color_srgb', c)
+
 arm = next(o for o in bpy.data.objects if o.type == 'ARMATURE')
 for b in arm.pose.bones:
     b.custom_shape = None
