@@ -122,6 +122,25 @@ for t in arm.get('tails', []):
     update()
     off = (pb[tip].head - on).length
     check(f'{t} IK left alone keeps the FK pose', off < 0.002, f'{off * 1000:.1f} mm')
+    # past its reach: held at its length without stretch, reaching the box with it, and back to its length after
+    if f'stretch_{t}' in arm:
+        reset()
+        arm['ik_' + t] = 1.0
+        base = pb[chain[0]].head.copy()
+        links = [arm.data.bones[n].head_local for n in chain + ([tip] if tip not in chain else [])]
+        length = sum((b - a).length for a, b in zip(links, links[1:]))
+        out = (pb[tip].head - base).normalized() * length * 1.3
+        ctrl.matrix = Matrix.Translation(base + out) @ ctrl.matrix.to_3x3().to_4x4()
+        update()
+        held = (pb[tip].head - base).length / out.length
+        arm[f'stretch_{t}'] = 1.0
+        update()
+        gap = (pb[tip].head - base - out).length
+        arm[f'stretch_{t}'] = 0.0
+        update()
+        back = (pb[tip].head - base).length / out.length
+        check(f'{t} stretch reaches past its length', held < 0.8 and gap < 0.002 and back < 0.8,
+              f'{held:.2f} of the way without, {gap * 1000:.1f} mm off with')
     arm['ik_' + t] = 0.0
     ctrl.location = (0, 0, 0)
     update()

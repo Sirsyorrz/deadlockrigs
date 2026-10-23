@@ -1490,6 +1490,32 @@ for pre, chain, end in TAILS:
     ik.target = arm
     ik.subtarget = 'IK_' + pre
     ik.chain_count = 2 * len(chain) + 1
+    # stretch: with the box past the tail's reach, every link lengthens by the same share. The link's scale is along
+    # it, and MCH-* take it on (sheared, as the deform bones' axes are across the link), so the deform bones copying
+    # them stretch the skin lengthwise only. The next link takes none of it, only its own. The distance is measured
+    # from TFK-*, whose root sits on CHC-*'s, as CHC-* reading its own scale's effect would be a cycle
+    stretch = 'stretch_' + pre
+    arm[stretch] = 0.0
+    arm.id_properties_ui(stretch).update(min=0, max=1, soft_min=0, soft_max=1,
+                                         description='Let the tail stretch past its length to reach the box')
+    length = sum((hpos[b] - hpos[a]).length for a, b in zip(chain, chain[1:] + [end]))
+
+    def tail_vars(d, root='TFK-' + chain[0], ctrl='IK_' + pre):
+        v = d.variables.new()
+        v.name, v.type = 'd', 'LOC_DIFF'
+        for t, b in zip(v.targets, (root, ctrl)):
+            t.id, t.bone_target = arm, b
+        v = d.variables.new()
+        v.name, v.type = 'sc', 'TRANSFORMS'
+        v.targets[0].id = arm
+        v.targets[0].transform_type = 'SCALE_Y'
+        v.targets[0].transform_space = 'WORLD_SPACE'
+    for k, n in enumerate(chain + [end]):
+        if k:
+            arm.data.bones['CHC-' + n].inherit_scale = 'NONE'
+        if n != end:
+            expr_driver(arm.pose.bones['CHC-' + n], 'scale', 1, f'1 + st * max(d / sc / {length:.6f} - 1, 0)',
+                        props=[('st', f'["{stretch}"]')], setup=tail_vars)
     r = skin_radius(chain[-1], 0.02 * SCALE) * 1.2
     widget('IK_' + pre, box(hpos[end], Vector((r, r, r))), 2.5)
 arm['tails'] = [t[0] for t in TAILS]

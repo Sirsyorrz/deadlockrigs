@@ -1282,7 +1282,10 @@ class DLRIG_PT_body(bpy.types.Panel):
         row.operator('dlrig.bake_ik', text='Animation to IK', icon='CON_KINEMATIC').limbs = 'ALL'
         row.operator('dlrig.bake_fk', text='Animation to FK', icon='BONE_DATA').limbs = 'ALL'
         for t in ob.get('tails', []):
-            col.prop(ob, f'["ik_{t}"]', text=f'{t.replace("_", " ").capitalize()} IK', slider=True)
+            row = col.row(align=True)
+            row.prop(ob, f'["ik_{t}"]', text=f'{t.replace("_", " ").capitalize()} IK', slider=True)
+            if f'stretch_{t}' in ob:
+                row.prop(ob, f'["stretch_{t}"]', text='Stretch', slider=True)
         if 'prop_chain' in ob:
             col.separator()
             col.label(text='Held prop: move its box', icon='INFO')
