@@ -1098,6 +1098,9 @@ class DLRIG_PT_body(bpy.types.Panel):
             col.separator()
             col.label(text='Held prop: move its box', icon='INFO')
             col.prop(ob, '["prop_chain"]', text='Chain follows prop', slider=True)
+        if 'weapon_hold' in ob:
+            col.separator()
+            col.prop(ob, '["weapon_hold"]', text='Weapon in hand', slider=True)
 
 
 class DLRIG_PT_game(bpy.types.Panel):
