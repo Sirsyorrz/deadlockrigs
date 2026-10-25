@@ -687,5 +687,12 @@
   "codename": "boss_defense",
   "model": "models/npc/boss_defense/boss_defense.vmdl",
   "npc": true
+ },
+ {
+  "slug": "amber_trooper",
+  "name": "Amber Trooper",
+  "codename": "amber_trooper_01",
+  "model": "models/npc_units/troopers/amber_trooper_01/amber_trooper_01.vmdl",
+  "npc": true
  }
 ]
