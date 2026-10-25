@@ -701,5 +701,12 @@
   "codename": "amber_trooper_01_melee",
   "model": "models/npc_units/troopers/amber_trooper_01_melee/amber_trooper_01_melee.vmdl",
   "npc": true
+ },
+ {
+  "slug": "amber_medic",
+  "name": "Amber Medic",
+  "codename": "amber_medic_01",
+  "model": "models/npc_units/troopers/amber_medic_01/amber_medic_01.vmdl",
+  "npc": true
  }
 ]
