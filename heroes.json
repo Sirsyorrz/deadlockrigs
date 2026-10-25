@@ -651,5 +651,11 @@
   "name": "Guardian",
   "codename": "boss_tier_01_brazier_guardian",
   "model": "models/npc/boss_tier_01_brazier_guardian/boss_tier_01_brazier_guardian.vmdl"
+ },
+ {
+  "slug": "hidden_king",
+  "name": "Hidden King",
+  "codename": "patron_amber",
+  "model": "models/npc/patron_amber/patron_amber.vmdl"
  }
 ]
