@@ -284,10 +284,7 @@ class Rig:
         # a shallow cup sculpted behind parted lips (Celeste's) has no room for a tongue or an open jaw: drop it and
         # build a full bag on the lips instead, like for a closed mouth
         if p[self.bag, 1].max() - p[rim, 1].min() < 0.03 * s:
-            tw = h.weld[h.tris]
-            inside = self.bag.copy()
-            inside[rim] = False
-            self.fused = np.where(self.bag[tw].all(1) & inside[tw].any(1))[0]
+            self.fused = self._bag_faces(rim)
             return
         q = p[rim]
         self.corner = {'L': rim[q[:, 0].argmax()], 'R': rim[q[:, 0].argmin()]}
@@ -301,9 +298,22 @@ class Rig:
             near = np.abs(q[:, 0][:, None] - q[:, 0][None]) < 0.002 * s
             mid = np.array([(q[n, 2].max() + q[n, 2].min()) / 2 for n in near])
             down = q[:, 2] >= mid
+            # crossed lips (Paige's) put the lower lip's edge level with or above the upper's, so there the lip is
+            # the one whose outer skin leads to the philtrum or the chin. Only when the middle disagrees: at the
+            # corners of other mouths the two tests split hairs differently
+            skin = self._upper_by_skin(rim, (cl[2] + cr[2]) / 2) if len(gen) else None
+            if skin is not None:
+                mid_lip = np.abs(q[:, 0]) < 0.7 * min(abs(cl[0]), abs(cr[0]))
+                if (skin != down)[mid_lip].mean() > 0.3:
+                    down = skin
         self.rim_u, self.rim_l = rim[down], rim[~down]
         if not down.any() or down.all():
             sys.exit('no mouth bag behind the lips (open hole or fused lips?): this head needs another jaw setup')
+        # lips sculpted interpenetrating (Paige's): the upper lip's inner face runs down to the floor and the lower
+        # lip's up to the roof, so whichever half the jaw takes, faces between the lips stretch into fins
+        if not len(gen) and self._crossed(rim):
+            self.fused = self._bag_faces(rim)
+            return
         self.lip_z = (cl[2] + cr[2]) / 2
         self.lip_y = q[:, 1].min()
         # split the bag level with the lip line (a geodesic split leans towards the shorter lip)
@@ -319,6 +329,43 @@ class Rig:
         upper[self.rim_l] = False
         self.bag_u = np.where(self.bag & upper)[0]
         self.bag_l = np.where(self.bag & ~upper)[0]
+
+    def _upper_by_skin(self, rim, lip_z):
+        """Rim vertices closer over the outer skin to the philtrum than to the chin, or None without front skin
+        there (Venator's chin is under his beard)."""
+        h, s, p = self.h, self.s, self.h.wco
+        skin = self.soft_w & ~self.bag
+        skin[rim] = True
+        ids = np.where(skin)[0]
+        sub = h.wgraph[skin][:, skin]
+
+        def dist(z):
+            near = (skin & (np.abs(p[:, 0]) < 0.004 * s) & (np.abs(p[:, 2] - z) < 0.003 * s)
+                    & (p[:, 1] < self.eye_c['L'][1]))
+            if not near.any():
+                return None
+            src = np.searchsorted(ids, np.where(near)[0][p[near, 1].argmin()])
+            return dijkstra(sub, directed=False, indices=src)[np.searchsorted(ids, rim)]
+        up, down = dist(lip_z + 0.012 * s), dist(lip_z - 0.025 * s)
+        if up is None or down is None:
+            return None
+        return up < down
+
+    def _bag_faces(self, rim):
+        tw = self.h.weld[self.h.tris]
+        inside = self.bag.copy()
+        inside[rim] = False
+        return np.where(self.bag[tw].all(1) & inside[tw].any(1))[0]
+
+    def _crossed(self, rim):
+        p, g = self.h.wco, self.h.wgraph
+        inner = self.bag.copy()
+        inner[rim] = False
+
+        def rises(lip):
+            out = [p[nb, 2].mean() > p[v, 2] for v in lip if len(nb := g[v].indices[inner[g[v].indices]])]
+            return np.mean(out) if out else 0.5
+        return rises(self.rim_u) < 0.2 and rises(self.rim_l) > 0.8
 
     def lip_strip(self):
         """Unwelded triangle ids joining the lips where they are one surface (The Doorman's sculpted closed mouth):
