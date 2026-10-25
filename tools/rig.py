@@ -205,7 +205,8 @@ PROPS = hero.cfg.get('props', [])
 # without it (the add-on) read them back, so both rigs come out the same
 HAVE_CLIPS = os.path.exists(hero.anims_blend)
 RIGDATA = json.load(open(hero.rigdata)) if os.path.exists(hero.rigdata) else {}
-HOLD_CLIPS = ('game_out_of_combat_stand_idle', 'game_primary_stand_idle', 'game_weapon_stand_idle', 'game_stand_idle')
+HOLD_CLIPS = ('game_out_of_combat_stand_idle', 'game_primary_stand_idle', 'game_weapon_stand_idle', 'game_stand_idle',
+              'game_primary_idle_no_target')
 
 
 def descendants(name):

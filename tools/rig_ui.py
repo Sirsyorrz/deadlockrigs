@@ -683,7 +683,7 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
 
 IDLE_TRACK = 'Idle motion'
 IDLE_CLIPS = ('game_out_of_combat_stand_idle', 'game_weapon_stand_idle', 'game_primary_stand_idle',
-              'game_stand_idle', 'game_item_stand_idle')
+              'game_stand_idle', 'game_item_stand_idle', 'game_primary_idle_no_target', 'game_idle')
 
 
 def idle_clip(context):
