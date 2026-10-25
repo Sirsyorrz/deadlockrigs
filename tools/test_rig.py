@@ -18,8 +18,7 @@ pb = arm.pose.bones
 # same model size measure as rig.py: 1 for heroes, ~19 for the Hidden King
 SCALE = arm.data.bones['head'].head_local.z / 2.094 if 'head' in arm.data.bones else 1.0
 fails = []
-LIMB = {'arm': ('arm_upper', 'arm_lower', 'hand', 'IK_hand'), 'leg': ('leg_upper', 'leg_lower', 'ankle', 'IK_foot')}
-limbs = [(limb, s) for limb in LIMB for s in 'LR' if f'ik_{limb}_{s}' in arm]
+limbs = [(limb, s) for limb in ns['limb_list'](arm) for s in 'LR' if f'ik_{limb}_{s}' in arm]
 IK_PROPS = [f'ik_{limb}_{s}' for limb, s in limbs]
 HELPERS = ('IK_', 'pole_', 'IKC-', 'IKE-', 'IKT-', 'IKR-', 'IKS-', 'MCH-')
 
@@ -66,7 +65,8 @@ def mats():
 
 
 def names(limb, s):
-    return [f'{n}_{s}' for n in LIMB[limb]]
+    """Upper, lower and end bone and the IK control."""
+    return list(ns['limb_names'](limb, s)[:4])
 
 
 # tails: visible FK rings that bend the skin, and the tip control pulling the tail with IK on
@@ -217,12 +217,12 @@ for limb, s in limbs:
     reset()
     arm[f'ik_{limb}_L'] = arm[f'ik_{limb}_R'] = 0.0
     q = Quaternion(Vector((0.3, -0.5, 0.7)).normalized(), 0.8)
-    for n in LIMB[limb][:3]:
-        pb[n + '_L'].rotation_quaternion = q
-        pb[n + '_R'].rotation_quaternion = (q.w, q.x, -q.y, -q.z)
+    for n in names(limb, 'L')[:3]:
+        pb[n].rotation_quaternion = q
+        pb[n[:-1] + 'R'].rotation_quaternion = (q.w, q.x, -q.y, -q.z)
     update()
-    err = max((FLIP_X @ pb[n + '_L'].matrix.to_3x3() @ FLIP_X).to_quaternion().rotation_difference(
-        pb[n + '_R'].matrix.to_quaternion()).angle for n in LIMB[limb][:3])
+    err = max((FLIP_X @ pb[n].matrix.to_3x3() @ FLIP_X).to_quaternion().rotation_difference(
+        pb[n[:-1] + 'R'].matrix.to_quaternion()).angle for n in names(limb, 'L')[:3])
     check(f'x-mirror {limb}', err < math.radians(0.1), f'{math.degrees(err):.3f} deg')
 reset()
 
@@ -389,7 +389,6 @@ for limb, s in limbs:
     gap = (pb[end].head - pb[f'IKE-{end}'].head).length
     check(f'stretch {limb}_{s} reaches the control', gap < 0.001 and short < length * 1.01,
           f'{gap * 1000:.2f} mm off, unstretched end at {short / length:.3f} of the length')
-    hand = pb[f'IK_hand_{s}' if limb == 'arm' else f'ankle_{s}'].matrix.to_scale()
     check(f'stretch {limb}_{s} leaves the {end} unscaled', max(abs(x - 1) for x in pb[end].matrix.to_scale()) < 1e-3,
           str(tuple(round(x, 4) for x in pb[end].matrix.to_scale())))
     arm[f'stretch_{limb}_{s}'] = 0.0

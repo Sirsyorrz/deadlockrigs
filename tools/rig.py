@@ -69,9 +69,9 @@ CATS = [
     ('Helpers', r'^\$cloth|_TWIST|^attach|IKTARGET|AimIntent|_target_|^eye_0|^jaw_0|^weaponHand|_aim|_up(_|$)|_offset$'),
     ('Root', r'^root_motion$'),
     ('Torso', r'^(pelvis|spine_\d|neck_0|head)$'),
-    ('Arms FK', r'^(clavicle|arm_upper|arm_lower|hand)_[LR]$'),
-    ('Fingers', r'^finger_'),
-    ('Legs FK', r'^(leg_upper|leg_lower|ankle|ball)_[LR]$'),
+    ('Arms FK', r'^(up_|mid_|lo_)?(clavicle|arm_upper|arm_lower|hand)_[LR]$'),
+    ('Fingers', r'^(up_|mid_|lo_)?finger_'),
+    ('Legs FK', r'^(front_|back_)?(leg_upper|leg_lower|ankle|ball)_[LR]$'),
     ('Weapon', r'^weapon|^brush_'),
     ('Tail', TAIL_RX),
     ('Secondary', r'.'),
@@ -335,9 +335,17 @@ if HAS_FACE:
 ROOT = 'root_motion' if 'root_motion' in eb else None
 # widget sizes and pole distances were tuned on Violet, whose head bone sits 2.094 m up
 SCALE = eb['head'].head.z / 2.094 if 'head' in eb else 1.0
-LIMB_DEFS = (('leg', 'knee', 'leg_upper', 'leg_lower', 'ankle', 'IK_foot', 0.55 * SCALE),
-             ('arm', 'elbow', 'arm_upper', 'arm_lower', 'hand', 'IK_hand', 0.45 * SCALE))
+# extra limbs carry a prefix: the Mid-boss' up_/mid_/lo_ arms, the Walker's front_/back_ legs
+LIMB_PREFIXES = {'leg': ('', 'front_', 'back_'), 'arm': ('', 'up_', 'mid_', 'lo_')}
+LIMB_DEFS = tuple((p + 'leg', p + 'knee', p + 'leg_upper', p + 'leg_lower', p + 'ankle', 'IK_' + p + 'foot', 0.55 * SCALE)
+                  for p in LIMB_PREFIXES['leg']) + \
+    tuple((p + 'arm', p + 'elbow', p + 'arm_upper', p + 'arm_lower', p + 'hand', 'IK_' + p + 'hand', 0.45 * SCALE)
+          for p in LIMB_PREFIXES['arm'])
 LIMBS = [(s, d) for s in 'LR' for d in LIMB_DEFS if all(f'{n}_{s}' in eb for n in d[2:5])]
+
+
+def unprefixed(name):
+    return next((name[len(p):] for p in ('up_', 'mid_', 'lo_', 'front_', 'back_') if name.startswith(p)), name)
 print('IK limbs', [f'{d[0]}_{s}' for s, d in LIMBS])
 
 
@@ -416,10 +424,10 @@ for s, (_lname, limb, a, b_, c, ik_name, dist) in LIMBS:
     t = (pb_ - pa).dot(pc - pa) / (pc - pa).length_squared
     off = pb_ - (pa + (pc - pa) * t)
     if off.length < 1e-4:
-        off = FWD if limb == 'knee' else -FWD
+        off = FWD if limb.endswith('knee') else -FWD
     pole = pb_ + off.normalized() * dist
     POLES[f'pole_{limb}_{s}'] = pole
-    parent = f'IK_foot_{s}' if limb == 'knee' else ROOT
+    parent = f'{ik_name}_{s}' if limb.endswith('knee') else ROOT
     new_bone(f'pole_{limb}_{s}', pole, pole + UP * 0.05, parent, roll_to=FWD)
     # The imported bones' tails point anywhere, and Blender's IK solves along head-to-tail, so it
     # runs on a clean chain (IKC-*); MCH-* copies of the deform bones ride that chain and the deform
@@ -489,7 +497,7 @@ CHEST_BONE = SPINE[-1] if SPINE else None
 PARENTS = {}
 for s, (lname, limb, a, b_, c, ik_name, _dist) in LIMBS:
     ctrl, pole = f'{ik_name}_{s}', f'pole_{limb}_{s}'
-    if lname == 'arm':
+    if lname.endswith('arm'):
         head = 'head' if 'head' in eb else None
         PARENTS[ctrl] = [('Root', ROOT), ('Torso', BODY), ('Chest', CHEST_BONE), ('Head', head)]
         PARENTS[pole] = [('Root', ROOT), ('Torso', BODY), ('Chest', CHEST_BONE)]
@@ -743,7 +751,7 @@ for b in B:
         continue
     end = seg_end(b)
     d = end - hpos[n]
-    r = next((v for k, v in RADIUS.items() if n.startswith(k)), 0.018 * SCALE)
+    r = next((v for k, v in RADIUS.items() if unprefixed(n).startswith(k)), 0.018 * SCALE)
     if cat == 'Tail':
         widget(n, circle(hpos[n] + d * 0.5, d, skin_radius(n, r)), 2)
     elif n == 'pelvis':
@@ -778,20 +786,20 @@ def foot_widgets(s):
 for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
     if lname == 'leg' and s in FEET:
         foot_widgets(s)
-    elif lname == 'leg':
-        a = hpos[f'ankle_{s}']
-        ball = hpos.get(f'ball_{s}', a + FWD * 0.12 * SCALE)
+    elif lname.endswith('leg'):
+        a = hpos[f'{c_}_{s}']
+        ball = hpos.get(f'{lname[:-3]}ball_{s}', a + FWD * 0.12 * SCALE)
         toe_y, heel_y = ball.y - 0.09 * SCALE, a.y + 0.07 * SCALE
-        widget(f'IK_foot_{s}', box(Vector((ball.x, (toe_y + heel_y) / 2, 0.012 * SCALE)),
-                                   Vector((0.055 * SCALE, (heel_y - toe_y) / 2, 0.012 * SCALE))), 2.5)
+        widget(f'{ik_name}_{s}', box(Vector((ball.x, (toe_y + heel_y) / 2, 0.012 * SCALE)),
+                                     Vector((0.055 * SCALE, (heel_y - toe_y) / 2, 0.012 * SCALE))), 2.5)
     else:
-        h = hpos[f'hand_{s}']
-        knuckle = hpos.get(f'finger_middle_0_{s}', h + (h - hpos[f'arm_lower_{s}']).normalized() * 0.09 * SCALE)
-        widget(f'IK_hand_{s}', box(h + (knuckle - h) * 0.4, Vector((0.05, 0.05, 0.05)) * SCALE), 2.5)
+        h = hpos[f'{c_}_{s}']
+        knuckle = hpos.get(f'{lname[:-3]}finger_middle_0_{s}', h + (h - hpos[f'{b_}_{s}']).normalized() * 0.09 * SCALE)
+        widget(f'{ik_name}_{s}', box(h + (knuckle - h) * 0.4, Vector((0.05, 0.05, 0.05)) * SCALE), 2.5)
     widget(f'pole_{limb}_{s}', diamond(POLES[f'pole_{limb}_{s}'], 0.03 * SCALE), 2)
     for a, b2 in ((a_, b_), (b_, c_)):
         p0, p1 = hpos[f'{a}_{s}'], hpos[f'{b2}_{s}']
-        widget(f'IK_tweak_{a}_{s}', circle(p0.lerp(p1, 0.5), p1 - p0, RADIUS[a] * 1.15), 2)
+        widget(f'IK_tweak_{a}_{s}', circle(p0.lerp(p1, 0.5), p1 - p0, RADIUS[unprefixed(a)] * 1.15), 2)
 if HAS_TORSO:
     widget('torso', circle(hpos['pelvis'], UP, RADIUS['pelvis'] * 1.7), 3)
     widget('hips', circle(hpos['pelvis'] - UP * 0.06 * SCALE, UP, RADIUS['pelvis'] * 1.25), 2.5)
@@ -1268,6 +1276,7 @@ for ctrl, opts in PARENTS.items():
         t.target, t.subtarget = arm, b
         expr_driver(t, 'weight', None, f'p == {i}', props=[('p', f'["{prop}"]')])
 arm['limb_length'] = IK_LEN
+arm['limbs'] = list(dict.fromkeys(d[0] for _s, d in LIMBS))
 arm['parent_options'] = {ctrl: [lbl for lbl, _ in opts] for ctrl, opts in PARENTS.items()}
 arm['isolate'] = ISOLATE
 

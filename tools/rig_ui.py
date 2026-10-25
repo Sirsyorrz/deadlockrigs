@@ -28,8 +28,13 @@ def rig(context):
     return next(iter(rigs()), None)
 
 
+def limb_list(ob):
+    """The rig's limbs: arm and leg, plus prefixed extras (the Mid-boss' up_arm, the Walker's front_leg)."""
+    return list(ob.get('limbs', LIMBS))
+
+
 def ik_props(ob):
-    return [f'ik_{limb}_{s}' for limb in LIMBS for s in 'LR' if f'ik_{limb}_{s}' in ob]
+    return [f'ik_{limb}_{s}' for limb in limb_list(ob) for s in 'LR' if f'ik_{limb}_{s}' in ob]
 
 
 def autokey(context):
@@ -233,8 +238,11 @@ def reset_bones(ob, bones):
 
 
 def limb_names(limb, s):
-    up, lo, end, ik, pole, dist = LIMBS[limb]
-    return f'{up}_{s}', f'{lo}_{s}', f'{end}_{s}', f'{ik}_{s}', f'{pole}_{s}', dist
+    kind = 'leg' if limb.endswith('leg') else 'arm'
+    p = limb[:-len(kind)]
+    up, lo, end, ik, pole, dist = LIMBS[kind]
+    ik, pole = ik.replace('_', '_' + p, 1), pole.replace('_', '_' + p, 1)
+    return f'{p}{up}_{s}', f'{p}{lo}_{s}', f'{p}{end}_{s}', f'{ik}_{s}', f'{pole}_{s}', dist
 
 
 def foot_names(ob, limb, s):
@@ -291,8 +299,8 @@ def control_distance(length, soft, stretch, want):
 
 
 def tweak_names(limb, s):
-    up, lo = LIMBS[limb][:2]
-    return f'IK_tweak_{up}_{s}', f'IK_tweak_{lo}_{s}'
+    up, lo = limb_names(limb, s)[:2]
+    return f'IK_tweak_{up}', f'IK_tweak_{lo}'
 
 
 def clear_tweaks(ob, limb, s, key=False):
@@ -441,8 +449,8 @@ Use it on game animations to edit them with IK"""
     def execute(self, context):
         ob = rig(context)
         sc = context.scene
-        todo = [(limb, s) for limb in ('arm', 'leg') for s in 'LR' if f'ik_{limb}_{s}' in ob and
-                (self.limbs == 'ALL' or (self.limbs == 'LEGS') == (limb == 'leg'))]
+        todo = [(limb, s) for limb in limb_list(ob) for s in 'LR' if f'ik_{limb}_{s}' in ob and
+                (self.limbs == 'ALL' or (self.limbs == 'LEGS') == limb.endswith('leg'))]
         for limb, s in todo:
             ob[f'ik_{limb}_{s}'] = 0.0
         cb = channelbag(ob)
@@ -484,8 +492,8 @@ class DLRIG_OT_bake_fk(bpy.types.Operator):
     def execute(self, context):
         ob = rig(context)
         sc = context.scene
-        todo = [(limb, s) for limb in ('arm', 'leg') for s in 'LR' if f'ik_{limb}_{s}' in ob and
-                (self.limbs == 'ALL' or (self.limbs == 'LEGS') == (limb == 'leg'))]
+        todo = [(limb, s) for limb in limb_list(ob) for s in 'LR' if f'ik_{limb}_{s}' in ob and
+                (self.limbs == 'ALL' or (self.limbs == 'LEGS') == limb.endswith('leg'))]
         bones = {t: limb_names(*t)[:3] + foot_names(ob, *t)[3:] for t in todo}
         f0, f1 = frame_range(context)
         keep = sc.frame_current
@@ -655,7 +663,7 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
             update(context)
             for p, v in ik_on.items():
                 if v > 0.5:
-                    _, limb, s = p.split('_')
+                    limb, s = p[3:].rsplit('_', 1)
                     ik_from_fk(context, ob, limb, s)
                     ob[p] = 1.0
             if autokey(context):
@@ -1266,14 +1274,14 @@ class DLRIG_PT_body(bpy.types.Panel):
     def draw(self, context):
         ob = rig(context)
         col = self.layout.column(align=True)
-        for limb in ('arm', 'leg'):
+        for limb in limb_list(ob):
             for s, side in (('L', 'Left'), ('R', 'Right')):
                 p = f'ik_{limb}_{s}'
                 if p not in ob:
                     continue
                 is_ik = ob[p] >= 0.5
                 row = col.row(align=True)
-                row.label(text=f'{side} {limb}: {"IK" if is_ik else "FK"}',
+                row.label(text=f'{side} {limb.replace("_", " ")}: {"IK" if is_ik else "FK"}',
                           icon='CON_KINEMATIC' if is_ik else 'BONE_DATA')
                 op = row.operator('dlrig.snap', text='Switch to FK' if is_ik else 'Switch to IK')
                 op.limb, op.side, op.to_ik = limb, s, not is_ik
@@ -1322,13 +1330,13 @@ class DLRIG_PT_ik(bpy.types.Panel):
     def draw(self, context):
         ob = rig(context)
         layout = self.layout
-        for limb in ('arm', 'leg'):
+        for limb in limb_list(ob):
             for s, side in (('L', 'Left'), ('R', 'Right')):
                 if f'ik_{limb}_{s}' not in ob:
                     continue
                 box = layout.box()
                 col = box.column(align=True)
-                col.label(text=f'{side} {limb}')
+                col.label(text=f'{side} {limb.replace("_", " ")}')
                 row = col.row(align=True)
                 row.prop(ob, f'["soft_{limb}_{s}"]', text='Soft', slider=True)
                 row.prop(ob, f'["stretch_{limb}_{s}"]', text='Stretch', slider=True)
