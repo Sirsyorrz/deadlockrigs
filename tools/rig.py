@@ -333,8 +333,9 @@ if HAS_EYES:
 if HAS_FACE:
     new_bone(FACE, FACE_BONE, FACE_BONE + UP * 0.03 * FS, 'head', roll_to=FWD)
 ROOT = 'root_motion' if 'root_motion' in eb else None
-# widget sizes and pole distances were tuned on Violet, whose head bone sits 2.094 m up
-SCALE = eb['head'].head.z / 2.094 if 'head' in eb else 1.0
+# widget sizes and pole distances were tuned on Violet, whose head bone sits 2.094 m up. Without a head bone (the
+# Walker) the top bone stands in, as Violet's head_end is ~2.3 m up
+SCALE = eb['head'].head.z / 2.094 if 'head' in eb else max(b.head.z for b in eb) / 2.3
 # extra limbs carry a prefix: the Mid-boss' up_/mid_/lo_ arms, the Walker's front_/back_ legs
 LIMB_PREFIXES = {'leg': ('', 'front_', 'back_'), 'arm': ('', 'up_', 'mid_', 'lo_')}
 LIMB_DEFS = tuple((p + 'leg', p + 'knee', p + 'leg_upper', p + 'leg_lower', p + 'ankle', 'IK_' + p + 'foot', 0.55 * SCALE)
@@ -1149,11 +1150,19 @@ for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
     ik.pole_subtarget = pole
     ik.chain_count = 3
     chain = ['IKC-' + upper, 'IKC-' + lower]
-    best = min(range(-180, 180, 2), key=lambda a: (setattr(ik, 'pole_angle', math.radians(a)), chain_error(chain))[1])
-    fine = min((best + x * 0.25 for x in range(-8, 9)), key=lambda a: (setattr(ik, 'pole_angle', math.radians(a)), chain_error(chain))[1])
+    def pole_error(a):
+        ik.pole_angle = math.radians(a)
+        return chain_error(chain)
+    fine = min(range(-180, 180, 2), key=pole_error)
+    fine, step = min((fine + x * 0.25 for x in range(-8, 9)), key=pole_error), 0.25
+    # the twist can swing many times faster than the pole angle (the Walker's arms: 17x), so narrow down further while
+    # it is still off; below that the solver's own noise would pull a clean 90 deg off
+    while step > 0.002 and pole_error(fine) > math.radians(0.01):
+        step /= 8
+        fine = min((fine + x * step for x in range(-8, 9)), key=pole_error)
     ik.pole_angle = math.radians(fine)
     err = chain_error(chain)
-    print(f'IK {end}: pole angle {fine:.2f} deg, rest error {math.degrees(err):.3f} deg')
+    print(f'IK {end}: pole angle {fine:.3f} deg, rest error {math.degrees(err):.3f} deg')
     if err > math.radians(1.0):
         print(f'WARNING: IK {end} does not reproduce the rest pose')
     for n in (upper, lower):

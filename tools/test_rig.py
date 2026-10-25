@@ -16,7 +16,7 @@ sc = bpy.context.scene
 bpy.context.view_layer.objects.active = arm
 pb = arm.pose.bones
 # same model size measure as rig.py: 1 for heroes, ~19 for the Hidden King
-SCALE = arm.data.bones['head'].head_local.z / 2.094 if 'head' in arm.data.bones else 1.0
+SCALE = arm.get('rig_scale', 1.0)
 fails = []
 limbs = [(limb, s) for limb in ns['limb_list'](arm) for s in 'LR' if f'ik_{limb}_{s}' in arm]
 IK_PROPS = [f'ik_{limb}_{s}' for limb, s in limbs]
@@ -158,8 +158,9 @@ def find_clip(*cands, contains=None):
 
 
 IDLE = ns['idle_clip'](bpy.context)
-# NPCs without a run (the patrons) test the loader, physics and IK conversion on their idle
-RUN = find_clip('game_out_of_combat_run_n', 'game_primary_run_n', 'game_weapon_run_n', contains='run_n') or IDLE
+# NPCs without a run test the loader, physics and IK conversion on a walk (the Walker) or their idle (the patrons)
+RUN = find_clip('game_out_of_combat_run_n', 'game_primary_run_n', 'game_weapon_run_n', contains='run_n') or \
+    find_clip(contains='walk_n') or IDLE
 POSE = find_clip('game_ui_hero_select', contains='ui_') or IDLE
 JUMP = find_clip('game_jump_ground', contains='jump')
 print('clips', len(clips), 'run', RUN, 'idle', IDLE, 'pose', POSE, 'jump', JUMP, 'limbs', limbs)
@@ -441,7 +442,8 @@ for prop, bone in arm.get('isolate', {}).items():
     bpy.ops.dlrig.switch_follow(prop=prop)
     update()
     jump = before.to_quaternion().rotation_difference(pb[bone].matrix.to_quaternion()).angle
-    spine = 'spine_1' if 'spine_1' in pb else 'pelvis'
+    # the Walker has neither: its arms hang off up_body_0
+    spine = next(n for n in ('spine_1', 'pelvis', pb[bone].parent.parent.name) if n in pb)
     pb[spine].rotation_quaternion = Quaternion((1, 0, 0), 0.4) @ pb[spine].rotation_quaternion
     update()
     turn = before.to_quaternion().rotation_difference(pb[bone].matrix.to_quaternion()).angle
@@ -705,7 +707,7 @@ if IDLE:
     if hand_poses['Fist']:
         bpy.ops.dlrig.hand(name='Fist', side='B')
     r = bpy.ops.dlrig.idle_layer()
-    top = 'head' if 'head' in pb else 'pelvis'
+    top = next(n for n in ('head', 'pelvis', 'up_body_0') if n in pb)
     heads = []
     for f in (1, 30, 60, 90):
         sc.frame_set(f)
