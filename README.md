@@ -17,8 +17,9 @@ Each hero gets a rig with:
 - face shape keys, controls and expressions for the heroes listed under [Faces](#faces)
 
 NPCs are in the list too, under NPCs: the Guardian, Walker, Base Guardian, Mid-boss, Hidden King, Archmother and the
-ranged, melee and medic troopers. They get the same controls for whatever their skeleton has (the Mid-boss' five arms, the
-Walker's four legs, the patrons' lower body as a tail). The Base Guardian is FK only.
+ranged, melee and medic troopers of both teams (Amber and Sapphire). They get the same controls for whatever their
+skeleton has (the Mid-boss' five arms, the Walker's four legs, the patrons' lower body as a tail). The Base Guardian
+is FK only.
 
 | | |
 |---|---|
