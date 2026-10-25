@@ -62,8 +62,9 @@ hpos = {b.name: b.head_local.copy() for b in B}
 
 # bone categories
 
-# tails (Abrams, Calico's cat_tail, Baba's pidge_tail), not coat tails, ponytails or cloaks
-TAIL_RX = r'^(?!coat|pony|cloak)(?:[a-z]+_)?tail_\d+$'
+# tails (Abrams, Calico's cat_tail, Baba's pidge_tail), not coat tails, ponytails or cloaks. The patrons' legless
+# lower body (leg_0..leg_2, leg_end) is rigged as a tail too
+TAIL_RX = r'^(?!coat|pony|cloak)(?:[a-z]+_)?(?:tail|leg)_\d+$'
 CATS = [
     ('Helpers', r'^\$cloth|_TWIST|^attach|IKTARGET|AimIntent|_target_|^eye_0|^jaw_0|^weaponHand|_aim|_up(_|$)|_offset$'),
     ('Root', r'^root_motion$'),

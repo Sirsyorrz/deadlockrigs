@@ -15,6 +15,8 @@ arm = next(o for o in bpy.data.objects if o.type == 'ARMATURE' and 'dlrig' in o)
 sc = bpy.context.scene
 bpy.context.view_layer.objects.active = arm
 pb = arm.pose.bones
+# same model size measure as rig.py: 1 for heroes, ~19 for the Hidden King
+SCALE = arm.data.bones['head'].head_local.z / 2.094 if 'head' in arm.data.bones else 1.0
 fails = []
 LIMB = {'arm': ('arm_upper', 'arm_lower', 'hand', 'IK_hand'), 'leg': ('leg_upper', 'leg_lower', 'ankle', 'IK_foot')}
 limbs = [(limb, s) for limb in LIMB for s in 'LR' if f'ik_{limb}_{s}' in arm]
@@ -155,8 +157,9 @@ def find_clip(*cands, contains=None):
     return next((c for c in clips if contains and contains in c), None)
 
 
-RUN = find_clip('game_out_of_combat_run_n', 'game_primary_run_n', 'game_weapon_run_n', contains='run_n')
 IDLE = ns['idle_clip'](bpy.context)
+# NPCs without a run (the patrons) test the loader, physics and IK conversion on their idle
+RUN = find_clip('game_out_of_combat_run_n', 'game_primary_run_n', 'game_weapon_run_n', contains='run_n') or IDLE
 POSE = find_clip('game_ui_hero_select', contains='ui_') or IDLE
 JUMP = find_clip('game_jump_ground', contains='jump')
 print('clips', len(clips), 'run', RUN, 'idle', IDLE, 'pose', POSE, 'jump', JUMP, 'limbs', limbs)
@@ -709,7 +712,7 @@ if IDLE:
         sc.frame_set(f)
         heads.append(pb[top].head.copy())
     sway = max((h - heads[0]).length for h in heads)
-    check('idle layer applies', r == {'FINISHED'} and sway < 0.3, f'{top} sways {sway * 1000:.1f} mm')
+    check('idle layer applies', r == {'FINISHED'} and sway < 0.3 * SCALE, f'{top} sways {sway * 1000:.1f} mm')
     if hand_poses['Fist']:
         side = next(iter(hand_poses['Fist']))
         fist = pb[f'finger_index_1_{side}'].rotation_quaternion.copy()

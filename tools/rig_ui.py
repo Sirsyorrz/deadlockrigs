@@ -688,7 +688,8 @@ IDLE_CLIPS = ('game_out_of_combat_stand_idle', 'game_weapon_stand_idle', 'game_p
 
 def idle_clip(context):
     names = {c[0] for c in clip_items(None, context)}
-    return next((c for c in IDLE_CLIPS if c in names), next((n for n in sorted(names) if 'stand_idle' in n), None))
+    return next((c for c in IDLE_CLIPS if c in names),
+                next((n for n in sorted(names) if 'stand_idle' in n), next((n for n in sorted(names) if 'idle' in n), None)))
 IDLE_BONES = ('pelvis', 'spine_0', 'spine_1', 'spine_2', 'spine_3', 'neck_0', 'head', 'clavicle_L', 'clavicle_R')
 
 
