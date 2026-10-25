@@ -650,36 +650,42 @@
   "slug": "guardian",
   "name": "Guardian",
   "codename": "boss_tier_01_brazier_guardian",
-  "model": "models/npc/boss_tier_01_brazier_guardian/boss_tier_01_brazier_guardian.vmdl"
+  "model": "models/npc/boss_tier_01_brazier_guardian/boss_tier_01_brazier_guardian.vmdl",
+  "npc": true
  },
  {
   "slug": "hidden_king",
   "name": "Hidden King",
   "codename": "patron_amber",
-  "model": "models/npc/patron_amber/patron_amber.vmdl"
+  "model": "models/npc/patron_amber/patron_amber.vmdl",
+  "npc": true
  },
  {
   "slug": "archmother",
   "name": "Archmother",
   "codename": "patron_sapphire",
-  "model": "models/npc/patron_sapphire/patron_sapphire.vmdl"
+  "model": "models/npc/patron_sapphire/patron_sapphire.vmdl",
+  "npc": true
  },
  {
   "slug": "midboss",
   "name": "Mid-boss",
   "codename": "midboss",
-  "model": "models/npc/midboss/midboss.vmdl"
+  "model": "models/npc/midboss/midboss.vmdl",
+  "npc": true
  },
  {
   "slug": "walker",
   "name": "Walker",
   "codename": "boss_tier_02_sun_walker",
-  "model": "models/npc/boss_tier_02_sun_walker_v2/boss_tier_02_sun_walker.vmdl"
+  "model": "models/npc/boss_tier_02_sun_walker_v2/boss_tier_02_sun_walker.vmdl",
+  "npc": true
  },
  {
   "slug": "base_guardian",
   "name": "Base Guardian",
   "codename": "boss_defense",
-  "model": "models/npc/boss_defense/boss_defense.vmdl"
+  "model": "models/npc/boss_defense/boss_defense.vmdl",
+  "npc": true
  }
 ]

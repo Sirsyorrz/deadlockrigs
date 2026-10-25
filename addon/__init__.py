@@ -24,6 +24,7 @@ def tools_dir():
 
 
 _heroes = []
+_hero_items = []
 
 
 def heroes():
@@ -34,7 +35,14 @@ def heroes():
 
 
 def hero_items(self, context):
-    return [(h['slug'], h['name'], '') for h in heroes()]
+    # kept in a module list: Blender reads the item strings after the callback returns
+    if not _hero_items:
+        _hero_items.extend((h['slug'], h['name'], '') for h in heroes() if not h.get('npc'))
+        npcs = [(h['slug'], h['name'], '') for h in heroes() if h.get('npc')]
+        if npcs:
+            # an empty identifier is a heading in the menu
+            _hero_items.extend([None, ('', 'NPCs', '')] + npcs)
+    return _hero_items
 
 
 def hero_name(slug):
