@@ -663,5 +663,11 @@
   "name": "Archmother",
   "codename": "patron_sapphire",
   "model": "models/npc/patron_sapphire/patron_sapphire.vmdl"
+ },
+ {
+  "slug": "midboss",
+  "name": "Mid-boss",
+  "codename": "midboss",
+  "model": "models/npc/midboss/midboss.vmdl"
  }
 ]
