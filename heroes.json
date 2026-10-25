@@ -657,5 +657,11 @@
   "name": "Hidden King",
   "codename": "patron_amber",
   "model": "models/npc/patron_amber/patron_amber.vmdl"
+ },
+ {
+  "slug": "archmother",
+  "name": "Archmother",
+  "codename": "patron_sapphire",
+  "model": "models/npc/patron_sapphire/patron_sapphire.vmdl"
  }
 ]
