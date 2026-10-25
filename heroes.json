@@ -715,5 +715,12 @@
   "codename": "sapphire_trooper_01",
   "model": "models/npc_units/troopers/sapphire_trooper_01/sapphire_trooper_01.vmdl",
   "npc": true
+ },
+ {
+  "slug": "sapphire_melee_trooper",
+  "name": "Sapphire Melee Trooper",
+  "codename": "sapphire_trooper_01_melee",
+  "model": "models/npc_units/troopers/sapphire_trooper_01_melee/sapphire_trooper_01_melee.vmdl",
+  "npc": true
  }
 ]
