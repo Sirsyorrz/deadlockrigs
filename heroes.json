@@ -645,5 +645,11 @@
   "name": "Yamato",
   "codename": "yamato",
   "model": "models/heroes_staging/yamato_v2/yamato.vmdl"
+ },
+ {
+  "slug": "guardian",
+  "name": "Guardian",
+  "codename": "boss_tier_01_brazier_guardian",
+  "model": "models/npc/boss_tier_01_brazier_guardian/boss_tier_01_brazier_guardian.vmdl"
  }
 ]
