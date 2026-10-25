@@ -4,9 +4,11 @@ Imports the game's animation clips (exported with --gltf_export_animations) and 
 action library: names shortened, channels that stay at the rest pose dropped, constant channels reduced
 to one key. Each action gets a fake user and one slot named after the rig's armature. Writes
 out/<hero>_anims.blend."""
+import json
 import os
-import re
+import struct
 import sys
+import tempfile
 
 import bpy
 
@@ -16,27 +18,43 @@ import mirror  # noqa: E402
 
 hero, _ = from_argv()
 src, out = hero.anim_glb, hero.anims_blend
+
+
+def short_clip_glb(path):
+    """Copy of the glb with clips named by their last path part. Blender cuts action names at 63 bytes, so long
+    model paths (models/npc/boss_tier_01_brazier_guardian/clips/...) lost the clip name's end. Bare duplicates of
+    clips (e.g. 'weapon_stand_idle' vs '.../clips/weapon_stand_idle') are dropped, the first one wins."""
+    data = open(path, 'rb').read()
+    jlen = struct.unpack_from('<I', data, 12)[0]
+    gltf = json.loads(data[20:20 + jlen])
+    seen, anims = set(), []
+    for a in gltf.get('animations', []):
+        a['name'] = a.get('name', '').rsplit('/', 1)[-1]
+        if a['name'] not in seen:
+            seen.add(a['name'])
+            anims.append(a)
+    gltf['animations'] = anims
+    js = json.dumps(gltf, separators=(',', ':')).encode()
+    js += b' ' * (-len(js) % 4)
+    rest = data[20 + jlen:]
+    fd, tmp = tempfile.mkstemp(suffix='.glb')
+    with os.fdopen(fd, 'wb') as f:
+        f.write(data[:8] + struct.pack('<I', 20 + len(js) + len(rest)) + struct.pack('<I', len(js)) + b'JSON')
+        f.write(js + rest)
+    return tmp
+
+
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.context.scene.render.fps = 30
-bpy.ops.import_scene.gltf(filepath=src)
+clip_glb = short_clip_glb(src)
+bpy.ops.import_scene.gltf(filepath=clip_glb)
+os.remove(clip_glb)
 arm = next(o for o in bpy.data.objects if o.type == 'ARMATURE')
 
 REST = {'location': 0.0, 'rotation_quaternion': None, 'scale': 1.0}
 EPS = 1e-4
 
-
-def short(name):
-    return 'game_' + name.rsplit('/', 1)[-1]
-
-
-keep_names = {}
-for a in list(bpy.data.actions):
-    n = short(a.name)
-    if n in keep_names:
-        # bare duplicates of clips (e.g. 'weapon_stand_idle' vs '.../clips/weapon_stand_idle')
-        bpy.data.actions.remove(a)
-        continue
-    keep_names[n] = a
+keep_names = {'game_' + a.name: a for a in bpy.data.actions}
 
 # the rig turns these right-side rest frames (mirror.py), so the keys are stored for the turned bones
 TURNS = mirror.turns({b.name: b.matrix_local for b in arm.data.bones})
