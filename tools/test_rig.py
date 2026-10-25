@@ -177,7 +177,8 @@ for ob in [o for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewpo
     if not len(base):
         continue
     drift = np.abs(verts(ob) - base).max() * 1000
-    check(f'rest drift {ob.name}', drift < 0.05, f'{drift:.4f} mm')
+    # the IK solver's precision is relative, so a 12 m boss is allowed proportionally more
+    check(f'rest drift {ob.name}', drift < 0.05 * max(SCALE, 1.0), f'{drift:.4f} mm')
 
 if 'prop_chain' in arm:
     arm['prop_chain'] = 1.0

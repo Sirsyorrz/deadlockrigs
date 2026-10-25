@@ -1045,9 +1045,12 @@ def follow_basis(dst, src):
 
 
 def chain_error(names):
+    """Summed turn of the bones off their rest, in radians. Measured on the matrix columns: a quaternion difference's
+    angle comes from acos(w) in single precision and reads 0 below ~0.05 deg, which on the bosses' long limbs is
+    millimetres."""
     bpy.context.view_layer.update()
-    return sum(arm.pose.bones[n].matrix.to_quaternion().rotation_difference(rest[n].to_quaternion()).angle
-               for n in names)
+    return sum(max((arm.pose.bones[n].matrix.to_3x3().normalized() - rest[n].to_3x3().normalized()).col[i].length
+                   for i in range(3)) for n in names)
 
 
 arm['foot_roll_break'] = math.radians(35)
@@ -1157,7 +1160,7 @@ for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
     fine, step = min((fine + x * 0.25 for x in range(-8, 9)), key=pole_error), 0.25
     # the twist can swing many times faster than the pole angle (the Walker's arms: 17x), so narrow down further while
     # it is still off; below that the solver's own noise would pull a clean 90 deg off
-    while step > 0.002 and pole_error(fine) > math.radians(0.01):
+    while step > 0.0005 and pole_error(fine) > math.radians(0.0005):
         step /= 8
         fine = min((fine + x * step for x in range(-8, 9)), key=pole_error)
     ik.pole_angle = math.radians(fine)
