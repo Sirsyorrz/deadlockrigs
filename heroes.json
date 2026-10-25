@@ -708,5 +708,12 @@
   "codename": "amber_medic_01",
   "model": "models/npc_units/troopers/amber_medic_01/amber_medic_01.vmdl",
   "npc": true
+ },
+ {
+  "slug": "sapphire_trooper",
+  "name": "Sapphire Trooper",
+  "codename": "sapphire_trooper_01",
+  "model": "models/npc_units/troopers/sapphire_trooper_01/sapphire_trooper_01.vmdl",
+  "npc": true
  }
 ]
