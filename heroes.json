@@ -669,5 +669,11 @@
   "name": "Mid-boss",
   "codename": "midboss",
   "model": "models/npc/midboss/midboss.vmdl"
+ },
+ {
+  "slug": "walker",
+  "name": "Walker",
+  "codename": "boss_tier_02_sun_walker",
+  "model": "models/npc/boss_tier_02_sun_walker_v2/boss_tier_02_sun_walker.vmdl"
  }
 ]
