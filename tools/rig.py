@@ -613,6 +613,38 @@ CLOTH_BONES = [nd for nd in CLOTH['nodes'] if nd['name'] in eb and not eb[nd['na
 for nd in CLOTH_BONES:
     p = eb[nd['name']].head.copy()
     new_bone('PHYS-' + nd['name'], p, p + Vector((0, 0.02, 0)), None)
+
+# Mech legs (the Base Guardian): the visible leg is a shin strut (reverse_ankle, on the ankle) and a piston from the
+# hip to a fixed point up the shin that slides out to reach it; upper_leg/ankle are unskinned helpers the game IKs onto
+# foot_IK_target. IK_foot_<leg> carries the ankle, the shin aims at pole_knee_<leg> and the piston at MCH-knee_<leg>.
+def track_axis(m, d):
+    """The Damped Track axis of a bone (rest matrix m) closest to world direction d, and that axis in world space."""
+    cols = [m.col[i].xyz.normalized() for i in range(3)]
+    i = max(range(3), key=lambda k: abs(cols[k].dot(d)))
+    neg = cols[i].dot(d) < 0
+    return ('TRACK_NEGATIVE_' if neg else 'TRACK_') + 'XYZ'[i], -cols[i] if neg else cols[i]
+
+
+MECH_LEGS = [m.group(1) for n in eb.keys() if (m := re.match(r'^reverse_ankle_(\w+)$', n))
+             and all(f'{p}_{m.group(1)}' in eb for p in ('ankle', 'piston_hip_position', 'piston_knee_position'))
+             and eb[f'piston_knee_position_{m.group(1)}'].parent.name == f'piston_hip_position_{m.group(1)}']
+MECH_POLE_PARENT = 'pelvis' if 'pelvis' in eb else ROOT
+for leg in MECH_LEGS:
+    a = eb[f'ankle_{leg}'].head.copy()
+    knee = eb[f'piston_knee_position_{leg}'].head.copy()
+    new_bone(f'IK_foot_{leg}', a, a + FWD * 0.3 * SCALE, ROOT, roll_to=UP)
+    new_bone(f'MCH-ankle_{leg}', None, None, f'IK_foot_{leg}', copy=f'ankle_{leg}')
+    new_bone(f'MCH-knee_{leg}', knee, knee + UP * 0.1 * SCALE, f'reverse_ankle_{leg}', roll_to=FWD)
+    pole = knee + (knee - a).normalized() * 0.6 * SCALE
+    new_bone(f'pole_knee_{leg}', pole, pole + UP * 0.2 * SCALE, MECH_POLE_PARENT, roll_to=FWD)
+MECH_TURRET = 'turret_ball_rotate' if MECH_LEGS and 'turret_ball_rotate' in eb and 'turret_block' in eb else None
+if MECH_TURRET:
+    # the guns point forward; the target sits on the ball's local axis nearest that, so the rest pose is unchanged
+    ball = eb[MECH_TURRET].head.copy()
+    aim = ball + track_axis(eb[MECH_TURRET].matrix, FWD)[1] * 6 * SCALE
+    new_bone('IK_turret', aim, aim + UP * 0.3 * SCALE, MECH_POLE_PARENT, roll_to=FWD)
+if MECH_LEGS:
+    print('mech legs', MECH_LEGS, 'turret', MECH_TURRET)
 bpy.ops.object.mode_set(mode='POSE')
 rest = {b.name: b.matrix_local.copy() for b in B}
 
@@ -1580,6 +1612,46 @@ if WEAPON_HOLD:
     weapon_in_pivot = rest['weaponPivot'].inverted() @ rest['weapon']
     c.inverse_matrix = grip_idle.inverted() @ weapon_idle @ weapon_in_pivot.inverted() @ pivot.matrix.inverted()
     influence_driver(c, 'weapon_hold')
+
+
+def mech_con(bone, kind, target, prop, axis_to=None):
+    c = arm.pose.bones[bone].constraints.new(kind)
+    c.name = 'Mech'
+    c.target = arm
+    c.subtarget = target
+    if axis_to is not None:
+        c.track_axis = track_axis(rest[bone], axis_to - hpos[bone])[0]
+    influence_driver(c, prop)
+    return c
+
+
+CLIP_OFF = ['weapon_hold'] if WEAPON_HOLD else []
+if MECH_LEGS:
+    arm['mech_ik'] = 1.0
+    arm.id_properties_ui('mech_ik').update(min=0, max=1, soft_min=0, soft_max=1,
+                                           description='Feet, knees and pistons follow the controls (game clips pose '
+                                                       'the legs themselves)')
+    arm['mech_legs'] = MECH_LEGS
+    CLIP_OFF.append('mech_ik')
+    for leg in MECH_LEGS:
+        knee = hpos[f'piston_knee_position_{leg}']
+        mech_con(f'ankle_{leg}', 'COPY_TRANSFORMS', f'MCH-ankle_{leg}', 'mech_ik')
+        mech_con(f'reverse_ankle_{leg}', 'DAMPED_TRACK', f'pole_knee_{leg}', 'mech_ik', knee)
+        mech_con(f'piston_hip_position_{leg}', 'DAMPED_TRACK', f'MCH-knee_{leg}', 'mech_ik', knee)
+        mech_con(f'piston_knee_position_{leg}', 'COPY_LOCATION', f'MCH-knee_{leg}', 'mech_ik')
+        foot = [hpos[c.name] for c in B[f'ankle_{leg}'].children_recursive if c.name.startswith(('toe', 'heel'))]
+        a = hpos[f'ankle_{leg}']
+        half = max([abs(p.x - a.x) for p in foot] + [abs(p.y - a.y) for p in foot] + [0.3 * SCALE]) * 1.2
+        widget(f'IK_foot_{leg}', box(Vector((a.x, a.y, 0.02 * SCALE)), Vector((half, half, 0.02 * SCALE))), 2.5)
+        widget(f'pole_knee_{leg}', diamond(rest[f'pole_knee_{leg}'].translation, 0.12 * SCALE), 2)
+if MECH_TURRET:
+    arm['turret_aim'] = 1.0
+    arm.id_properties_ui('turret_aim').update(min=0, max=1, soft_min=0, soft_max=1,
+                                              description='The turret points at its target')
+    CLIP_OFF.append('turret_aim')
+    mech_con(MECH_TURRET, 'DAMPED_TRACK', 'IK_turret', 'turret_aim', rest['IK_turret'].translation)
+    widget('IK_turret', circle(rest['IK_turret'].translation, FWD, 0.25 * SCALE), 2.5)
+arm['clip_off'] = CLIP_OFF
 
 # physics: each simulated bone gets its baked offset from PHYS-<bone> on top of the animation
 

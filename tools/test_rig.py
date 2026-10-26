@@ -210,6 +210,55 @@ if 'weapon_hold' in arm:
         arm[ik] = 1.0
     reset()
 
+# mech legs: the foot control carries the ankle, the shin aims at the knee pole, the piston stays on the shin; game
+# clips switch the controls off, and a clip pose copied with them on lands on the same pose
+for leg in arm.get('mech_legs', []):
+    reset()
+    bpy.ops.dlrig.reset_pose()
+    update()
+    a0 = pb[f'ankle_{leg}'].head.copy()
+    step = Vector((0.4, -0.3, 0.5)) * SCALE
+    pb[f'IK_foot_{leg}'].location = pb[f'IK_foot_{leg}'].bone.matrix_local.inverted().to_3x3() @ step
+    pb[f'pole_knee_{leg}'].location = (0.3 * SCALE, 0, 0)
+    update()
+    moved = (pb[f'ankle_{leg}'].head - a0 - step).length
+    gap = (pb[f'piston_knee_position_{leg}'].head - pb[f'MCH-knee_{leg}'].head).length
+    kn = pb[f'MCH-knee_{leg}'].head - pb[f'piston_hip_position_{leg}'].head
+    hip_off = min(kn.normalized().angle(pb[f'piston_hip_position_{leg}'].matrix.col[i].xyz.normalized() * sg)
+                  for i in range(3) for sg in (1, -1))
+    check(f'mech foot {leg} carries the ankle, piston stays on the shin',
+          moved < 1e-4 * SCALE and gap < 1e-4 * SCALE and math.degrees(hip_off) < 0.01,
+          f'ankle {moved * 1000:.3f} mm, piston gap {gap * 1000:.3f} mm, aim {math.degrees(hip_off):.4f} deg')
+    reset()
+if arm.get('mech_legs'):
+    MECH_SKIN = [b.name for b in pb if b.name.startswith(('reverse_ankle_', 'piston_', 'foot_', 'toe_', 'turret_'))]
+    for clip in [c for c in (RUN, IDLE) if c]:
+        reset()
+        bpy.ops.dlrig.reset_pose()
+        bpy.ops.dlrig.game_anim(clip=clip, mode='NEW')
+        check(f'game clip {clip} switches the mech controls off', arm['mech_ik'] == 0.0, str(arm['mech_ik']))
+        sc.frame_set(int(arm.animation_data.action.frame_range[0]))
+        update()
+        fk = {n: pb[n].matrix.copy() for n in MECH_SKIN}
+        arm.animation_data.action = None
+        reset()
+        bpy.ops.dlrig.reset_pose()
+        arm['mech_ik'] = 1.0
+        if 'turret_aim' in arm:
+            arm['turret_aim'] = 1.0
+        bpy.ops.dlrig.game_anim(clip=clip, mode='POSE')
+        update()
+        worst, wb = 0.0, None
+        for n, m in fk.items():
+            d = (pb[n].matrix.translation - m.translation).length + \
+                (pb[n].tail - (m @ Vector((0, pb[n].bone.length, 0)))).length
+            if d > worst:
+                worst, wb = d, n
+        check(f'mech controls copy the clip pose ({clip})', worst < 0.005 * SCALE and arm['mech_ik'] == 1.0,
+              f'worst {worst * 1000:.2f} mm at {wb}')
+    reset()
+    bpy.ops.dlrig.reset_pose()
+
 # X-mirror and Paste Flipped copy a left bone's pose to the right one as (w, x, -y, -z); some skeletons are not
 # symmetric in position, so only the resulting rotations are compared
 FLIP_X = Matrix.Diagonal((-1, 1, 1))

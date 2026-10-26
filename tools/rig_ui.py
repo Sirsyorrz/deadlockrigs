@@ -391,6 +391,51 @@ def ik_from_fk(context, ob, limb, s, key=False):
             key_bone(pb[n], loc=False)
 
 
+def mech_from_fk(context, ob, key=False):
+    """Put the mech's foot, knee and turret controls where the current pose (with them off) has the legs, then turn
+    them on. The knee pole goes along the shin as far out as at rest."""
+    pb = ob.pose.bones
+    bones = ob.data.bones
+    props = [p for p in ('mech_ik', 'turret_aim') if p in ob]
+    for p in props:
+        ob[p] = 0.0
+    update(context)
+    want = []
+    for leg in ob.get('mech_legs', []):
+        ank, ctrl, pole = f'ankle_{leg}', f'IK_foot_{leg}', f'pole_knee_{leg}'
+        foot = pb[ank].matrix @ bones[ank].matrix_local.inverted() @ bones[ctrl].matrix_local
+        a, knee = pb[ank].head.copy(), pb[f'MCH-knee_{leg}'].head.copy()
+        m = pb[pole].matrix.copy()
+        m.translation = a + (knee - a).normalized() * (bones[pole].head_local - bones[ank].head_local).length
+        want += [(ctrl, foot), (pole, m)]
+    if 'IK_turret' in pb:
+        t, con = next((p, c) for p in pb for c in p.constraints if c.name == 'Mech' and c.subtarget == 'IK_turret')
+        i = 'XYZ'.index(con.track_axis[-1])
+        axis = t.matrix.col[i].xyz.normalized() * (-1 if 'NEGATIVE' in con.track_axis else 1)
+        m = pb['IK_turret'].matrix.copy()
+        m.translation = t.head + axis * (bones['IK_turret'].head_local - bones[t.name].head_local).length
+        want.append(('IK_turret', m))
+    for n, m in want:
+        pb[n].matrix = m
+        update(context)
+        if key:
+            key_bone(pb[n])
+    for p in props:
+        ob[p] = 1.0
+    update(context)
+
+
+class DLRIG_OT_mech_snap(bpy.types.Operator):
+    """Move the mech's foot, knee and turret controls onto the current pose and switch them on"""
+    bl_idname = 'dlrig.mech_snap'
+    bl_label = 'Controls to Pose'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        mech_from_fk(context, rig(context), autokey(context))
+        return {'FINISHED'}
+
+
 class DLRIG_OT_snap(bpy.types.Operator):
     """Switch a limb between FK and IK without it jumping"""
     bl_idname = 'dlrig.snap'
@@ -636,8 +681,10 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
         sc = context.scene
         clip = append_clip(ob, self.clip)
         cb_src = clip.layers[0].strips[0].channelbags[0]
-        if 'weapon_hold' in ob:
-            ob['weapon_hold'] = 0.0
+        mech_on = ob.get('mech_ik', 0.0) > 0.5
+        for p in ob.get('clip_off', ['weapon_hold']):
+            if p in ob:
+                ob[p] = 0.0
         start = clip.frame_range[0]
         if self.mode == 'NEW':
             clip.name = self.clip[5:] if self.clip.startswith('game_') else self.clip
@@ -666,6 +713,8 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
                     limb, s = p[3:].rsplit('_', 1)
                     ik_from_fk(context, ob, limb, s)
                     ob[p] = 1.0
+            if mech_on:
+                mech_from_fk(context, ob)
             if autokey(context):
                 for pb in body_bones(ob):
                     key_bone(pb)
@@ -1304,6 +1353,12 @@ class DLRIG_PT_body(bpy.types.Panel):
             col.separator()
             floats = not ob.get('weapon_anchor', 'hand_').startswith('hand_')
             col.prop(ob, '["weapon_hold"]', text='Weapon follows body' if floats else 'Weapon in hand', slider=True)
+        if 'mech_ik' in ob:
+            col.separator()
+            col.prop(ob, '["mech_ik"]', text='Leg controls', slider=True)
+            if 'turret_aim' in ob:
+                col.prop(ob, '["turret_aim"]', text='Turret aim', slider=True)
+            col.operator('dlrig.mech_snap', icon='SNAP_ON')
 
 
 def parent_row(layout, ob, bone, label):
@@ -1494,7 +1549,7 @@ def make_group_panel(title):
 
 
 classes = [DLRIG_OT_expression, DLRIG_OT_reset_face, DLRIG_OT_key_face, DLRIG_OT_hand, DLRIG_OT_reset_pose,
-           DLRIG_OT_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
+           DLRIG_OT_snap, DLRIG_OT_mech_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
            DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
            DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_PT_main, DLRIG_PT_body, DLRIG_PT_ik, DLRIG_PT_follow,
            DLRIG_PT_game, DLRIG_PT_physics]
