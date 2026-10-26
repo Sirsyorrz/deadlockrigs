@@ -285,7 +285,7 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
     grips = [b for b in held if re.match(r'weapon_?hand_[LR](_|$)', b, re.I)]
     gun = weighted_points(set(held))
     if grips and len(gun) > 50:
-        basis, idle = sample_hold('weapon', held, WEAPON_CLIPS)
+        basis, idle = sample_hold('weapon', held + ['pelvis'] * ('pelvis' in B), WEAPON_CLIPS)
         if basis is not None:
             gun = gun[::max(1, len(gun) // 400)]
             to_clip = idle['weapon'] @ rest['weapon'].inverted()
@@ -293,11 +293,18 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
             grip = min(near, key=near.get)
             hand = 'hand_L' if '_L' in grip else 'hand_R'
             print(f'weapon grip {grip} is {near[grip]:.3f} m from the weapon in the idle')
-            if near[grip] < 0.2 * (B['head'].head_local.z / 2.094 if 'head' in B else 1.0):
+            # Rem's small hand holds his tray 0.12 m from the wrist, so only giants scale the reach
+            parts = {b: v for b, v in basis.items() if b in held and b not in ('weaponPivot', 'weapon')}
+            if near[grip] < 0.2 * max(1.0, B['head'].head_local.z / 2.094 if 'head' in B else 1.0):
                 # the parts (hammer, cylinder) take the idle's pose; the weapon itself only moves through the hold,
                 # so with it off the weapon is back at the origin
-                PROP_POSE.update({b: v for b, v in basis.items() if b in held and b not in ('weaponPivot', 'weapon')})
+                PROP_POSE.update(parts)
                 WEAPON_HOLD = (hand, idle[grip], idle['weapon'])
+            elif 'pelvis' in idle:
+                # no hand on it (Solomon's board hovers in front of him): it rides the pelvis, which keeps the
+                # idle's offset best across his clips
+                PROP_POSE.update(parts)
+                WEAPON_HOLD = ('pelvis', idle['pelvis'], idle['weapon'])
             elif HAVE_CLIPS:
                 RIGDATA['hold']['weapon'] = None
 
@@ -1561,8 +1568,10 @@ if WEAPON_HOLD:
     bpy.context.view_layer.update()
     pivot = arm.pose.bones['weaponPivot']
     arm['weapon_hold'] = 1.0
+    arm['weapon_anchor'] = hand
+    what = 'in the hand' if hand.startswith('hand_') else 'with the body'
     arm.id_properties_ui('weapon_hold').update(min=0, max=1, soft_min=0, soft_max=1,
-                                               description='Keep the weapon in the hand (game clips place it themselves)')
+                                               description=f'Keep the weapon {what} (game clips place it themselves)')
     c = pivot.constraints.new('CHILD_OF')
     c.name = 'Weapon hold'
     c.target = arm

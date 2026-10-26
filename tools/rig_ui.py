@@ -1302,7 +1302,8 @@ class DLRIG_PT_body(bpy.types.Panel):
             col.prop(ob, '["prop_chain"]', text='Chain follows prop', slider=True)
         if 'weapon_hold' in ob:
             col.separator()
-            col.prop(ob, '["weapon_hold"]', text='Weapon in hand', slider=True)
+            floats = not ob.get('weapon_anchor', 'hand_').startswith('hand_')
+            col.prop(ob, '["weapon_hold"]', text='Weapon follows body' if floats else 'Weapon in hand', slider=True)
 
 
 def parent_row(layout, ob, bone, label):
