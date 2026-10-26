@@ -99,6 +99,9 @@ SKINNED = skinned_bones()
 
 def category(name):
     cat = next(c for c, rx in CATS if re.search(rx, name))
+    # without a face rig (Deadman Danny, Rat King, Vyper) a skinned jaw and eyes are posed directly
+    if cat == 'Helpers' and not HAS_FACE and name in SKINNED and re.match(r'^(jaw_0|eye_0_[LR])$', name):
+        return 'Face'
     return 'Secondary' if cat == 'Tail' and name not in SKINNED else cat
 
 
@@ -743,7 +746,7 @@ for s in 'LR':
                  f'leg_lower_{s}': f'ankle_{s}', f'ankle_{s}': f'ball_{s}'})
 RADIUS = {'pelvis': 0.17, 'spine': 0.15, 'neck_0': 0.06, 'head': 0.12, 'clavicle': 0.045, 'arm_upper': 0.055,
           'arm_lower': 0.045, 'hand': 0.045, 'leg_upper': 0.085, 'leg_lower': 0.065, 'ankle': 0.05, 'ball': 0.045,
-          'finger': 0.009}
+          'finger': 0.009, 'jaw_0': 0.06, 'eye_0': 0.025}
 
 
 RADIUS = {k: v * SCALE for k, v in RADIUS.items()}
