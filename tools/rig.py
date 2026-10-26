@@ -1328,6 +1328,16 @@ def fit_twists():
     whatever the clips have baked (which for some heroes is not twisted at all). The others get the weight that
     best reproduces the twist baked into a few of the hero's clips."""
     tws = [t[0] for t in TWISTS if 'Twist' in arm.pose.bones[t[0]].constraints and t[0] not in GAME_TWIST]
+    # Sinclair's upper arm twist bones are weightless and the clips swing them off the arm instead of twisting
+    weighted = set()
+    for o in bpy.data.objects:
+        if o.type == 'MESH':
+            names = {g.index: g.name for g in o.vertex_groups if g.name in tws}
+            weighted |= {names[g.group] for v in o.data.vertices for g in v.groups if g.group in names and g.weight > 0}
+    for b in [b for b in tws if b not in weighted]:
+        print(f'twist {b}: deforms nothing, not fitted')
+        RIGDATA.get('twists', {}).pop(b, None)
+    tws = [b for b in tws if b in weighted]
     for t in TWISTS:
         if t[0] in GAME_TWIST:
             print(f'twist {t[0]}: weight {t[1]:+.3f} from the game')
