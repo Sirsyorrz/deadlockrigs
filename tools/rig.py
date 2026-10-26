@@ -300,6 +300,9 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
                 # so with it off the weapon is back at the origin
                 PROP_POSE.update(parts)
                 WEAPON_HOLD = (hand, idle[grip], idle['weapon'])
+                if HAVE_CLIPS:
+                    for v in RIGDATA['hold']['weapon'].values():
+                        v.pop('pelvis', None)
             elif 'pelvis' in idle:
                 # no hand on it (Solomon's board hovers in front of him): it rides the pelvis, which keeps the
                 # idle's offset best across his clips
