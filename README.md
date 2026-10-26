@@ -13,13 +13,15 @@ Each hero gets a rig with:
 - the game's twist bones and cloth/hair physics, including coats
 - tail controls for heroes with tails
 - hand poses
-- weapons held in hand by default (the `weapon_hold` property; loading a game clip switches it off)
+- weapons held in hand by default (the `weapon_hold` property; loading a game clip switches it off); Solomon's board
+  floats with his body instead
+- an FK jaw (and eyes) for heroes without a face rig whose jaw is skinned (Deadman Danny, Rat King, Vyper)
 - face shape keys, controls and expressions for the heroes listed under [Faces](#faces)
 
 NPCs are in the list too, under NPCs: the Guardian, Walker, Base Guardian, Mid-boss, Hidden King, Archmother and the
 ranged, melee and medic troopers of both teams (Amber and Sapphire). They get the same controls for whatever their
 skeleton has (the Mid-boss' five arms, the Walker's four legs, the patrons' lower body as a tail). The Base Guardian
-is FK only.
+gets foot and knee controls that its pistons follow, and a turret aim target.
 
 | | |
 |---|---|
