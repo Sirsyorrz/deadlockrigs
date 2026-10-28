@@ -118,6 +118,62 @@ def ray_hits(orig, dirs, tris_co, max_t):
     return np.isfinite(ray_cast(orig, dirs, tris_co, max_t)[0])
 
 
+def ray_hits_grid(orig, dirs, use, tris_co, max_t, min_t=1e-4):
+    """hit[i, j]: the ray from orig[i] along dirs[j] (where use[i, j]) hits a triangle between min_t and max_t.
+    Rays sharing a direction are tested together: seen down that direction the triangles and origins are 2D, so a
+    grid over the triangles' bounds leaves each ray a handful of candidates instead of all of them."""
+    hit = np.zeros(use.shape, bool)
+    v0, e1, e2 = tris_co[:, 0], tris_co[:, 1] - tris_co[:, 0], tris_co[:, 2] - tris_co[:, 0]
+    for j, d in enumerate(dirs):
+        rays = np.where(use[:, j])[0]
+        if not len(rays) or not len(tris_co):
+            continue
+        a = np.cross(d, [1.0, 0, 0] if abs(d[0]) < 0.9 else [0, 1.0, 0])
+        a /= np.linalg.norm(a)
+        b = np.cross(d, a)
+        uv = tris_co @ np.c_[a, b]
+        lo, hi = uv.min(1), uv.max(1)
+        cell = max(np.median((hi - lo).max(1)), 1e-6)
+        pad = 1e-6 * cell
+        c_lo = np.floor((lo - pad) / cell).astype(np.int64)
+        c_hi = np.floor((hi + pad) / cell).astype(np.int64)
+        span = c_hi - c_lo + 1
+        per_tri = span[:, 0] * span[:, 1]
+        tri_of = np.repeat(np.arange(len(tris_co)), per_tri)
+        k = np.arange(len(tri_of)) - np.repeat(np.cumsum(per_tri) - per_tri, per_tri)
+        cx = c_lo[tri_of, 0] + k % span[tri_of, 0]
+        cy = c_lo[tri_of, 1] + k // span[tri_of, 0]
+        y0, rows = c_lo[:, 1].min(), c_hi[:, 1].max() - c_lo[:, 1].min() + 1
+        key = cx * rows + (cy - y0)
+        order = np.argsort(key, kind='stable')
+        key, tri_of = key[order], tri_of[order]
+
+        o = orig[rays]
+        ouv = np.floor(o @ np.c_[a, b] / cell).astype(np.int64)
+        okey = np.where((ouv[:, 1] >= y0) & (ouv[:, 1] < y0 + rows), ouv[:, 0] * rows + (ouv[:, 1] - y0), -1 << 62)
+        start, stop = np.searchsorted(key, okey, 'left'), np.searchsorted(key, okey, 'right')
+        n = stop - start
+        ray_of = np.repeat(np.arange(len(rays)), n)
+        if not len(ray_of):
+            continue
+        ti = tri_of[np.repeat(start, n) + np.arange(len(ray_of)) - np.repeat(np.cumsum(n) - n, n)]
+
+        # the same Moller-Trumbore arithmetic as ray_cast, so both agree on edge cases
+        dd = np.broadcast_to(d, (len(ti), 3))
+        pv = np.cross(dd, e2[ti])
+        det = (e1[ti] * pv).sum(-1)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1 / np.where(ok, det, 1), 0)
+        tv = o[ray_of] - v0[ti]
+        u = (tv * pv).sum(-1) * inv
+        qv = np.cross(tv, e1[ti])
+        v = (dd * qv).sum(-1) * inv
+        t = (e2[ti] * qv).sum(-1) * inv
+        good = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > min_t) & (t < max_t)
+        hit[rays[np.unique(ray_of[good])], j] = True
+    return hit
+
+
 class Rig:
     def __init__(self, h: fg.Head):
         self.h = h
@@ -205,11 +261,11 @@ class Rig:
         tris = p[tri_w[near]]
         dirs = fib_sphere(48)
         dirs = np.r_[dirs, dirs * [-1, 1, 1]]  # mirrored so both sides of the face get the same answer
-        frac = np.zeros(len(verts))
-        for i, v in enumerate(verts):
-            d = dirs[dirs @ h.wnrm[v] > 0.15]
-            hit = ray_hits(np.repeat(p[v][None] + h.wnrm[v] * 1e-4, len(d), 0), d, tris, reach)
-            frac[i] = 1 - hit.mean()
+        nrm = h.wnrm[verts]
+        use = nrm @ dirs.T > 0.15
+        hit = ray_hits_grid(p[verts] + nrm * 1e-4, dirs, use, tris, reach)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            frac = 1 - hit.sum(1) / use.sum(1)
         return frac
 
     def enclosed(self, window, centre, reach, limit=0.08):
