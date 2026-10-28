@@ -1780,6 +1780,10 @@ if HAVE_CLIPS:
     if RIGDATA and not os.environ.get('DLRIG_ADDON'):
         os.makedirs(os.path.dirname(hero.rigdata), exist_ok=True)
         json.dump(RIGDATA, open(hero.rigdata, 'w'), indent=1, sort_keys=True)
+for o in bpy.data.objects:
+    for m in o.modifiers if o.type == 'MESH' else ():
+        if m.type == 'ARMATURE' and m.object == arm:
+            m.use_deform_preserve_volume = True
 arm['dlrig'] = hero.slug
 arm['rig_scale'] = SCALE
 # the timeline otherwise only shows keys of the selected bones in pose mode
