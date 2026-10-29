@@ -130,6 +130,19 @@ Deadlock; Blender and Deadlock are found through Steam, or pass `--blender` and 
 
 Per-hero settings live in `heroes.json`. `python tools/release.py addon` packages the add-on.
 
+## Credits
+
+The map tools follow work by others in the Deadlock community:
+
+- Miruneko (m1ru_neko), [Deadlock Map Optimizer](https://github.com/Miruneko0/Deadlock-Map-Optimizer): its Map Crop
+  add-on showed cropping a map to boxes or the camera, which our Crop is modelled on.
+- spenzo: his Blender port of Midtown, and merging the map's objects so Blender can handle it, which our map build
+  does from your own install.
+- [Cravvnn](https://github.com/cravvnn), [RenderLock](https://github.com/cravvnn/RenderLock): research into using
+  the game's Source 2 lighting in Blender.
+- [Source 2 Viewer / ValveResourceFormat contributors](https://github.com/ValveResourceFormat/ValveResourceFormat):
+  the map export, and the lightmap, light probe and fog shaders our map lighting is ported from.
+
 ## License
 
 GPL-3.0-or-later. Source2Viewer-CLI is from [Source 2 Viewer](https://github.com/ValveResourceFormat/ValveResourceFormat)
