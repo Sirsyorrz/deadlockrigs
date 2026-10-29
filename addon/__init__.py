@@ -91,8 +91,8 @@ _map_state = {}
 
 
 def map_state(slug, context):
-    """'missing', 'current' or 'outdated' (the game or the map changed since the build), or 'unknown' when the
-    game isn't found. Cached: it reads the Steam library list."""
+    """'missing', 'current', 'outdated' (the game or the map changed since the build), 'mods' (built with the other
+    Include Mods setting), or 'unknown' when the game isn't found. Cached: it reads the Steam library list."""
     if slug not in _map_state:
         mapbuild = tools_module('mapbuild')
         built = mapbuild.built_stamp(output_dir(context), slug)
@@ -102,7 +102,13 @@ def map_state(slug, context):
             try:
                 given = prefs(context).deadlock_dir
                 pak = mapbuild.find_pak(bpy.path.abspath(given) if given else None)
-                state = 'current' if mapbuild.game_stamp(pak, slug) == built else 'outdated'
+                mods = prefs(context).map_mods
+                if mapbuild.game_stamp(pak, slug, mods) == built:
+                    state = 'current'
+                elif mapbuild.game_stamp(pak, slug, not mods) == built:
+                    state = 'mods'
+                else:
+                    state = 'outdated'
             except Exception:
                 state = 'unknown'
         _map_state[slug] = (state, (built or {}).get('game_version', ''))
@@ -126,6 +132,10 @@ class DLR_Preferences(bpy.types.AddonPreferences):
     exports: bpy.props.BoolProperty(
         name='Also save the model as .glb and .fbx', default=False,
         description='For other programs (Unity, Unreal, Maya). The rig itself is Blender only')
+    map_mods: bpy.props.BoolProperty(
+        name='Include Mods', default=True, update=lambda self, context: _map_state.clear(),
+        description="Build maps with the mods in Deadlock's addons folders (such as replaced posters and signs), "
+                    "as the game shows them. Off: the map as Valve ships it")
     keep_build_files: bpy.props.BoolProperty(
         name='Keep build files', default=False,
         description='Keep the extracted game files and intermediate data (for reporting problems)')
@@ -255,6 +265,8 @@ def start(context, slug, kind):
         cmd += ['--s2v', bpy.path.abspath(p.s2v_path)]
     if p.exports and kind != 'MAP':
         cmd.append('--exports')
+    if kind == 'MAP' and not p.map_mods:
+        cmd.append('--no-mods')
     if p.keep_build_files:
         cmd.append('--keep')
     env = dict(os.environ)
@@ -496,6 +508,7 @@ def draw_job(layout, context, name):
 
 MAP_STATE_TEXT = {'missing': ('Not built yet', 'INFO'), 'current': ('Up to date (game {})', 'CHECKMARK'),
                   'outdated': ('Game updated since build {}, rebuild', 'ERROR'),
+                  'mods': ('Built with mods {}, rebuild', 'ERROR'),
                   'unknown': ('Built for game {}', 'INFO')}
 
 
@@ -517,9 +530,14 @@ class DLR_PT_map(bpy.types.Panel):
         state, version = map_state(slug, context)
         row = col.row()
         row.enabled = not busy
-        row.operator('dlr.build', text='Rebuild Map' if state == 'outdated' else 'Build Map',
+        row.operator('dlr.build', text='Rebuild Map' if state in ('outdated', 'mods') else 'Build Map',
                      icon='WORLD').kind = 'MAP'
+        row = col.row()
+        row.enabled = not busy
+        row.prop(prefs(context), 'map_mods')
         text, icon = MAP_STATE_TEXT[state]
+        if state == 'mods':
+            version = 'off' if prefs(context).map_mods else 'on'
         layout.label(text=text.format(version), icon=icon)
         if _job is not None and _job.kind == 'MAP' and _job.slug == slug:
             draw_job(layout, context, tools_module('mapbuild').MAPS[slug])

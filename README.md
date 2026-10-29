@@ -61,6 +61,10 @@ Build Map exports the map with Source2Viewer and merges its ~30,000 objects into
 building; the result is about 3.5 GB. The panel shows when a game update has made the map outdated, and building again
 skips an up-to-date map.
 
+**Mods.** Mods you have installed for Deadlock (in its `addons` folders, as mod managers put them) that replace map
+textures, such as posters and signs, are in the built map like they are in the game. Turn off Include Mods in the Map
+section and rebuild for the map as Valve ships it.
+
 Append Map adds the map's collection to the open scene, makes the map's sky the scene's world and turns on Game
 Look. The map is at its game position; rigs are at the origin, so move the rig or the map.
 
@@ -82,7 +86,7 @@ Works in EEVEE and Cycles. Cycles loads the whole visible map with full size tex
 **Crop.** With a map in the scene, the Map section can cut it down to what a shot needs, which makes the viewport and
 renders much faster: Add Crop Box and Crop to Boxes keep what is inside the boxes, Crop to Camera keeps what the scene
 camera sees over the frame range. Objects across the edge keep the polygons that reach in. Objects with a Keep word
-in their name (the skyline backdrop, sky and clouds by default) are never cropped. Restore Map undoes it; Delete
+in their name (e.g. backdrop for the skyline buildings) are never cropped. Restore Map undoes it; Delete
 Cropped removes the cropped parts for good to make the file smaller.
 
 ## Help

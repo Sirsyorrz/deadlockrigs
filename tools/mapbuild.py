@@ -59,9 +59,36 @@ def game_version(pak):
     return ''
 
 
-def game_stamp(pak, slug):
+def game_stamp(pak, slug, mods=True):
     vpk = os.stat(map_vpk(pak, slug))
-    return {'game_version': game_version(pak), 'vpk_size': vpk.st_size, 'vpk_mtime': int(vpk.st_mtime)}
+    stamp = {'game_version': game_version(pak), 'vpk_size': vpk.st_size, 'vpk_mtime': int(vpk.st_mtime)}
+    if not mods:
+        stamp['mods'] = False
+    return stamp
+
+
+def vanilla_vpk(pak, slug, folder):
+    """The map's vpk linked into <folder>, and a gameinfo.gi that mounts only the game's own files. Opened from
+    the game folder, Source2Viewer reads the game's gameinfo.gi, whose search paths put mod managers' addon folders
+    in front of the game, so mods that replace map textures would end up in the export. The gameinfo.gi is in a
+    subfolder, where Source2Viewer doesn't find it by itself and only loads it once, from --game."""
+    citadel = os.path.dirname(pak)
+    os.makedirs(folder, exist_ok=True)
+    vpk = os.path.join(folder, slug + '.vpk')
+    if os.path.exists(vpk):
+        os.remove(vpk)
+    try:
+        os.link(map_vpk(pak, slug), vpk)
+    except OSError:
+        shutil.copyfile(map_vpk(pak, slug), vpk)
+    # forward slashes: KeyValues reads a backslash as an escape
+    paths = [p.replace(os.sep, '/') for p in (citadel, os.path.join(os.path.dirname(citadel), 'core'))]
+    gameinfo = os.path.join(folder, 'game', 'gameinfo.gi')
+    os.makedirs(os.path.dirname(gameinfo), exist_ok=True)
+    with open(gameinfo, 'w', encoding='utf-8') as f:
+        f.write('"GameInfo"\n{\n\tgame "citadel"\n\tFileSystem\n\t{\n\t\tSearchPaths\n\t\t{\n'
+                + ''.join(f'\t\t\tGame "{p}"\n' for p in paths) + '\t\t}\n\t}\n}\n')
+    return vpk, gameinfo
 
 
 def built_stamp(out, slug):
@@ -76,6 +103,10 @@ def built_stamp(out, slug):
 
 
 class MapBuilder(Builder):
+    def __init__(self, args):
+        super().__init__(args)
+        self.mods = getattr(args, 'mods', True)
+
     def export(self, m):
         if os.path.exists(m.world):
             return
@@ -84,8 +115,17 @@ class MapBuilder(Builder):
         if free < NEEDED_GB:
             raise BuildError(f'building {m.title} needs about {NEEDED_GB} GB free, {free:.0f} GB left on the drive '
                              f'with {m.dir}')
-        self.run([self.s2v, '-i', map_vpk(self.pak, m.slug), '-f', f'maps/{m.slug}/world.vwrld_c', '-o', m.export,
-                  '--gltf_export_format', 'gltf', '--gltf_textures_adapt', '--gltf_export_extras'], m, show=False)
+        vanilla = os.path.join(m.dir, 'vanilla')
+        if self.mods:
+            vpk, game = map_vpk(self.pak, m.slug), []
+        else:
+            vpk, gameinfo = vanilla_vpk(self.pak, m.slug, vanilla)
+            game = ['--game', gameinfo]
+        try:
+            self.run([self.s2v, '-i', vpk, '-f', f'maps/{m.slug}/world.vwrld_c', '-o', m.export, *game,
+                      '--gltf_export_format', 'gltf', '--gltf_textures_adapt', '--gltf_export_extras'], m, show=False)
+        finally:
+            shutil.rmtree(vanilla, ignore_errors=True)
         if not os.path.exists(m.world):
             raise BuildError('Source2Viewer wrote no ' + m.world)
 
@@ -177,14 +217,15 @@ class MapBuilder(Builder):
         work = os.environ.get('DLRIG_WORK') or os.path.join(os.path.dirname(TOOLS), 'heroes')
         out = os.environ.get('DLRIG_OUT') or os.path.join(work, 'out')
         m = MapFiles(slug, work, out)
-        stamp = game_stamp(self.pak, slug)
+        stamp = game_stamp(self.pak, slug, self.mods)
         if not force and built_stamp(out, slug) == stamp:
             log(f'{m.title} is up to date (game version {stamp["game_version"]})')
             log(f'DONE {slug} {m.blend}')
             return
         os.makedirs(m.dir, exist_ok=True)
         open(os.path.join(m.dir, 'build.log'), 'w').close()
-        log(f'== {m.title} ({slug}), game version {stamp["game_version"]}')
+        log(f'== {m.title} ({slug}), game version {stamp["game_version"]}'
+            + ('' if self.mods else ', without mods'))
         # a game update can leave an older export behind
         shutil.rmtree(m.export, ignore_errors=True)
         steps = [('export', self.export), ('rebatch', self.rebatch), ('lighting', self.lighting),
@@ -212,6 +253,8 @@ def main(argv=None):
     ap.add_argument('--out', help='the map goes in <out>/maps/<map>/ (default: heroes/out/)')
     ap.add_argument('--keep', action='store_true', help='keep the export and the rebatched copy')
     ap.add_argument('--force', action='store_true', help='rebuild even if the map is up to date')
+    ap.add_argument('--no-mods', dest='mods', action='store_false',
+                    help="leave out the mods in Deadlock's addons folders (they are in by default, as in the game)")
     args = ap.parse_args(argv)
     args.exports = False
     args.backup = False
