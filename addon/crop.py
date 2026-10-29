@@ -336,8 +336,9 @@ def register():
         name='Frame Step', default=5, min=1, soft_max=50,
         description='Sample the camera every this many frames')
     S.dlr_crop_keep = bpy.props.StringProperty(
-        name='Keep', default='backdrop, sky, cloud',
-        description='Map objects whose name has one of these words are never cropped (comma separated)')
+        name='Keep', default='',
+        description=('Map objects whose name has one of these words are never cropped (comma separated, e.g. '
+                     'backdrop for the skyline buildings)'))
 
 
 def unregister():
