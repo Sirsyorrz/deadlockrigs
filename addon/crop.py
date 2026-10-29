@@ -5,6 +5,8 @@ scene's frame range.
 Nothing is deleted until Delete Cropped: hidden objects keep their mesh, and a cut object keeps its whole mesh (with a
 fake user) under the 'dlr_crop_mesh' property, so Restore Map can put everything back.
 """
+import re
+
 import bmesh
 import bpy
 import numpy as np
@@ -12,6 +14,14 @@ import numpy as np
 BOX = 'dlr_crop_box'
 ORIGINAL = 'dlr_crop_mesh'
 HIDDEN = 'dlr_crop_hidden'
+
+# map objects are named <cell>__<material>; these match the start of the material
+KEEP_KINDS = (
+    ('SKYLINE', 'Skyline Buildings', 'The backdrop buildings and their signs', r'backdrop_'),
+    ('CLOUDS', 'Sky Clouds', 'The cloud funnels and rings in the sky', r'(cloud_funnel|funnelcloud|cloud_ring)'),
+    ('SMOKE', 'Smoke', 'Chimney smoke and factory pollution clouds', r'(chimney_smoke|campus_smoke|factory_pollution)'),
+    ('FOG', 'Fog Planes', 'Flat fog cards', r'fog_plane'),
+)
 
 
 def map_collections(scene):
@@ -27,9 +37,13 @@ def map_meshes(scene):
                 yield ob
 
 
-def is_backdrop(ob, words):
-    name = ob.name.lower()
-    return any(w in name for w in words)
+def keep_pattern(kinds):
+    parts = [pattern for ident, _, _, pattern in KEEP_KINDS if ident in kinds]
+    return re.compile('|'.join(parts)) if parts else None
+
+
+def is_kept(ob, pattern):
+    return pattern is not None and pattern.match(ob.name.lower().split('__', 1)[-1]) is not None
 
 
 def original_mesh(ob):
@@ -149,15 +163,16 @@ def restore(ob):
         set_hidden(ob, False)
 
 
-def crop(scene, region_codes, whole_objects, keep_words):
+def crop(scene, region_codes, whole_objects, keep):
     """region_codes(points) -> list of outcode arrays, one per region; a face stays if it is inside any.
     Returns (triangles kept, triangles before)."""
     kept = total = 0
+    keep_re = keep_pattern(keep)
     for ob in list(map_meshes(scene)):
         whole = original_mesh(ob)
         tris = sum(len(p.vertices) - 2 for p in whole.polygons)
         total += tris
-        if is_backdrop(ob, keep_words):
+        if is_kept(ob, keep_re):
             restore(ob)
             kept += tris
             continue
@@ -181,8 +196,20 @@ def crop(scene, region_codes, whole_objects, keep_words):
     return kept, total
 
 
-def keep_words(scene):
-    return [w.strip().lower() for w in scene.dlr_crop_keep.split(',') if w.strip()]
+class DLR_PT_crop_keep(bpy.types.Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+    bl_label = 'Never Crop'
+
+    def draw(self, context):
+        col = self.layout.column(align=True)
+        col.label(text='Never Crop')
+        col.prop(context.scene, 'dlr_crop_keep_kinds', expand=True)
+
+
+def keep_summary(scene):
+    names = [name for ident, name, _, _ in KEEP_KINDS if ident in scene.dlr_crop_keep_kinds]
+    return ', '.join(names) if names else 'Nothing'
 
 
 class DLR_OT_crop_add_box(bpy.types.Operator):
@@ -231,7 +258,7 @@ class DLR_OT_crop_boxes(CropOperator):
         def regions(points):
             return [outcodes_box(points, box, sc.dlr_crop_margin) for box in boxes]
 
-        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', keep_words(sc)))
+        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', sc.dlr_crop_keep_kinds))
         return {'FINISHED'}
 
 
@@ -252,7 +279,7 @@ class DLR_OT_crop_camera(CropOperator):
         def regions(points):
             return [outcodes_camera(points, v, fov) for v in views]
 
-        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', keep_words(sc)))
+        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', sc.dlr_crop_keep_kinds))
         return {'FINISHED'}
 
 
@@ -309,13 +336,15 @@ def draw(layout, context):
     col.prop(sc, 'dlr_crop_margin')
     col.prop(sc, 'dlr_crop_fov_margin')
     col.prop(sc, 'dlr_crop_step')
-    col.prop(sc, 'dlr_crop_keep', text='Keep')
+    row = col.row(align=True)
+    row.label(text='Keep:')
+    row.popover('DLR_PT_crop_keep', text=keep_summary(sc))
     row = box.row(align=True)
     row.operator('dlr.crop_restore', icon='LOOP_BACK')
     row.operator('dlr.crop_delete', icon='TRASH')
 
 
-CLASSES = (DLR_OT_crop_add_box, DLR_OT_crop_boxes, DLR_OT_crop_camera, DLR_OT_crop_restore, DLR_OT_crop_delete)
+CLASSES = (DLR_PT_crop_keep, DLR_OT_crop_add_box, DLR_OT_crop_boxes, DLR_OT_crop_camera, DLR_OT_crop_restore, DLR_OT_crop_delete)
 
 
 def register():
@@ -335,14 +364,14 @@ def register():
     S.dlr_crop_step = bpy.props.IntProperty(
         name='Frame Step', default=5, min=1, soft_max=50,
         description='Sample the camera every this many frames')
-    S.dlr_crop_keep = bpy.props.StringProperty(
-        name='Keep', default='',
-        description=('Map objects whose name has one of these words are never cropped (comma separated, e.g. '
-                     'backdrop for the skyline buildings)'))
+    S.dlr_crop_keep_kinds = bpy.props.EnumProperty(
+        name='Keep', options={'ENUM_FLAG'}, default=set(),
+        items=[(ident, name, desc, 1 << i) for i, (ident, name, desc, _) in enumerate(KEEP_KINDS)],
+        description='Map parts that are never cropped')
 
 
 def unregister():
-    for name in ('dlr_crop_mode', 'dlr_crop_margin', 'dlr_crop_fov_margin', 'dlr_crop_step', 'dlr_crop_keep'):
+    for name in ('dlr_crop_mode', 'dlr_crop_margin', 'dlr_crop_fov_margin', 'dlr_crop_step', 'dlr_crop_keep_kinds'):
         delattr(bpy.types.Scene, name)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)

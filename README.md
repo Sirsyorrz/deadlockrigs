@@ -85,8 +85,8 @@ Works in EEVEE and Cycles. Cycles loads the whole visible map with full size tex
 
 **Crop.** With a map in the scene, the Map section can cut it down to what a shot needs, which makes the viewport and
 renders much faster: Add Crop Box and Crop to Boxes keep what is inside the boxes, Crop to Camera keeps what the scene
-camera sees over the frame range. Objects across the edge keep the polygons that reach in. Objects with a Keep word
-in their name (e.g. backdrop for the skyline buildings) are never cropped. Restore Map undoes it; Delete
+camera sees over the frame range. Objects across the edge keep the polygons that reach in. The Keep dropdown picks
+map parts that are never cropped (skyline buildings, sky clouds, smoke, fog planes). Restore Map undoes it; Delete
 Cropped removes the cropped parts for good to make the file smaller.
 
 ## Help
