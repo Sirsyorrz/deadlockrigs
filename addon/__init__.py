@@ -91,8 +91,9 @@ _map_state = {}
 
 
 def map_state(slug, context):
-    """'missing', 'current', 'outdated' (the game or the map changed since the build), 'mods' (built with the other
-    Include Mods setting), or 'unknown' when the game isn't found. Cached: it reads the Steam library list."""
+    """'missing', 'current', 'outdated' (the game or the map changed since the build), 'old' (built by an earlier
+    add-on with a bug fixed since), 'mods' (built with the other Include Mods setting), or 'unknown' when the game
+    isn't found. Cached: it reads the Steam library list."""
     if slug not in _map_state:
         mapbuild = tools_module('mapbuild')
         built = mapbuild.built_stamp(output_dir(context), slug)
@@ -107,6 +108,8 @@ def map_state(slug, context):
                     state = 'current'
                 elif mapbuild.game_stamp(pak, slug, not mods) == built:
                     state = 'mods'
+                elif built.get('builder', 1) < mapbuild.BUILDER:
+                    state = 'old'
                 else:
                     state = 'outdated'
             except Exception:
@@ -252,7 +255,7 @@ def start(context, slug, kind):
     global _job
     p = prefs(context)
     if kind == 'MAP':
-        cmd = [sys.executable, os.path.join(tools_dir(), 'mapbuild.py'), slug]
+        cmd = [sys.executable, os.path.join(tools_dir(), 'mapbuild.py'), slug, '--force']
     else:
         steps = ['export_anims'] if kind == 'ANIMS' else \
             ['extract', 'data', 'base', 'rig'] + ([] if p.keep_build_files else ['clean'])
@@ -509,6 +512,7 @@ def draw_job(layout, context, name):
 MAP_STATE_TEXT = {'missing': ('Not built yet', 'INFO'), 'current': ('Up to date (game {})', 'CHECKMARK'),
                   'outdated': ('Game updated since build {}, rebuild', 'ERROR'),
                   'mods': ('Built with mods {}, rebuild', 'ERROR'),
+                  'old': ('Built by an older add-on, rebuild', 'ERROR'),
                   'unknown': ('Built for game {}', 'INFO')}
 
 
@@ -530,7 +534,7 @@ class DLR_PT_map(bpy.types.Panel):
         state, version = map_state(slug, context)
         row = col.row()
         row.enabled = not busy
-        row.operator('dlr.build', text='Rebuild Map' if state in ('outdated', 'mods') else 'Build Map',
+        row.operator('dlr.build', text='Rebuild Map' if state in ('outdated', 'mods', 'old') else 'Build Map',
                      icon='WORLD').kind = 'MAP'
         row = col.row()
         row.enabled = not busy

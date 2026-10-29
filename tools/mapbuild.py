@@ -59,9 +59,14 @@ def game_version(pak):
     return ''
 
 
+# raised when a change to the build makes earlier builds wrong, so they show as needing a rebuild
+BUILDER = 2
+
+
 def game_stamp(pak, slug, mods=True):
     vpk = os.stat(map_vpk(pak, slug))
-    stamp = {'game_version': game_version(pak), 'vpk_size': vpk.st_size, 'vpk_mtime': int(vpk.st_mtime)}
+    stamp = {'game_version': game_version(pak), 'vpk_size': vpk.st_size, 'vpk_mtime': int(vpk.st_mtime),
+             'builder': BUILDER}
     if not mods:
         stamp['mods'] = False
     return stamp
