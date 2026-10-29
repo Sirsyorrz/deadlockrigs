@@ -75,6 +75,38 @@ def rig_path(slug, context=None):
     return os.path.join(output_dir(context), slug, f'{slug}_rig.blend')
 
 
+def tools_module(name):
+    if tools_dir() not in sys.path:
+        sys.path.insert(0, tools_dir())
+    return __import__(name)
+
+
+def map_path(slug, context=None):
+    return os.path.join(output_dir(context), 'maps', slug, f'{slug}.blend')
+
+
+_map_state = {}
+
+
+def map_state(slug, context):
+    """'missing', 'current' or 'outdated' (the game or the map changed since the build), or 'unknown' when the
+    game isn't found. Cached: it reads the Steam library list."""
+    if slug not in _map_state:
+        mapbuild = tools_module('mapbuild')
+        built = mapbuild.built_stamp(output_dir(context), slug)
+        if built is None:
+            state = 'missing'
+        else:
+            try:
+                given = prefs(context).deadlock_dir
+                pak = mapbuild.find_pak(bpy.path.abspath(given) if given else None)
+                state = 'current' if mapbuild.game_stamp(pak, slug) == built else 'outdated'
+            except Exception:
+                state = 'unknown'
+        _map_state[slug] = (state, (built or {}).get('game_version', ''))
+    return _map_state[slug]
+
+
 # ---------------------------------------------------------------- preferences
 
 class DLR_Preferences(bpy.types.AddonPreferences):
@@ -132,7 +164,9 @@ class Job:
 
     STEP_TEXT = {'extract': 'Extracting from the game', 'data': 'Reading cloth and face data',
                  'base': 'Importing the model', 'rig': 'Building the rig', 'export_anims': 'Exporting animations',
-                 'anims': 'Importing animations into Blender', 'clean': 'Cleaning up'}
+                 'anims': 'Importing animations into Blender', 'clean': 'Cleaning up',
+                 'map_export': 'Exporting the map from the game', 'map_rebatch': 'Merging the map objects',
+                 'map_import': 'Importing the map into Blender'}
 
     def poll(self):
         while True:
@@ -191,6 +225,7 @@ def tick():
     redraw()
     if not _job.done:
         return 0.25
+    _map_state.clear()
     if _job.ok and _job.kind == 'RIG':
         after = bpy.context.scene.dlr_after
         path = rig_path(_job.slug)
@@ -204,18 +239,19 @@ def tick():
 def start(context, slug, kind):
     global _job
     p = prefs(context)
-    if kind == 'RIG':
-        steps = ['extract', 'data', 'base', 'rig'] + ([] if p.keep_build_files else ['clean'])
+    if kind == 'MAP':
+        cmd = [sys.executable, os.path.join(tools_dir(), 'mapbuild.py'), slug]
     else:
-        steps = ['export_anims']
-    cmd = [sys.executable, os.path.join(tools_dir(), 'pipeline.py'), slug, *steps,
-           '--blender', bpy.app.binary_path, '--python', sys.executable,
-           '--work', user_dir('work'), '--out', output_dir(context), '--s2v-cache', user_dir('s2v'), '--backup']
+        steps = ['export_anims'] if kind == 'ANIMS' else \
+            ['extract', 'data', 'base', 'rig'] + ([] if p.keep_build_files else ['clean'])
+        cmd = [sys.executable, os.path.join(tools_dir(), 'pipeline.py'), slug, *steps, '--backup']
+    cmd += ['--blender', bpy.app.binary_path, '--python', sys.executable,
+            '--work', user_dir('work'), '--out', output_dir(context), '--s2v-cache', user_dir('s2v')]
     if p.deadlock_dir:
         cmd += ['--pak', bpy.path.abspath(p.deadlock_dir)]
     if p.s2v_path:
         cmd += ['--s2v', bpy.path.abspath(p.s2v_path)]
-    if p.exports:
+    if p.exports and kind != 'MAP':
         cmd.append('--exports')
     if p.keep_build_files:
         cmd.append('--keep')
@@ -270,6 +306,18 @@ def append_rig(path, slug):
     register_rig_ui()
 
 
+def append_map(path, slug):
+    with bpy.data.libraries.load(path) as (src, dst):
+        dst.collections = [c for c in src.collections if c == tools_module('mapbuild').MAPS[slug]]
+    scene = bpy.context.scene
+    for c in dst.collections:
+        scene.collection.children.link(c)
+        # the Map Crop add-on (Deadlock Map Optimizer) works on one collection; point it at this one
+        if hasattr(scene, 'mapcrop'):
+            scene.mapcrop.source = c
+    return dst.collections
+
+
 # ---------------------------------------------------------------- operators and panel
 
 class DLR_OT_build(bpy.types.Operator):
@@ -277,10 +325,13 @@ class DLR_OT_build(bpy.types.Operator):
     bl_label = 'Build Rig'
     bl_description = "Build the hero's rig from your Deadlock install"
 
-    kind: bpy.props.EnumProperty(items=[('RIG', 'Rig', ''), ('ANIMS', 'Animations', '')])
+    kind: bpy.props.EnumProperty(items=[('RIG', 'Rig', ''), ('ANIMS', 'Animations', ''), ('MAP', 'Map', '')])
 
     @classmethod
     def description(cls, context, props):
+        if props.kind == 'MAP':
+            return ('Export the map from your Deadlock install into a .blend (about 10 minutes and 12 GB of free '
+                    'space while building). Rebuilt only after a game update')
         if props.kind == 'ANIMS':
             return ("Save the hero's game animations as a .glb, and as a .blend next to the rig that its "
                     'Game Animations panel loads from')
@@ -291,8 +342,9 @@ class DLR_OT_build(bpy.types.Operator):
         return _job is None or _job.done
 
     def execute(self, context):
+        slug = context.scene.dlr_map if self.kind == 'MAP' else context.scene.dlr_hero
         try:
-            start(context, context.scene.dlr_hero, self.kind)
+            start(context, slug, self.kind)
         except (OSError, RuntimeError) as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
@@ -332,6 +384,23 @@ class DLR_OT_open(bpy.types.Operator):
         if not self.append and bpy.data.is_dirty:
             return context.window_manager.invoke_confirm(self, event, message='Unsaved changes will be lost')
         return self.execute(context)
+
+
+class DLR_OT_append_map(bpy.types.Operator):
+    bl_idname = 'dlr.append_map'
+    bl_label = 'Append Map'
+    bl_description = 'Append the built map into this scene'
+
+    def execute(self, context):
+        slug = context.scene.dlr_map
+        path = map_path(slug, context)
+        if not os.path.exists(path):
+            self.report({'ERROR'}, f'No map built yet at {path}')
+            return {'CANCELLED'}
+        if any(c.get('dlr_map') == slug for c in context.scene.collection.children_recursive):
+            self.report({'WARNING'}, 'This scene already has the map; appending another copy')
+        append_map(path, slug)
+        return {'FINISHED'}
 
 
 class DLR_OT_show_log(bpy.types.Operator):
@@ -390,23 +459,8 @@ class DLR_PT_main(bpy.types.Panel):
         sub.enabled = not busy
         sub.operator('dlr.build', text='Export Animations', icon='ACTION').kind = 'ANIMS'
 
-        if _job is not None and _job.slug == sc.dlr_hero:
-            box = layout.box()
-            if busy:
-                box.progress(factor=_job.progress, type='BAR', text=_job.status)
-                box.operator('dlr.cancel', icon='X')
-            elif _job.ok:
-                box.label(text=f'{hero_name(_job.slug)}: done', icon='CHECKMARK')
-            else:
-                box.label(text=f'{hero_name(_job.slug)}: failed', icon='ERROR')
-                # labels cut long text, so wrap it to the sidebar's width
-                width = max(20, int(context.region.width / (7 * context.preferences.system.ui_scale)))
-                lines = [w for ln in (_job.error or 'see the build log').split('\n')[:4]
-                         for w in textwrap.wrap(ln, width)]
-                col = box.column(align=True)
-                for line in lines[:8]:
-                    col.label(text=line)
-                box.operator('dlr.show_log', icon='TEXT')
+        if _job is not None and _job.kind != 'MAP' and _job.slug == sc.dlr_hero:
+            draw_job(layout, context, hero_name(_job.slug))
 
         path = rig_path(sc.dlr_hero, context)
         if os.path.exists(path):
@@ -416,14 +470,75 @@ class DLR_PT_main(bpy.types.Panel):
         layout.operator('dlr.open_folder', icon='FOLDER_REDIRECT')
 
 
-CLASSES = (DLR_Preferences, DLR_OT_build, DLR_OT_cancel, DLR_OT_open, DLR_OT_show_log, DLR_OT_open_folder,
-           DLR_PT_main)
+def draw_job(layout, context, name):
+    box = layout.box()
+    if not _job.done:
+        box.progress(factor=_job.progress, type='BAR', text=_job.status)
+        box.operator('dlr.cancel', icon='X')
+    elif _job.ok:
+        box.label(text=f'{name}: done', icon='CHECKMARK')
+    else:
+        box.label(text=f'{name}: failed', icon='ERROR')
+        # labels cut long text, so wrap it to the sidebar's width
+        width = max(20, int(context.region.width / (7 * context.preferences.system.ui_scale)))
+        lines = [w for ln in (_job.error or 'see the build log').split('\n')[:4] for w in textwrap.wrap(ln, width)]
+        col = box.column(align=True)
+        for line in lines[:8]:
+            col.label(text=line)
+        box.operator('dlr.show_log', icon='TEXT')
+
+
+MAP_STATE_TEXT = {'missing': ('Not built yet', 'INFO'), 'current': ('Up to date (game {})', 'CHECKMARK'),
+                  'outdated': ('Game updated since build {}, rebuild', 'ERROR'),
+                  'unknown': ('Built for game {}', 'INFO')}
+
+
+class DLR_PT_map(bpy.types.Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Deadlock Rigs'
+    bl_label = 'Map'
+    bl_parent_id = 'DLR_PT_main'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        sc = context.scene
+        slug = sc.dlr_map
+        col = layout.column(align=True)
+        col.prop(sc, 'dlr_map', text='')
+        busy = _job is not None and not _job.done
+        state, version = map_state(slug, context)
+        row = col.row()
+        row.enabled = not busy
+        row.operator('dlr.build', text='Rebuild Map' if state == 'outdated' else 'Build Map',
+                     icon='WORLD').kind = 'MAP'
+        text, icon = MAP_STATE_TEXT[state]
+        layout.label(text=text.format(version), icon=icon)
+        if _job is not None and _job.kind == 'MAP' and _job.slug == slug:
+            draw_job(layout, context, tools_module('mapbuild').MAPS[slug])
+        if state != 'missing':
+            layout.operator('dlr.append_map', icon='APPEND_BLEND')
+
+
+_map_items = []
+
+
+def map_items(self, context):
+    if not _map_items:
+        _map_items.extend((slug, title, '') for slug, title in tools_module('mapbuild').MAPS.items())
+    return _map_items
+
+
+CLASSES = (DLR_Preferences, DLR_OT_build, DLR_OT_cancel, DLR_OT_open, DLR_OT_append_map, DLR_OT_show_log,
+           DLR_OT_open_folder, DLR_PT_main, DLR_PT_map)
 
 
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
     bpy.types.Scene.dlr_hero = bpy.props.EnumProperty(name='Hero', items=hero_items)
+    bpy.types.Scene.dlr_map = bpy.props.EnumProperty(name='Map', items=map_items)
     bpy.types.Scene.dlr_after = bpy.props.EnumProperty(
         name='After building', default='OPEN',
         items=[('OPEN', 'Then Open', 'Open the rig when it is built'),
@@ -438,6 +553,7 @@ def unregister():
     if on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load)
     del bpy.types.Scene.dlr_hero
+    del bpy.types.Scene.dlr_map
     del bpy.types.Scene.dlr_after
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)

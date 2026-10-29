@@ -23,7 +23,8 @@ DIST = os.path.join(ROOT, 'dist')
 # what the build runs; the rest of tools/ is for developing and checking rigs
 ADDON_TOOLS = ['pipeline.py', 'hero.py', 'vmdl_extract.py', 'gamerig.py', 'fe_extract.py', 'dump.py', 'keys.py',
                'facegeo.py', 'morphs.py', 'bonekeys.py', 'build.py', 'bodygroups.py', 'collar.py', 'tongue_mesh.py',
-               'rig.py', 'rig_ui.py', 'expressions.py', 'hands.py', 'mirror.py', 'anims.py']
+               'rig.py', 'rig_ui.py', 'expressions.py', 'hands.py', 'mirror.py', 'anims.py', 'mapbuild.py',
+               'map_rebatch.py', 'map_import.py']
 SCIPY = 'scipy>=1.16,<1.17'
 # Blender 5.1+ runs Python 3.13
 WHEEL_PLATFORMS = {

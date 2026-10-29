@@ -52,6 +52,20 @@ yourself, allow "Run Python Scripts" so that panel loads.
 Settings are in Preferences > Add-ons > Deadlock Rigs: output folder, Deadlock folder (found through Steam when
 empty), an existing Source2Viewer-CLI, saving the model as `.glb`/`.fbx` too, and keeping build files for bug reports.
 
+## Maps
+
+The Map section of the panel builds Midtown or the Hideout from your own install, so it matches your game version.
+Build Map exports the map with Source2Viewer and merges its ~30,000 objects into one mesh per 100 m cell and material
+(same triangles, UVs and materials), then saves `Documents/DeadlockRigs/maps/<map>/<map>.blend` with a `textures`
+folder next to it. Midtown takes about 8 minutes and needs about 12 GB free while building; the result is 2.6 GB. The
+panel shows when a game update has made the map outdated, and building again skips an up-to-date map.
+
+Append Map adds the map's collection to the open scene, with the game's sun direction as a Sun light (its brightness
+isn't in the game files, so it starts at 4). The map is at its game position; rigs are at the origin, so move the rig
+or the map. To cut the map down to the part you need, use
+[Deadlock Map Optimizer](https://github.com/Miruneko0/Deadlock-Map-Optimizer) (Map Crop); Append Map sets its Map
+collection for you.
+
 ## Help
 
 Questions, bug reports and requests: the [DeadlockForge Discord](https://discord.gg/DkwQ2baWfb). When reporting a

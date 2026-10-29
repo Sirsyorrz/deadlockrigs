@@ -1,0 +1,154 @@
+"""Builds a Blender scene of a Deadlock map from the user's install. Runs on Windows, Linux and macOS; the add-on
+calls it too.
+
+python tools/mapbuild.py <map> [options]
+
+  export    the map's world as glTF with textures (Source2Viewer)
+  rebatch   one mesh per grid cell and material instead of ~30,000 objects (map_rebatch.py)
+  import    <out>/maps/<map>/<map>.blend, textures in textures/ next to it
+
+The map is rebuilt only when the game's version or the map's archive changed since the last build (or with --force).
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, TOOLS)
+from pipeline import Builder, BuildError, find_pak, log  # noqa: E402
+
+MAPS = {'dl_midtown': 'Midtown', 'dl_hideout': 'Hideout'}
+# the export, rebatched copy and saved scene of Midtown take about 11 GB together
+NEEDED_GB = 12
+
+
+class MapFiles:
+    def __init__(self, slug, work, out):
+        self.slug = slug
+        self.title = MAPS[slug]
+        self.dir = os.path.join(work, 'maps', slug)
+        self.out = os.path.join(out, 'maps', slug)
+        self.export = os.path.join(self.dir, 'export')
+        self.world = os.path.join(self.export, 'maps', slug, 'world.gltf')
+        self.rebatched = os.path.join(self.dir, 'rebatched', slug + '.gltf')
+        self.blend = os.path.join(self.out, slug + '.blend')
+        self.stamp_file = os.path.join(self.out, 'map.json')
+
+
+def map_vpk(pak, slug):
+    path = os.path.join(os.path.dirname(pak), 'maps', slug + '.vpk')
+    if not os.path.exists(path):
+        raise BuildError(f'no {slug}.vpk in {os.path.dirname(path)}')
+    return path
+
+
+def game_version(pak):
+    try:
+        with open(os.path.join(os.path.dirname(pak), 'steam.inf'), encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('ClientVersion='):
+                    return line.split('=', 1)[1].strip()
+    except OSError:
+        pass
+    return ''
+
+
+def game_stamp(pak, slug):
+    vpk = os.stat(map_vpk(pak, slug))
+    return {'game_version': game_version(pak), 'vpk_size': vpk.st_size, 'vpk_mtime': int(vpk.st_mtime)}
+
+
+def built_stamp(out, slug):
+    """The stamp of the last build in <out>, or None."""
+    m = MapFiles(slug, out, out)
+    if not os.path.exists(m.blend):
+        return None
+    try:
+        return json.load(open(m.stamp_file, encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+
+
+class MapBuilder(Builder):
+    def export(self, m):
+        if os.path.exists(m.world):
+            return
+        os.makedirs(m.dir, exist_ok=True)
+        free = shutil.disk_usage(m.dir).free / 1e9
+        if free < NEEDED_GB:
+            raise BuildError(f'building {m.title} needs about {NEEDED_GB} GB free, {free:.0f} GB left on the drive '
+                             f'with {m.dir}')
+        self.run([self.s2v, '-i', map_vpk(self.pak, m.slug), '-f', f'maps/{m.slug}/world.vwrld_c', '-o', m.export,
+                  '--gltf_export_format', 'gltf', '--gltf_textures_adapt'], m, show=False)
+        if not os.path.exists(m.world):
+            raise BuildError('Source2Viewer wrote no ' + m.world)
+
+    def rebatch(self, m):
+        self.run([self.python, os.path.join(TOOLS, 'map_rebatch.py'), m.world, m.rebatched], m)
+
+    def import_(self, m):
+        os.makedirs(m.out, exist_ok=True)
+        tmp = m.blend[:-len('.blend')] + '.new.blend'
+        self.run([self.blender, '-b', '--factory-startup', '--python-exit-code', '1',
+                  '-P', os.path.join(TOOLS, 'map_import.py'), '--', m.rebatched, tmp, m.slug, m.title,
+                  game_version(self.pak)], m, env=self.blender_env(m))
+        if not os.path.exists(tmp):
+            raise BuildError('map_import.py wrote no ' + tmp)
+        os.replace(tmp, m.blend)
+        for f in (tmp + '1', m.blend + '1'):
+            if os.path.exists(f):
+                os.remove(f)
+
+    def build_map(self, slug, force=False):
+        work = os.environ.get('DLRIG_WORK') or os.path.join(os.path.dirname(TOOLS), 'heroes')
+        out = os.environ.get('DLRIG_OUT') or os.path.join(work, 'out')
+        m = MapFiles(slug, work, out)
+        stamp = game_stamp(self.pak, slug)
+        if not force and built_stamp(out, slug) == stamp:
+            log(f'{m.title} is up to date (game version {stamp["game_version"]})')
+            log(f'DONE {slug} {m.blend}')
+            return
+        os.makedirs(m.dir, exist_ok=True)
+        open(os.path.join(m.dir, 'build.log'), 'w').close()
+        log(f'== {m.title} ({slug}), game version {stamp["game_version"]}')
+        # a game update can leave an older export behind
+        shutil.rmtree(m.export, ignore_errors=True)
+        steps = [('export', self.export), ('rebatch', self.rebatch), ('import', self.import_)]
+        for i, (name, step) in enumerate(steps):
+            log(f'STEP {i + 1}/{len(steps)} map_{name}')
+            step(m)
+        json.dump(stamp, open(m.stamp_file, 'w', encoding='utf-8'))
+        if not self.keep:
+            shutil.rmtree(os.path.join(m.dir, 'export'), ignore_errors=True)
+            shutil.rmtree(os.path.dirname(m.rebatched), ignore_errors=True)
+        log(f'DONE {slug} {m.blend}')
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('map', choices=sorted(MAPS))
+    ap.add_argument('--blender')
+    ap.add_argument('--s2v')
+    ap.add_argument('--s2v-cache', help='where a downloaded Source2Viewer-CLI is kept')
+    ap.add_argument('--pak', help="Deadlock's folder or its game/citadel/pak01_dir.vpk")
+    ap.add_argument('--python', help='Python with numpy (default: this one)')
+    ap.add_argument('--work', help='build files (default: heroes/)')
+    ap.add_argument('--out', help='the map goes in <out>/maps/<map>/ (default: heroes/out/)')
+    ap.add_argument('--keep', action='store_true', help='keep the export and the rebatched copy')
+    ap.add_argument('--force', action='store_true', help='rebuild even if the map is up to date')
+    args = ap.parse_args(argv)
+    args.exports = False
+    args.backup = False
+    try:
+        MapBuilder(args).build_map(args.map, args.force)
+    except (BuildError, subprocess.CalledProcessError, OSError) as e:
+        log(f'ERROR {args.map}: {e}')
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
