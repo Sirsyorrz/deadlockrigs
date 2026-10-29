@@ -46,7 +46,7 @@ DEFAULT_STEPS = ['extract', 'data', 'base', 'rig']
 DEV_STEPS = ['extract', 'data', 'base', 'anims', 'rig', 'test']
 ALL_STEPS = DEV_STEPS + ['export_anims', 'clean']
 # Blender output worth showing; the rest goes to the build log
-SHOW = re.compile(r'^(meshes|shape keys|wrote|mesh without|collar|IK |skipping|WARNING|twist|mirror|clips|'
+SHOW = re.compile(r'^(meshes|baked light|fog:|materials:|shape keys|wrote|mesh without|collar|IK |skipping|WARNING|twist|mirror|clips|'
                   r'(morph|bone) keys|dumped|tails|PASS|FAIL)|Error|Traceback')
 
 

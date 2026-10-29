@@ -12,6 +12,8 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
+from . import crop, look
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -166,7 +168,7 @@ class Job:
                  'base': 'Importing the model', 'rig': 'Building the rig', 'export_anims': 'Exporting animations',
                  'anims': 'Importing animations into Blender', 'clean': 'Cleaning up',
                  'map_export': 'Exporting the map from the game', 'map_rebatch': 'Merging the map objects',
-                 'map_import': 'Importing the map into Blender'}
+                 'map_lighting': 'Exporting the lighting, sky and fog', 'map_import': 'Importing the map into Blender'}
 
     def poll(self):
         while True:
@@ -307,14 +309,18 @@ def append_rig(path, slug):
 
 
 def append_map(path, slug):
+    """Appends the map's collection, makes its sky the scene's world and turns on the game's tonemapping."""
+    title = tools_module('mapbuild').MAPS[slug]
     with bpy.data.libraries.load(path) as (src, dst):
-        dst.collections = [c for c in src.collections if c == tools_module('mapbuild').MAPS[slug]]
+        dst.collections = [c for c in src.collections if c == title]
+        dst.worlds = [w for w in src.worlds if w == f'{title} sky']
     scene = bpy.context.scene
     for c in dst.collections:
         scene.collection.children.link(c)
-        # the Map Crop add-on (Deadlock Map Optimizer) works on one collection; point it at this one
-        if hasattr(scene, 'mapcrop'):
-            scene.mapcrop.source = c
+    if dst.worlds:
+        scene.world = dst.worlds[0]
+    look.enable(scene)
+    look.show_in_viewport(bpy.context)
     return dst.collections
 
 
@@ -519,6 +525,9 @@ class DLR_PT_map(bpy.types.Panel):
             draw_job(layout, context, tools_module('mapbuild').MAPS[slug])
         if state != 'missing':
             layout.operator('dlr.append_map', icon='APPEND_BLEND')
+        look.draw(layout, context)
+        if crop.map_collections(sc):
+            crop.draw(layout, context)
 
 
 _map_items = []
@@ -545,11 +554,15 @@ def register():
                ('APPEND', 'Then Append', 'Append the rig into this scene when it is built'),
                ('NONE', 'Just Save', 'Only save it to the output folder')])
     bpy.app.handlers.load_post.append(on_load)
+    crop.register()
+    look.register()
 
 
 def unregister():
     if _job:
         _job.cancel()
+    look.unregister()
+    crop.unregister()
     if on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load)
     del bpy.types.Scene.dlr_hero

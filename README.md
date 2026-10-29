@@ -56,15 +56,34 @@ empty), an existing Source2Viewer-CLI, saving the model as `.glb`/`.fbx` too, an
 
 The Map section of the panel builds Midtown or the Hideout from your own install, so it matches your game version.
 Build Map exports the map with Source2Viewer and merges its ~30,000 objects into one mesh per 100 m cell and material
-(same triangles, UVs and materials), then saves `Documents/DeadlockRigs/maps/<map>/<map>.blend` with a `textures`
-folder next to it. Midtown takes about 8 minutes and needs about 12 GB free while building; the result is 2.6 GB. The
-panel shows when a game update has made the map outdated, and building again skips an up-to-date map.
+(same triangles, material UVs and materials), then saves `Documents/DeadlockRigs/maps/<map>/<map>.blend` with
+`textures` and `lightmaps` folders next to it. Midtown takes about 11 minutes and needs about 12 GB free while
+building; the result is about 3.5 GB. The panel shows when a game update has made the map outdated, and building again
+skips an up-to-date map.
 
-Append Map adds the map's collection to the open scene, with the game's sun direction as a Sun light (its brightness
-isn't in the game files, so it starts at 4). The map is at its game position; rigs are at the origin, so move the rig
-or the map. To cut the map down to the part you need, use
-[Deadlock Map Optimizer](https://github.com/Miruneko0/Deadlock-Map-Optimizer) (Map Crop); Append Map sets its Map
-collection for you.
+Append Map adds the map's collection to the open scene, makes the map's sky the scene's world and turns on Game
+Look. The map is at its game position; rigs are at the origin, so move the rig or the map.
+
+**Lighting.** The map is lit the way the game lights it, from its own files: surfaces with lightmaps get the baked
+lightmap, props get the map's light probe volumes (sampled per vertex when the map is built), unlit materials show
+their colour as is, and signs and windows glow at the game's self-illumination strength. The baked light is emission
+on top of each material, so lights you add still light the map; its strength is the Baked light strength value in the
+`Deadlock baked light` node group. The map's sun comes in at the game's strength (the Hideout's); where the game has
+none (Midtown), a Sun light from the game's sun direction lights only the rigs. The map's distance and height fog
+are in the `Deadlock fog` node group (Fog strength), and the sky is the scene's world, seen by the camera only.
+
+**Game Look** (Map section) puts the game's tonemapping on the scene: its compositor gets the game's exposure and
+filmic curve, and the view transform is set to Standard. That is most of what makes a render look like Deadlock
+rather than Blender. Click it again to go back to your previous view settings.
+
+Works in EEVEE and Cycles. Cycles loads the whole visible map with full size textures, which runs out of memory on
+32 GB for Midtown: crop the map to the shot first and set Render > Simplify > Texture Limit to 1024 or 2048.
+
+**Crop.** With a map in the scene, the Map section can cut it down to what a shot needs, which makes the viewport and
+renders much faster: Add Crop Box and Crop to Boxes keep what is inside the boxes, Crop to Camera keeps what the scene
+camera sees over the frame range. Objects across the edge keep the polygons that reach in. Objects with a Keep word
+in their name (the skyline backdrop, sky and clouds by default) are never cropped. Restore Map undoes it; Delete
+Cropped removes the cropped parts for good to make the file smaller.
 
 ## Help
 

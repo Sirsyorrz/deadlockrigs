@@ -24,7 +24,7 @@ DIST = os.path.join(ROOT, 'dist')
 ADDON_TOOLS = ['pipeline.py', 'hero.py', 'vmdl_extract.py', 'gamerig.py', 'fe_extract.py', 'dump.py', 'keys.py',
                'facegeo.py', 'morphs.py', 'bonekeys.py', 'build.py', 'bodygroups.py', 'collar.py', 'tongue_mesh.py',
                'rig.py', 'rig_ui.py', 'expressions.py', 'hands.py', 'mirror.py', 'anims.py', 'mapbuild.py',
-               'map_rebatch.py', 'map_import.py']
+               'map_rebatch.py', 'map_import.py', 'map_lighting.py', 'map_environment.py']
 SCIPY = 'scipy>=1.16,<1.17'
 # Blender 5.1+ runs Python 3.13
 WHEEL_PLATFORMS = {
@@ -82,7 +82,8 @@ def addon():
     stage = os.path.join(ROOT, 'build', 'addon')
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(os.path.join(stage, 'tools'))
-    shutil.copy(os.path.join(ROOT, 'addon', '__init__.py'), stage)
+    for f in ('__init__.py', 'crop.py', 'look.py'):
+        shutil.copy(os.path.join(ROOT, 'addon', f), stage)
     for f in ADDON_TOOLS:
         shutil.copy(os.path.join(TOOLS, f), os.path.join(stage, 'tools'))
     shutil.copy(os.path.join(ROOT, 'heroes.json'), stage)

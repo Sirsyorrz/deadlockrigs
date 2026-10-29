@@ -3,9 +3,11 @@
 python tools/map_rebatch.py <world.gltf> <out.gltf> [--cell-size 100] [--max-tris 2000000]
 
 The export has ~30,000 objects, which Blender imports and draws slowly. Every node transform (and the rest pose of
-the few skinned props) is baked into the vertices; triangles, UVs, vertex colours and materials are unchanged. The
-output's buffers go in <out>_bins/ next to it and its images keep the export's URIs, made relative to the output, so
-textures load from where Source2Viewer wrote them.
+the few skinned props) is baked into the vertices; triangles, the material UVs (TEXCOORD_0), vertex colours and
+materials are unchanged. The other UV sets and custom attributes, which no material reads, are left out, except the
+lightmap UVs: those become _LIGHTMAP_UV (u, v flipped for Blender, 1), so a material can tell lightmapped surfaces
+(z = 1) from the rest (z = 0, the attribute is missing). The output's buffers go in <out>_bins/ next to it and its
+images keep the export's URIs, made relative to the output, so textures load from where Source2Viewer wrote them.
 """
 import argparse
 import json
@@ -22,7 +24,8 @@ COMPONENT = {5120: np.int8, 5121: np.uint8, 5122: np.int16, 5123: np.uint16, 512
 WIDTH = {'SCALAR': 1, 'VEC2': 2, 'VEC3': 3, 'VEC4': 4, 'MAT4': 16}
 TYPE = {1: 'SCALAR', 2: 'VEC2', 3: 'VEC3', 4: 'VEC4'}
 TRIANGLES = 4
-SKIN_ATTRS = ('JOINTS_', 'WEIGHTS_')
+KEPT = ('NORMAL', 'TANGENT', 'TEXCOORD_0', 'COLOR_0')
+LIGHTMAP = '_LIGHTMAP_UV'
 
 
 class Source:
@@ -105,10 +108,33 @@ def rest_skins(src, worlds):
 
 class Piece:
     """One primitive placed in the world; holds only what grouping needs, the vertices are re-read on writing."""
-    __slots__ = ('prim', 'world', 'skin', 'tris', 'verts')
+    __slots__ = ('prim', 'world', 'skin', 'tris', 'verts', 'attrs')
 
-    def __init__(self, prim, world, skin, tris, verts):
+    def __init__(self, prim, world, skin, tris, verts, attrs):
         self.prim, self.world, self.skin, self.tris, self.verts = prim, world, skin, tris, verts
+        self.attrs = attrs
+
+
+def lightmap_uv(src, prim):
+    """The attribute holding the primitive's lightmap UVs, or None.
+
+    Source2Viewer writes one buffer view per attribute, in order, for each vertex buffer of a mesh, and only later,
+    while building a lightmapped draw call, the copy of its lightmap UVs scaled by the world's lightmap UV scale. So
+    that copy is the one TEXCOORD_n whose buffer view is not in a run with the other attributes of its vertex buffer.
+    Tied to how the pinned Source2Viewer writes glTF."""
+    at = prim['attributes']
+    views = {name: src.j['accessors'][acc].get('bufferView', -1) for name, acc in at.items()}
+    taken = set(views.values())
+    lo = hi = views['POSITION']
+    while lo - 1 in taken:
+        lo -= 1
+    while hi + 1 in taken:
+        hi += 1
+    outside = [name for name, view in views.items() if not lo <= view <= hi]
+    if any(not name.startswith(('TEXCOORD_', '_')) for name in outside):
+        return None
+    uvs = [name for name in outside if name.startswith('TEXCOORD_')]
+    return uvs[0] if len(uvs) == 1 else None
 
 
 def indices(src, prim):
@@ -164,7 +190,12 @@ def scan(src, cell_size, worlds, skin_mats):
             centre = (a + b) / 2
             # glTF is Y up: the grid is on X and Z
             cell = (math.floor(centre[0] / cell_size), math.floor(centre[2] / cell_size))
-            groups[cell, prim.get('material', -1)].append(Piece(prim, world, skin, len(remap) // 3, len(used)))
+            attrs = {name: at[name] for name in KEPT if name in at}
+            lm = lightmap_uv(src, prim)
+            if lm:
+                attrs[LIGHTMAP] = at[lm]
+            groups[cell, prim.get('material', -1), bool(lm)].append(
+                Piece(prim, world, skin, len(remap) // 3, len(used), attrs))
     return groups, lo, hi, skipped
 
 
@@ -191,9 +222,8 @@ def default(name, width):
 def merge(src, part, skin_mats):
     widths = {}
     for p in part:
-        for name, acc in p.prim['attributes'].items():
-            if name != 'POSITION' and not name.startswith(SKIN_ATTRS):
-                widths[name] = max(widths.get(name, 0), WIDTH[src.j['accessors'][acc]['type']])
+        for name, acc in p.attrs.items():
+            widths[name] = 3 if name == LIGHTMAP else max(widths.get(name, 0), WIDTH[src.j['accessors'][acc]['type']])
     nverts = sum(p.verts for p in part)
     pos = np.empty((nverts, 3), np.float32)
     idx = np.empty(sum(p.tris for p in part) * 3, np.uint32)
@@ -221,11 +251,13 @@ def merge(src, part, skin_mats):
                 return np.einsum('nij,nj->ni', m, vec)
         for name, w in widths.items():
             dest = attrs[name][v:v + n]
-            if name not in p.prim['attributes']:
+            if name not in p.attrs:
                 dest[:] = default(name, w)
                 continue
-            data = src.read(p.prim['attributes'][name], used).astype(np.float32)
-            if name == 'NORMAL':
+            data = src.read(p.attrs[name], used).astype(np.float32)
+            if name == LIGHTMAP:
+                data = np.column_stack([data[:, 0], 1 - data[:, 1], np.ones(n, np.float32)])
+            elif name == 'NORMAL':
                 data = xform(data.astype(float), normal_mat)
                 data /= np.maximum(np.linalg.norm(data, axis=1, keepdims=True), 1e-12)
             elif name == 'TANGENT':
@@ -273,8 +305,8 @@ def write(src, groups, out_path, max_tris, skin_mats, worlds):
             out['scenes'][0]['nodes'].append(len(out['nodes']) - 1)
 
     by_cell = defaultdict(list)
-    for (cell, mat), pieces in groups.items():
-        by_cell[cell].append((mat, pieces))
+    for (cell, mat, lit), pieces in groups.items():
+        by_cell[cell].append((mat, lit, pieces))
     materials = j.get('materials', [])
     total = 0
     for n, cell in enumerate(sorted(by_cell), 1):
@@ -299,7 +331,7 @@ def write(src, groups, out_path, max_tris, skin_mats, worlds):
                 out['accessors'].append(acc)
                 return len(out['accessors']) - 1
 
-            for mat, pieces in sorted(by_cell[cell], key=lambda g: g[0]):
+            for mat, lit, pieces in sorted(by_cell[cell], key=lambda g: g[:2]):
                 mat_name = materials[mat].get('name', f'mat{mat}') if 0 <= mat < len(materials) else 'none'
                 parts = split(pieces, max_tris)
                 for k, part in enumerate(parts):
@@ -310,7 +342,8 @@ def write(src, groups, out_path, max_tris, skin_mats, worlds):
                     prim['indices'] = accessor(idx, 5125, 34963)
                     if mat >= 0:
                         prim['material'] = mat
-                    label = f'{name}__{safe_name(mat_name)}' + (f'_{k}' if len(parts) > 1 else '')
+                    label = (f'{name}__{safe_name(mat_name)}' + ('' if lit else '__unlit') +
+                             (f'_{k}' if len(parts) > 1 else ''))
                     out['meshes'].append({'name': label, 'primitives': [prim]})
                     out['nodes'].append({'name': label, 'mesh': len(out['meshes']) - 1})
                     children.append(len(out['nodes']) - 1)
