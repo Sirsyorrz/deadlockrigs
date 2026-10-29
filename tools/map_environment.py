@@ -28,7 +28,8 @@ def value(text):
 
 
 def entities(dump):
-    return [{k: value(v) for k, v in _PAIR.findall(body)} for body in _ENTITY.findall(dump)]
+    """Keys lowercased: Source entity keys are case-insensitive, and maps mix cases (light_probe_atlas_x, _Y, _Z)."""
+    return [{k.lower(): value(v) for k, v in _PAIR.findall(body)} for body in _ENTITY.findall(dump)]
 
 
 def resources(dump, ext):
@@ -51,7 +52,7 @@ def color(ent, key, default=(255, 255, 255)):
 
 
 def enabled(ent):
-    return not ent.get('StartDisabled', False)
+    return not ent.get('startdisabled', False)
 
 
 def first(ents, cls, pred=lambda e: True):
