@@ -12,7 +12,7 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
-from . import crop, look
+from . import crop, look, riglight
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -321,6 +321,7 @@ def append_rig(path, slug):
             if ob.type == 'ARMATURE' and 'dlrig' in ob:
                 ob['anim_library'] = os.path.join(os.path.dirname(path), f'{slug}_anims.blend')
     register_rig_ui()
+    riglight.light_rigs(bpy.context.scene)
 
 
 def append_map(path, slug, link=False):
@@ -329,6 +330,8 @@ def append_map(path, slug, link=False):
     with bpy.data.libraries.load(path, link=link) as (src, dst):
         dst.collections = [c for c in src.collections if c == title]
         dst.worlds = [w for w in src.worlds if w == f'{title} sky']
+        # in the same load as the collection, so an appended map's group uses its own (movable) origin empty
+        dst.node_groups = [g for g in src.node_groups if g == riglight.PROBE_GROUP]
     scene = bpy.context.scene
     for c in dst.collections:
         scene.collection.children.link(c)
@@ -336,6 +339,7 @@ def append_map(path, slug, link=False):
         scene.world = dst.worlds[0]
     look.enable(scene)
     look.show_in_viewport(bpy.context)
+    riglight.light_rigs(scene)
     return dst.collections
 
 
@@ -569,6 +573,7 @@ class DLR_PT_map(bpy.types.Panel):
             row.operator('dlr.append_map', text='Append Map', icon='APPEND_BLEND').link = False
         look.draw(layout, context)
         if crop.any_map(sc):
+            riglight.draw(layout, context)
             crop.draw(layout, context)
 
 
@@ -598,11 +603,13 @@ def register():
     bpy.app.handlers.load_post.append(on_load)
     crop.register()
     look.register()
+    riglight.register()
 
 
 def unregister():
     if _job:
         _job.cancel()
+    riglight.unregister()
     look.unregister()
     crop.unregister()
     if on_load in bpy.app.handlers.load_post:

@@ -81,6 +81,12 @@ on top of each material, so lights you add still light the map; its strength is 
 none (Midtown), a Sun light from the game's sun direction lights only the rigs. The map's distance and height fog
 are in the `Deadlock fog` node group (Fog strength), and the sky is the scene's world, seen by the camera only.
 
+**Rig light.** Rigs are lit from the map's light probes per pixel, as the game lights heroes, so they pick up the
+room they stand in and follow it as they move. Linking or appending a map does this for the rigs in the scene, and so
+does appending a rig to a scene with a map; Light Rigs (Map section) does it by hand, next to its Strength. It is
+emission on top of the rig's materials, like the map's baked light. In Cycles the map's baked light also bounces onto
+rigs, so lower Strength there if they look too bright. Maps built before this need a rebuild.
+
 **Game Look** (Map section) puts the game's tonemapping on the scene: its compositor gets the game's exposure and
 filmic curve, and the view transform is set to Standard. That is most of what makes a render look like Deadlock
 rather than Blender. Click it again to go back to your previous view settings.

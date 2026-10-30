@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import map_blend  # noqa: E402
 import map_fog  # noqa: E402
 import map_lighting  # noqa: E402
+import map_probes  # noqa: E402
 
 args = sys.argv[sys.argv.index('--') + 1:]
 gltf, out_blend, slug, title, version = args[:5]
@@ -107,11 +108,12 @@ print(f'runtime lights: {len(runtime_lights)}')
 
 probes = 0
 volumes = settings.get('probe_volumes')
-if volumes and unlit:
+if volumes:
     atlas = map_lighting.load_probe_atlas(lighting_dir)
-    if atlas is not None:
+    if atlas is not None and unlit:
         probes = map_lighting.bake_probes(unlit, atlas, volumes)
-        del atlas
+    map_probes.add_probe_light(coll, title, atlas, volumes, light_dir)
+    del atlas
 lightmaps = lightmap_files() if lit else None
 if lightmaps or probes:
     group = map_lighting.baked_light_group(*(lightmaps or (None, ())))
