@@ -80,7 +80,7 @@ mats = {slot.material for ob in meshes for slot in ob.material_slots if slot.mat
 glass_masks = {path: found[0] for path, name in (settings.get('glass_masks') or {}).items() if (found := find(name))}
 kinds = [map_lighting.apply_vmat(m, glass_masks) for m in mats]
 print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '
-      f'{kinds.count("self_illum")} self-illuminated')
+      f'{kinds.count("self_illum")} self-illuminated, {kinds.count("overlay")} decals')
 print(f'vertex paint: decoded on {map_lighting.decode_paint(meshes)} meshes')
 
 sun = next((ob for ob in coll.objects if ob.type == 'LIGHT' and ob.data.type == 'SUN'), None)

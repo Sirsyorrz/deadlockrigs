@@ -432,6 +432,30 @@ def apply_albedo_correction(mat, bsdf, ints, floats, strength):
     return True
 
 
+def apply_overlay(mat, bsdf, floats, vectors):
+    """citadel_overlay decals: the export leaves them opaque and lit by their self-illum mask. The game's opacity
+    is vertex alpha * colour alpha through the colour translucency ranges, and self-illum is scaled by
+    g_flSelfIllumScale (usually 0)."""
+    bsdf.inputs['Emission Strength'].default_value *= param(floats, 'g_flSelfIllumScale', 0.0)
+    _, albedo = paint_mix(bsdf)
+    image = image_node(source_of(albedo) if albedo is not None else source_of(bsdf.inputs['Base Color']))
+    if image is None or bsdf.inputs['Alpha'].is_linked:
+        return
+    g = Graph(mat.node_tree)
+    alpha = image.outputs['Alpha']
+    paint = next((n for n in mat.node_tree.nodes if n.type == 'VERTEX_COLOR'), None)
+    if paint is not None:
+        alpha = g.math('MULTIPLY', alpha, paint.outputs['Alpha'])
+    (in_lo, in_hi), (out_lo, out_hi) = ((list(vectors.get(k) or (0, 1)) + [1])[:2] for k in
+                                        ('g_vColorTranslucencyInputRange', 'g_vColorTranslucencyOutputRange'))
+    span = (in_hi - in_lo) or 1.0
+    alpha = g.math('MULTIPLY_ADD', g.math('DIVIDE', g.math('SUBTRACT', alpha, in_lo), span, clamp=True),
+                   out_hi - out_lo)
+    alpha.node.inputs[2].default_value = out_lo
+    g.links.new(alpha, bsdf.inputs['Alpha'])
+    image.image.alpha_mode = 'STRAIGHT'
+
+
 def apply_vmat(mat, glass_masks=None):
     """What the glTF export loses of the game's shading: unlit and additive materials show their colour as it is,
     glass lets the scene through, and self-illumination is scaled by g_flSelfIllumScale. Returns 'unlit', 'glass',
@@ -446,6 +470,9 @@ def apply_vmat(mat, glass_masks=None):
     strength = paint_strength(mat, ints, floats)
     set_vertex_paint(mat, bsdf, strength)
     apply_albedo_correction(mat, bsdf, ints, floats, strength)
+    if vmat_dict(mat).get('ShaderName') == 'citadel_overlay.vfx':
+        apply_overlay(mat, bsdf, floats, dict(vmat_dict(mat).get('VectorParams') or {}))
+        return 'overlay'
     if ints.get('F_UNLIT'):
         emission = nodes.new('ShaderNodeEmission')
         color = source_of(bsdf.inputs['Base Color'])
