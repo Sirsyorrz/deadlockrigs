@@ -24,6 +24,7 @@ class Blend:
         self.paths = dict(textures)
         self.g = Graph(mat.node_tree)
         self._uv, self._uv2, self._pos, self._normal, self._planar, self._paint = (None,) * 6
+        self.model_tint = None
 
     def i(self, name, default=0):
         return int(self.ints.get(name, default))
@@ -134,8 +135,11 @@ class Blend:
         return n.outputs['Color'], n.outputs['Alpha']
 
     def paint(self):
+        """The game's vertex colour: the object's tint times the vertex paint."""
         if self._paint is None:
             self._paint = self.g.node('ShaderNodeVertexColor', layer_name='Color').outputs['Color']
+            if self.model_tint is not None:
+                self._paint = self.g.mix('MULTIPLY', self._paint, self.model_tint)
         return self._paint
 
     # layers
@@ -374,6 +378,24 @@ def upstream_image(socket):
 applied = 0
 
 
+def model_tint(socket):
+    """The object tint the glTF export bakes into the base colour factor (a multiply by a constant colour, which the
+    glTF import puts after layer 1), or None."""
+    queue, seen = [socket.node], set()
+    while queue:
+        node = queue.pop(0)
+        if node.name in seen:
+            continue
+        seen.add(node.name)
+        if node.type == 'MIX' and node.blend_type == 'MULTIPLY' and node.data_type == 'RGBA':
+            for i in node.inputs:
+                if i.type == 'RGBA' and i.enabled and not i.is_linked:
+                    color = tuple(i.default_value)
+                    return None if all(abs(c - 1) < 1e-4 for c in color[:3]) else color
+        queue += [link.from_node for i in node.inputs for link in i.links]
+    return None
+
+
 def apply_blend(mat, bsdf, ints, floats, vectors, textures):
     """Replaces the base colour of an environment_blend material with its composited layers. textures maps the vmat
     texture paths to decompiled files. Returns whether it did."""
@@ -383,6 +405,7 @@ def apply_blend(mat, bsdf, ints, floats, vectors, textures):
     paths = dict(vmat_dict(mat).get('TextureParams') or {})
     found = {key: textures[path] for key, path in paths.items() if key in TEXTURES and path in textures}
     blend = Blend(mat, ints, floats, vectors, found)
+    blend.model_tint = model_tint(source)
     layer1_coords(blend, mat)
     if not found and not ints.get('F_WORLD_OVERLAY'):
         return False
