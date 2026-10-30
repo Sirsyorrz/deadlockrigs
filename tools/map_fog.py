@@ -2,7 +2,7 @@
 light baked into the controller's fog irradiance volume are put into an OpenVDB file on the irradiance volume's
 voxels; the shader absorbs and emits like the game's froxel pass (ValveResourceFormat, Renderer/Shaders/
 volumetric_fog.comp.slang and Renderer/SceneEnvironment/VolumetricFog.cs, MIT licence): extinction is density *
-fog strength * 0.0022 per inch, faded in with the distance from the camera, and the fog in-scatters its lighting
+fog strength * a scattering scale per inch, faded in with the distance from the camera, and the fog in-scatters its lighting
 times the extinction. Fog lit by lights and the sun isn't done.
 """
 import glob
@@ -14,8 +14,10 @@ from mathutils import Matrix
 
 from map_lighting import Graph, UNIT
 
-# VolumetricFog.ScatteringScale: the controller's fog strength to extinction per inch
-SCATTERING_SCALE = 0.0022
+# VolumetricFog.ScatteringScale is 0.0022 (the controller's fog strength to extinction per inch); that leaves the
+# Hideout far foggier than the game, these match it in screenshots
+SCATTERING_SCALE = 0.0022 * 0.2
+INDIRECT_SCALE = 0.5
 # GetFogDensity never goes below this inside the fog
 MIN_DENSITY = 0.001
 
@@ -70,7 +72,7 @@ def bake(fog, irradiance):
     inside_any = density > 0
     density = np.where(inside_any, np.clip(density, MIN_DENSITY, 1.0), 0.0)
     extinction = (density * fog['strength'] * SCATTERING_SCALE / UNIT).astype(np.float32)
-    light = irradiance * light_scale * (np.array(fog['tint'], np.float32) * fog['indirect'])
+    light = irradiance * light_scale * (np.array(fog['tint'], np.float32) * fog['indirect'] * INDIRECT_SCALE)
     # left empty outside the fog, so the VDB doesn't store it
     light[~inside_any] = 0
     return extinction, light.astype(np.float32)
