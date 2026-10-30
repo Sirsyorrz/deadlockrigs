@@ -73,7 +73,7 @@ coll['dlr_map'] = slug
 coll['dlr_map_version'] = version
 if settings.get('tonemap'):
     coll['dlr_tonemap'] = dict(settings['tonemap'], exposure_bias=settings['tonemap']['exposure_bias'] +
-                               settings.get('exposure', 0.0))
+                               settings.get('exposure', 0.0), exposure=settings.get('exposure', 0.0))
 
 meshes = [ob for ob in coll.all_objects if ob.type == 'MESH']
 lit = [ob for ob in meshes if '_LIGHTMAP_UV' in ob.data.attributes]
