@@ -267,15 +267,169 @@ def paint_strength(mat, ints, floats):
 
 def set_vertex_paint(mat, bsdf, strength):
     """The glTF import multiplies the base colour by COLOR_0 fully; the game by the paint strength."""
+    mix, _ = paint_mix(bsdf)
+    if mix is not None and not mix.inputs['Factor'].is_linked:
+        mix.inputs['Factor'].default_value = min(max(strength, 0.0), 1.0)
+
+
+LUMINANCE = np.array([0.2125, 0.7154, 0.0721]) / np.linalg.norm([0.2125, 0.7154, 0.0721])
+TINT_STRENGTH = 0.85
+TINTED_SHADERS = ('pbr.vfx', 'environment_layer.vfx', 'environment_blend.vfx')
+CORRECTED_SHADERS = TINTED_SHADERS + ('environment_parallax_layered.vfx',)
+
+
+def _translate(v):
+    m = np.eye(4)
+    m[3, :3] = v
+    return m
+
+
+def _scale(v):
+    return np.diag(list(np.broadcast_to(v, 3)) + [1.0])
+
+
+def _luminance_rotation():
+    """System.Numerics CreateFromAxisAngle (row vectors), taking the luminance axis onto Z."""
+    cross = np.cross(LUMINANCE, (0, 0, 1))
+    angle = math.atan2(np.linalg.norm(cross), LUMINANCE[2])
+    x, y, z = cross / np.linalg.norm(cross)
+    s, c = math.sin(angle), math.cos(angle)
+    m = np.eye(4)
+    m[:3, :3] = [[x * x + c * (1 - x * x), x * y - c * x * y + s * z, x * z - c * x * z - s * y],
+                 [x * y - c * x * y - s * z, y * y + c * (1 - y * y), y * z - c * y * z + s * x],
+                 [x * z - c * x * z + s * y, y * z - c * y * z - s * x, z * z + c * (1 - z * z)]]
+    return m
+
+
+def color_correct_matrix(csb, average):
+    """VfxEvalFunctions.MatrixColorCorrect2, for row vectors [r, g, b, 1] @ M: contrast around the texture's
+    average colour, brightness, then saturation around the luminance axis."""
+    r = _luminance_rotation()
+    return (_translate(-np.asarray(average)) @ _scale(csb[0]) @ _translate(average) @ _scale(csb[2])
+            @ _scale(LUMINANCE) @ r @ _scale((csb[1], csb[1], 1.0)) @ r.T @ _scale(1 / LUMINANCE))
+
+
+def color_tint_matrix(rgb, mode):
+    """VfxEvalFunctions.MatrixColorTint3: 0 multiply, 1 keep luminance, 2 mod2x. rgb is linear."""
+    rgb = np.asarray(rgb, float)
+    if mode == 2:
+        return _scale(rgb * 2)
+    if mode != 1:
+        return _scale(rgb)
+    sat = 0.0 if rgb.max() == 0 else (rgb.max() - rgb.min()) / rgb.max()
+    r = _luminance_rotation()
+    to_lum = _scale(LUMINANCE) @ r
+    gray = np.append(rgb, 1.0) @ to_lum
+    keep = 1 - sat * sat * TINT_STRENGTH
+    return (to_lum @ _translate((-gray[0], -gray[1], 0)) @ _scale((1 - sat, 1 - sat, keep))
+            @ _translate((gray[0], gray[1], (1 - keep) * gray[2])) @ r.T @ _scale(1 / LUMINANCE))
+
+
+_average_colors = {}
+
+
+def average_color(img):
+    """Linear mean of an image, standing in for the vtex reflectivity the game pivots contrast around."""
+    if img is None:
+        return np.ones(3)
+    if img.name not in _average_colors:
+        px = np.empty(len(img.pixels), np.float32)
+        img.pixels.foreach_get(px)
+        rgb = px.reshape(-1, img.channels)[:, :3] if img.channels >= 3 else np.repeat(px[:, None], 3, 1)
+        mean = rgb.mean(0) if len(rgb) else np.ones(3)
+        if img.colorspace_settings.name == 'sRGB' and not img.is_float:
+            mean = srgb_to_linear(mean)
+        _average_colors[img.name] = mean
+    return _average_colors[img.name]
+
+
+def is_identity(m):
+    return np.allclose(m, np.eye(4), atol=1e-4)
+
+
+def image_node(socket):
+    """The image texture a colour comes from, through the glTF import's multiplies."""
+    while socket is not None:
+        node = socket.node
+        if node.type == 'TEX_IMAGE':
+            return node
+        if node.type != 'MIX':
+            return None
+        linked = [s for s in node.inputs if s.enabled and s.type == 'RGBA' and s.is_linked]
+        socket = source_of(linked[0]) if linked else None
+    return None
+
+
+def paint_mix(bsdf):
+    """The glTF import's multiply by COLOR_0 and the socket of the colour it tints, or (None, None)."""
     mix = source_of(bsdf.inputs['Base Color'])
     while mix is not None and mix.node.type == 'MIX' and mix.node.blend_type == 'MULTIPLY':
         inputs = [s for s in mix.node.inputs if s.enabled and s.type == 'RGBA' and s.is_linked]
-        if any(s.links[0].from_node.type in ('VERTEX_COLOR', 'ATTRIBUTE') for s in inputs):
-            if not mix.node.inputs['Factor'].is_linked:
-                mix.node.inputs['Factor'].default_value = min(max(strength, 0.0), 1.0)
-            return
+        paint = [s for s in inputs if s.links[0].from_node.type in ('VERTEX_COLOR', 'ATTRIBUTE')]
+        if paint:
+            other = [s for s in inputs if s not in paint]
+            return mix.node, (other[0] if other else None)
         # the object tint's multiply is over the paint's
         mix = source_of(inputs[0]) if inputs else None
+    return None, None
+
+
+def transform_color(g, color, m):
+    """[color, 1] @ m as nodes."""
+    channels = [g.math('ADD', g.vec('DOT_PRODUCT', color, tuple(m[:3, j])), float(m[3, j])) for j in range(3)]
+    return g.combine(*channels)
+
+
+def apply_albedo_correction(mat, bsdf, ints, floats, strength):
+    """The first layer's colour correction and tint (g_vAlbedoContrastSaturationBrightness1, g_vColorTint1),
+    which the glTF export drops, as the game's GetCitadelAlbedo / SampleLayer apply them: correct, then tint by
+    the tint mask, then the vertex paint by the tint mask too. The mask is the colour texture's alpha on
+    environment shaders; pbr keeps it in a texture the export doesn't have, so it counts as 1 there.
+    Returns whether anything changed."""
+    vmat = vmat_dict(mat)
+    shader = str(vmat.get('ShaderName', ''))
+    if shader not in CORRECTED_SHADERS:
+        return False
+    vectors = dict(vmat.get('VectorParams') or {})
+    mix, albedo = paint_mix(bsdf)
+    if albedo is None or (mix is not None and ints.get('g_bApplyTintToVertexColors')):
+        albedo = bsdf.inputs['Base Color']
+    source = source_of(albedo)
+    if source is None:
+        return False
+    image = image_node(source)
+    csb = list(vectors.get('g_vAlbedoContrastSaturationBrightness1') or (1, 1, 1))[:3]
+    correct = color_correct_matrix(csb, average_color(image.image if image else None))
+    tint = np.eye(4)
+    if shader in TINTED_SHADERS:
+        rgb = srgb_to_linear(np.asarray(list(vectors.get('g_vColorTint1') or (1, 1, 1))[:3], float))
+        tint = color_tint_matrix(rgb, int(ints.get('g_nTextureColorTintMode1', 0)))
+    if is_identity(correct) and is_identity(tint):
+        return False
+
+    g = Graph(mat.node_tree)
+    mask = 1.0
+    environment = shader.startswith('environment_')
+    if environment and image and not (ints.get('F_ALPHA_TEST') or ints.get('F_TRANSLUCENT')):
+        contrast, brightness = (list(vectors.get('g_vLayerTintMaskContrastBrightness1') or (1, 0)) + [0])[:2]
+        a = image.outputs['Alpha']
+        mask = g.math('ADD', g.math('MULTIPLY', g.math('ADD', a, brightness - 0.5), contrast), 0.5, clamp=True)
+    elif not environment:
+        constant = vectors.get('TextureTintMask')
+        mask = float(constant[0]) if constant else 1.0
+
+    color = source
+    if not is_identity(correct):
+        color = transform_color(g, color, correct)
+    if not is_identity(tint):
+        tinted = transform_color(g, color, tint)
+        color = tinted if ints.get('g_bMaskColorTint1', 1) == 0 else g.mix('MIX', color, tinted, mask)
+    g.links.new(color, albedo)
+    if mix is not None and ints.get('g_bMaskVertexColorTint1', 1) and not isinstance(mask, float):
+        g.links.new(g.math('MULTIPLY', mask, min(max(strength, 0.0), 1.0)), mix.inputs['Factor'])
+    elif mix is not None and ints.get('g_bMaskVertexColorTint1', 1):
+        mix.inputs['Factor'].default_value = min(max(strength * mask, 0.0), 1.0)
+    return True
 
 
 def apply_vmat(mat, glass_masks=None):
@@ -289,7 +443,9 @@ def apply_vmat(mat, glass_masks=None):
         return None
     bsdf = surface.node
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    set_vertex_paint(mat, bsdf, paint_strength(mat, ints, floats))
+    strength = paint_strength(mat, ints, floats)
+    set_vertex_paint(mat, bsdf, strength)
+    apply_albedo_correction(mat, bsdf, ints, floats, strength)
     if ints.get('F_UNLIT'):
         emission = nodes.new('ShaderNodeEmission')
         color = source_of(bsdf.inputs['Base Color'])
