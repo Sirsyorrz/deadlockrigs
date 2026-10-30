@@ -77,7 +77,8 @@ class Graph:
 
     def image(self, img, vector):
         n = self.node('ShaderNodeTexImage', image=img, interpolation='Linear', extension='EXTEND')
-        self.put(n.inputs['Vector'], vector)
+        if vector is not None:
+            self.put(n.inputs['Vector'], vector)
         return n.outputs['Color']
 
     def attribute(self, name, output='Vector'):
@@ -158,14 +159,25 @@ def material_output(mat):
     return next((n for n in mat.node_tree.nodes if n.type == 'OUTPUT_MATERIAL' and n.is_active_output), None)
 
 
-def add_baked_light(mat, group):
-    """Adds the group's emission to a material whose output is one Principled BSDF. False if it isn't."""
+def surface_bsdf(mat):
+    """The output, its surface socket and the Principled BSDF under it (first input of any Add Shaders above it),
+    or Nones."""
     output = material_output(mat)
     surface = source_of(output.inputs['Surface']) if output else None
-    if surface is None or surface.node.type != 'BSDF_PRINCIPLED':
+    node = surface.node if surface else None
+    while node is not None and node.type == 'ADD_SHADER':
+        node = source_of(node.inputs[0]).node if node.inputs[0].is_linked else None
+    if node is None or node.type != 'BSDF_PRINCIPLED':
+        return None, None, None
+    return output, surface, node
+
+
+def add_baked_light(mat, group):
+    """Adds the group's emission to a material made of one Principled BSDF. False if it isn't."""
+    output, surface, bsdf = surface_bsdf(mat)
+    if bsdf is None:
         return False
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    bsdf = surface.node
     node = nodes.new('ShaderNodeGroup')
     node.node_tree = group
     node.location = bsdf.location.x, bsdf.location.y - 700
@@ -203,28 +215,33 @@ def vmat_params(mat):
     return dict(get.get('IntParams') or {}), dict(get.get('FloatParams') or {})
 
 
-def tints_with_paint(mat):
-    """Deadlock's environment_* shaders tint by the vertex paint without asking for it with a flag
-    (hideout_vertex_color is a white texture coloured that way)."""
+def is_environment(mat):
     return str(vmat_dict(mat).get('ShaderName', '')).startswith('environment_')
 
 
-def fill_unpainted(objects):
-    """All-zero vertex paint means unpainted (white), as the game's paint shaders read it; meshes the export left
-    unpainted have such a stream. Only on meshes whose material tints by the paint, where it would show black."""
+def srgb_to_linear(c):
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def decode_paint(objects):
+    """Source2Viewer writes the vertex paint as stored (sRGB bytes) and Blender reads it as linear; the game's
+    shaders decode it, and Deadlock's environment_* shaders fade it to white by its alpha (unpainted vertices are
+    all zero). Returns the number of meshes changed."""
     count = 0
     for ob in objects:
         attr = ob.data.color_attributes.get('Color')
-        if attr is None or not any(tints_with_paint(s.material) for s in ob.material_slots):
+        mats = [s.material for s in ob.material_slots if s.material]
+        if attr is None or not mats:
             continue
         rgba = np.empty(len(attr.data) * 4, np.float32)
         attr.data.foreach_get('color', rgba)
         rgba = rgba.reshape(-1, 4)
-        zero = ~rgba.any(axis=1)
-        if zero.any():
-            rgba[zero] = 1.0
-            attr.data.foreach_set('color', rgba.reshape(-1))
-            count += int(zero.sum())
+        rgb = srgb_to_linear(np.clip(rgba[:, :3], 0.0, 1.0))
+        if any(is_environment(m) for m in mats):
+            rgb = 1.0 + (rgb - 1.0) * rgba[:, 3:4]
+        rgba[:, :3] = rgb
+        attr.data.foreach_set('color', rgba.reshape(-1))
+        count += 1
     return count
 
 
@@ -236,30 +253,35 @@ def param(params, name, default):
     return default
 
 
-def drop_vertex_color(mat, bsdf, ints):
-    """The glTF import multiplies base colour by COLOR_0, but the game only tints with it when the material asks
-    (F_VERTEX_COLOR, F_PAINT_VERTEX_COLORS) or its shader always does; otherwise the stream holds other data, often
-    black."""
-    if ints.get('F_VERTEX_COLOR') or ints.get('F_PAINT_VERTEX_COLORS') or tints_with_paint(mat):
-        return
+def paint_strength(mat, ints, floats):
+    """How much the vertex paint tints the first layer's albedo. Deadlock's environment_* shaders always read the
+    paint, unless the layer turns it off (g_bModelTint1, g_fVertexColorStrength1); pbr only with F_VERTEX_COLOR or
+    F_PAINT_VERTEX_COLORS, otherwise the stream holds other data, often black."""
+    if is_environment(mat):
+        if not ints.get('g_bModelTint1', 1):
+            return 0.0
+    elif not (ints.get('F_VERTEX_COLOR') or ints.get('F_PAINT_VERTEX_COLORS')):
+        return 0.0
+    return float(floats.get('g_fVertexColorStrength1', 1.0))
+
+
+def set_vertex_paint(mat, bsdf, strength):
+    """The glTF import multiplies the base colour by COLOR_0 fully; the game by the paint strength."""
     mix = source_of(bsdf.inputs['Base Color'])
-    if mix is None or mix.node.type != 'MIX' or mix.node.blend_type != 'MULTIPLY':
-        return
-    inputs = [s for s in mix.node.inputs if s.enabled and s.type == 'RGBA']
-    vertex = [s for s in inputs if s.is_linked and s.links[0].from_node.type in ('VERTEX_COLOR', 'ATTRIBUTE')]
-    other = [s for s in inputs if s not in vertex]
-    if len(vertex) != 1 or len(other) != 1:
-        return
-    links = mat.node_tree.links
-    if other[0].is_linked:
-        links.new(other[0].links[0].from_socket, bsdf.inputs['Base Color'])
-    else:
-        bsdf.inputs['Base Color'].default_value = other[0].default_value
+    while mix is not None and mix.node.type == 'MIX' and mix.node.blend_type == 'MULTIPLY':
+        inputs = [s for s in mix.node.inputs if s.enabled and s.type == 'RGBA' and s.is_linked]
+        if any(s.links[0].from_node.type in ('VERTEX_COLOR', 'ATTRIBUTE') for s in inputs):
+            if not mix.node.inputs['Factor'].is_linked:
+                mix.node.inputs['Factor'].default_value = min(max(strength, 0.0), 1.0)
+            return
+        # the object tint's multiply is over the paint's
+        mix = source_of(inputs[0]) if inputs else None
 
 
-def apply_vmat(mat):
+def apply_vmat(mat, glass_masks=None):
     """What the glTF export loses of the game's shading: unlit and additive materials show their colour as it is,
-    and self-illumination is scaled by g_flSelfIllumScale. Returns 'unlit', 'self_illum' or None."""
+    glass lets the scene through, and self-illumination is scaled by g_flSelfIllumScale. Returns 'unlit', 'glass',
+    'self_illum' or None."""
     ints, floats = vmat_params(mat)
     output = material_output(mat)
     surface = source_of(output.inputs['Surface']) if output else None
@@ -267,7 +289,7 @@ def apply_vmat(mat):
         return None
     bsdf = surface.node
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    drop_vertex_color(mat, bsdf, ints)
+    set_vertex_paint(mat, bsdf, paint_strength(mat, ints, floats))
     if ints.get('F_UNLIT'):
         emission = nodes.new('ShaderNodeEmission')
         color = source_of(bsdf.inputs['Base Color'])
@@ -295,10 +317,57 @@ def apply_vmat(mat):
         emission.location = bsdf.location.x + 300, bsdf.location.y + 300
         mix.location = output.location.x, output.location.y + 200
         return 'unlit'
+    if ints.get('F_GLASS'):
+        mask = glass_mask(mat, glass_masks or {})
+        if mask is not None:
+            apply_glass(mat, bsdf, mask)
+            return 'glass'
     if ints.get('F_SELF_ILLUM'):
         bsdf.inputs['Emission Strength'].default_value *= param(floats, 'g_flSelfIllumScale', 1.0)
         return 'self_illum'
     return None
+
+
+def glass_mask(mat, glass_masks):
+    """The glass mask (g_tGlass, red): the constant the material editor made the texture from, else the texture
+    the build decompiled (glass_masks: texture path -> file). A float, a socket, or None."""
+    vmat = vmat_dict(mat)
+    constant = (vmat.get('VectorParams') or {}).get('TextureGlassMask1')
+    if constant is not None:
+        return float(constant[0])
+    path = glass_masks.get((vmat.get('TextureParams') or {}).get('g_tGlass'))
+    if not path:
+        return None
+    nodes = mat.node_tree.nodes
+    uv = next((source_of(n.inputs['Vector']) for n in nodes if n.type == 'TEX_IMAGE' and n.inputs['Vector'].is_linked),
+              None)
+    g = Graph(mat.node_tree)
+    color = g.image(load_image(path), uv)
+    color.node.extension = 'REPEAT'
+    return g.split(color)[0]
+
+
+def apply_glass(mat, bsdf, mask):
+    """F_GLASS (Citadel pbr): the diffuse gives way to transmission where the mask is, the specular stays. The
+    scene behind shows through albedo ** (1 / N.V) (thicker at grazing angles), scaled by the mask, the
+    non-metal part and what the specular (F0 0.04) leaves."""
+    g = Graph(mat.node_tree)
+    albedo = source_of(bsdf.inputs['Base Color']) or tuple(bsdf.inputs['Base Color'].default_value)[:3]
+    g.links.new(g.vec('SCALE', albedo, g.math('SUBTRACT', 1.0, mask)), bsdf.inputs['Base Color'])
+    geometry = g.node('ShaderNodeNewGeometry')
+    facing = g.vec('DOT_PRODUCT', geometry.outputs['Normal'], geometry.outputs['Incoming'])
+    exponent = g.math('DIVIDE', 1.0, g.math('MAXIMUM', g.math('ABSOLUTE', facing), 0.01))
+    rgb = g.split(g.vec('MAXIMUM', albedo, (0.01, 0.01, 0.01)))
+    through = g.combine(*(g.math('POWER', c, exponent) for c in rgb))
+    metallic = source_of(bsdf.inputs['Metallic']) or bsdf.inputs['Metallic'].default_value
+    amount = g.math('MULTIPLY', g.math('MULTIPLY', mask, g.math('SUBTRACT', 1.0, metallic)), 0.96)
+    transparent = g.node('ShaderNodeBsdfTransparent')
+    g.links.new(g.vec('SCALE', through, amount), transparent.inputs['Color'])
+    output = material_output(mat)
+    add = g.node('ShaderNodeAddShader')
+    g.links.new(source_of(output.inputs['Surface']), add.inputs[0])
+    g.links.new(transparent.outputs[0], add.inputs[1])
+    g.links.new(add.outputs[0], output.inputs['Surface'])
 
 
 def exclude_from_light(light_ob, objects, name):
@@ -552,13 +621,9 @@ def fog_group(cube=None, gradient=None, sky_mips=None, sky_strength=1.0, sky_fac
 
 
 def alpha_source(mat):
-    output = material_output(mat)
-    surface = source_of(output.inputs['Surface']) if output else None
-    node = surface.node if surface else None
-    while node is not None and node.type == 'ADD_SHADER':
-        node = source_of(node.inputs[0]).node if node.inputs[0].is_linked else None
-    if node is not None and node.type == 'BSDF_PRINCIPLED':
-        return source_of(node.inputs['Alpha']), node.inputs['Alpha'].default_value
+    bsdf = surface_bsdf(mat)[2]
+    if bsdf is not None:
+        return source_of(bsdf.inputs['Alpha']), bsdf.inputs['Alpha'].default_value
     return None, 1.0
 
 

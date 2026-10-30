@@ -60,7 +60,7 @@ def game_version(pak):
 
 
 # raised when a change to the build makes earlier builds wrong, so they show as needing a rebuild
-BUILDER = 3
+BUILDER = 4
 
 
 def game_stamp(pak, slug, mods=True):
@@ -195,12 +195,27 @@ class MapBuilder(Builder):
             volumes = [v for v in volumes if v['texture'] == atlas]
         if volumes and self.decompile(m, volumes[0]['texture'], vpks[:1]):
             settings['probe_volumes'] = volumes
+        settings['glass_masks'] = self.glass_masks(m, vpks)
         os.remove(os.path.join(m.lighting, 'dump.txt'))
         json.dump(settings, open(os.path.join(m.lighting, 'settings.json'), 'w', encoding='utf-8'), indent=1)
         log(f'  lighting: sun {"baked" if settings["sun"] and settings["sun"]["baked"] else "live"}, '
             f'{len(settings.get("probe_volumes") or [])} light probe volumes, '
             f'sky {"yes" if "sky" in settings else "no"}, fog {"cubemap " if cube else ""}'
             f'{"gradient" if settings["gradient_fog"] else ""}')
+
+    def glass_masks(self, m, vpks):
+        """The glass mask textures (g_tGlass) of F_GLASS materials that don't give it as a constant; the glTF export
+        leaves them out, no glTF input takes them. Texture path -> file name in the lighting folder."""
+        paths = set()
+        for mat in json.load(open(m.world, encoding='utf-8')).get('materials', []):
+            vmat = (mat.get('extras') or {}).get('vmat') or {}
+            if (vmat.get('IntParams') or {}).get('F_GLASS') and \
+                    'TextureGlassMask1' not in (vmat.get('VectorParams') or {}):
+                paths.add((vmat.get('TextureParams') or {}).get('g_tGlass'))
+        paths.discard(None)
+        dest = os.path.join(m.lighting, 'glass')
+        return {p: os.path.splitext(os.path.basename(p))[0] + '.png' for p in sorted(paths)
+                if self.decompile(m, p, vpks, dest)}
 
     def rebatch(self, m):
         self.run([self.python, os.path.join(TOOLS, 'map_rebatch.py'), m.world, m.rebatched], m)

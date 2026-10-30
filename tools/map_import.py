@@ -77,9 +77,11 @@ lit = [ob for ob in meshes if '_LIGHTMAP_UV' in ob.data.attributes]
 unlit = [ob for ob in meshes if '_LIGHTMAP_UV' not in ob.data.attributes]
 mats = {slot.material for ob in meshes for slot in ob.material_slots if slot.material}
 
-kinds = [map_lighting.apply_vmat(m) for m in mats]
-print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("self_illum")} self-illuminated')
-print(f'vertex paint: {map_lighting.fill_unpainted(meshes):,} unpainted corners made white')
+glass_masks = {path: found[0] for path, name in (settings.get('glass_masks') or {}).items() if (found := find(name))}
+kinds = [map_lighting.apply_vmat(m, glass_masks) for m in mats]
+print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '
+      f'{kinds.count("self_illum")} self-illuminated')
+print(f'vertex paint: decoded on {map_lighting.decode_paint(meshes)} meshes')
 
 sun = next((ob for ob in coll.objects if ob.type == 'LIGHT' and ob.data.type == 'SUN'), None)
 game_sun = settings.get('sun')
