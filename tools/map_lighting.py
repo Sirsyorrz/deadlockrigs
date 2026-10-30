@@ -190,13 +190,42 @@ def add_baked_light(mat, group):
     return True
 
 
-def vmat_params(mat):
-    """The game material's parameters, from Source2Viewer's glTF extras (--gltf_export_extras)."""
+def vmat_dict(mat):
+    """The game material, from Source2Viewer's glTF extras (--gltf_export_extras)."""
     vmat = mat.get('vmat') if mat else None
     if vmat is None:
-        return {}, {}
-    get = vmat.to_dict() if hasattr(vmat, 'to_dict') else dict(vmat)
+        return {}
+    return vmat.to_dict() if hasattr(vmat, 'to_dict') else dict(vmat)
+
+
+def vmat_params(mat):
+    get = vmat_dict(mat)
     return dict(get.get('IntParams') or {}), dict(get.get('FloatParams') or {})
+
+
+def tints_with_paint(mat):
+    """Deadlock's environment_* shaders tint by the vertex paint without asking for it with a flag
+    (hideout_vertex_color is a white texture coloured that way)."""
+    return str(vmat_dict(mat).get('ShaderName', '')).startswith('environment_')
+
+
+def fill_unpainted(objects):
+    """All-zero vertex paint means unpainted (white), as the game's paint shaders read it; meshes the export left
+    unpainted have such a stream. Only on meshes whose material tints by the paint, where it would show black."""
+    count = 0
+    for ob in objects:
+        attr = ob.data.color_attributes.get('Color')
+        if attr is None or not any(tints_with_paint(s.material) for s in ob.material_slots):
+            continue
+        rgba = np.empty(len(attr.data) * 4, np.float32)
+        attr.data.foreach_get('color', rgba)
+        rgba = rgba.reshape(-1, 4)
+        zero = ~rgba.any(axis=1)
+        if zero.any():
+            rgba[zero] = 1.0
+            attr.data.foreach_set('color', rgba.reshape(-1))
+            count += int(zero.sum())
+    return count
 
 
 def param(params, name, default):
@@ -209,8 +238,9 @@ def param(params, name, default):
 
 def drop_vertex_color(mat, bsdf, ints):
     """The glTF import multiplies base colour by COLOR_0, but the game only tints with it when the material asks
-    (F_VERTEX_COLOR, F_PAINT_VERTEX_COLORS); otherwise the stream holds other data, often black."""
-    if ints.get('F_VERTEX_COLOR') or ints.get('F_PAINT_VERTEX_COLORS'):
+    (F_VERTEX_COLOR, F_PAINT_VERTEX_COLORS) or its shader always does; otherwise the stream holds other data, often
+    black."""
+    if ints.get('F_VERTEX_COLOR') or ints.get('F_PAINT_VERTEX_COLORS') or tints_with_paint(mat):
         return
     mix = source_of(bsdf.inputs['Base Color'])
     if mix is None or mix.node.type != 'MIX' or mix.node.blend_type != 'MULTIPLY':

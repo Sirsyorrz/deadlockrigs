@@ -79,6 +79,7 @@ mats = {slot.material for ob in meshes for slot in ob.material_slots if slot.mat
 
 kinds = [map_lighting.apply_vmat(m) for m in mats]
 print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("self_illum")} self-illuminated')
+print(f'vertex paint: {map_lighting.fill_unpainted(meshes):,} unpainted corners made white')
 
 sun = next((ob for ob in coll.objects if ob.type == 'LIGHT' and ob.data.type == 'SUN'), None)
 game_sun = settings.get('sun')
