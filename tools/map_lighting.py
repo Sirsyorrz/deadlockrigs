@@ -558,8 +558,9 @@ def apply_glass(mat, bsdf, mask):
 
 
 def add_lights(coll, lights):
-    """The map's runtime lights (map_environment.lights) as Blender lights in the collection."""
+    """The map's runtime lights (map_environment.lights) as Blender lights in the collection; their objects."""
     from mathutils import Matrix, Vector
+    obs = []
     for spec in lights:
         data = bpy.data.lights.new(spec['name'], spec['type'])
         data.energy = spec['watts']
@@ -590,8 +591,10 @@ def add_lights(coll, lights):
         aspect = spec.get('aspect', 1.0) if spec['type'] == 'SPOT' else 1.0
         scale = (min(aspect, 1.0), min(1 / aspect, 1.0), 1.0)
         ob.matrix_world = Matrix.LocRotScale(Vector(spec['position']), basis.to_quaternion(), Vector(scale))
+        ob['dlr_fog'] = spec.get('fog', 0.0)
         coll.objects.link(ob)
-    return len(lights)
+        obs.append(ob)
+    return obs
 
 
 def exclude_from_light(light_ob, objects, name):

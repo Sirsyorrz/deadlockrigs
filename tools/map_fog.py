@@ -15,9 +15,12 @@ from mathutils import Matrix
 from map_lighting import Graph, UNIT
 
 # VolumetricFog.ScatteringScale is 0.0022 (the controller's fog strength to extinction per inch); that leaves the
-# Hideout far foggier than the game, these match it in screenshots
+# Hideout far foggier than the game, this matches it in screenshots
 SCATTERING_SCALE = 0.0022 * 0.2
-INDIRECT_SCALE = 0.5
+# The share of the extinction that scatters Blender lights. The world would light the fog through it too, on top of
+# the baked indirect light, so it's kept small and the fog lights are made brighter to make up for it (not by much
+# more: EEVEE loses lights that bright in volumes).
+SCATTER_SHARE = 0.1
 # GetFogDensity never goes below this inside the fog
 MIN_DENSITY = 0.001
 
@@ -72,7 +75,7 @@ def bake(fog, irradiance):
     inside_any = density > 0
     density = np.where(inside_any, np.clip(density, MIN_DENSITY, 1.0), 0.0)
     extinction = (density * fog['strength'] * SCATTERING_SCALE / UNIT).astype(np.float32)
-    light = irradiance * light_scale * (np.array(fog['tint'], np.float32) * fog['indirect'] * INDIRECT_SCALE)
+    light = irradiance * light_scale * (np.array(fog['tint'], np.float32) * fog['indirect'])
     # left empty outside the fog, so the VDB doesn't store it
     light[~inside_any] = 0
     return extinction, light.astype(np.float32)
@@ -110,14 +113,20 @@ def fog_material(name, fog):
     extinction = g.math('MULTIPLY', density, fade)
     absorb = g.node('ShaderNodeVolumeAbsorption')
     absorb.inputs['Color'].default_value = (1, 1, 1, 1)
-    g.links.new(extinction, absorb.inputs['Density'])
+    g.links.new(g.math('MULTIPLY', extinction, 1 - SCATTER_SHARE), absorb.inputs['Density'])
+    scatter = g.node('ShaderNodeVolumeScatter')
+    scatter.inputs['Color'].default_value = (1, 1, 1, 1)
+    g.links.new(g.math('MULTIPLY', extinction, SCATTER_SHARE), scatter.inputs['Density'])
     emit = g.node('ShaderNodeEmission')
     g.links.new(color, emit.inputs['Color'])
     g.links.new(extinction, emit.inputs['Strength'])
     add = g.node('ShaderNodeAddShader')
     g.links.new(absorb.outputs[0], add.inputs[0])
     g.links.new(emit.outputs[0], add.inputs[1])
-    g.links.new(add.outputs[0], out.inputs['Volume'])
+    add2 = g.node('ShaderNodeAddShader')
+    g.links.new(add.outputs[0], add2.inputs[0])
+    g.links.new(scatter.outputs[0], add2.inputs[1])
+    g.links.new(add2.outputs[0], out.inputs['Volume'])
     return mat
 
 
@@ -144,3 +153,27 @@ def add_volumetric_fog(coll, fog, folder, vdb_path, title):
     ob.hide_select = True
     coll.objects.link(ob)
     return ob
+
+
+def light_fog(coll, lights):
+    """Only the lights that light the game's fog light the volume: each light leaves volumes alone, and those with a
+    fog strength get a copy that lights only volumes, as bright as the game's fog lighting (colour times attenuation
+    times fog strength, against Blender's isotropic 1/4pi phase and the scatter share). EEVEE doesn't apply light
+    linking to volumes. Returns the number of fog lights."""
+    count = 0
+    for ob in lights:
+        ob.data.volume_factor = 0.0
+        strength = float(ob.get('dlr_fog', 0.0))
+        if strength <= 0:
+            continue
+        copy = ob.copy()
+        copy.data = ob.data.copy()
+        copy.name = copy.data.name = f'{ob.name} fog'
+        copy.data.energy = ob.data.energy * strength * 4 * np.pi / SCATTER_SHARE
+        copy.data.volume_factor = 1.0
+        copy.data.diffuse_factor = copy.data.specular_factor = copy.data.transmission_factor = 0.0
+        # the shadow pool is already full on big maps, and volume shadows are off by default
+        copy.data.use_shadow = False
+        coll.objects.link(copy)
+        count += 1
+    return count

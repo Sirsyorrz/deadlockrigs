@@ -105,7 +105,9 @@ def lights(ents):
         size = [float(v) for v in (e.get('size_params') or (0, 0, 0))]
         rng = num(e, 'range', 512.0)
         light = {'name': e.get('targetname') or kind, 'forward': to_blender(forward, 1.0), 'up': to_blender(up, 1.0),
-                 'distance': rng * UNIT, 'shadows': int(num(e, 'castshadows', 1)) != 0}
+                 'distance': rng * UNIT, 'shadows': int(num(e, 'castshadows', 1)) != 0,
+                 # how strongly it lights the volumetric fog (fog lighting modes 1-3)
+                 'fog': num(e, 'fogstrength') if int(num(e, 'fog')) in (1, 2, 3) else 0.0}
         if int(num(e, 'colormode')):
             light['temperature'] = num(e, 'colortemperature', 6600.0)
         else:

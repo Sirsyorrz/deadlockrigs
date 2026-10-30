@@ -102,7 +102,8 @@ if sun:
         sun.data.energy = RIG_SUN_STRENGTH
         map_lighting.exclude_from_light(sun, meshes, f'{title} map meshes')
 
-print(f'runtime lights: {map_lighting.add_lights(coll, settings.get("lights") or [])}')
+runtime_lights = map_lighting.add_lights(coll, settings.get('lights') or [])
+print(f'runtime lights: {len(runtime_lights)}')
 
 probes = 0
 volumes = settings.get('probe_volumes')
@@ -145,7 +146,11 @@ if fog_volume:
     os.makedirs(light_dir, exist_ok=True)
     fog_ob = map_fog.add_volumetric_fog(coll, fog_volume, os.path.join(lighting_dir, 'volumetric_fog'),
                                         os.path.join(light_dir, 'volumetric_fog.vdb'), title)
-    print(f'volumetric fog: {len(fog_volume["volumes"])} fog volumes' if fog_ob else 'volumetric fog: none')
+    if fog_ob:
+        fog_lights = map_fog.light_fog(coll, [ob for ob in coll.objects if ob.type == 'LIGHT'])
+        print(f'volumetric fog: {len(fog_volume["volumes"])} fog volumes, lit by {fog_lights} lights')
+    else:
+        print('volumetric fog: none')
 
 os.makedirs(tex_dir, exist_ok=True)
 for img in bpy.data.images:
