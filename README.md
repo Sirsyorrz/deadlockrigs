@@ -141,7 +141,17 @@ Deadlock; Blender and Deadlock are found through Steam, or pass `--blender` and 
     python tools/pipeline.py all dev            # every hero, with the animation library and tests
     python tools/pipeline.py --help             # steps and options
 
-Per-hero settings live in `heroes.json`. `python tools/release.py addon` packages the add-on.
+Per-hero settings live in `heroes.json`.
+
+To package the add-on yourself you need Python 3 with pip (or `uv`), Blender 5.1 or newer (found through Steam, or
+set `BLENDER` to its path) and internet access for the scipy wheels. Deadlock isn't needed for this.
+
+    git clone https://github.com/Sirsyorrz/deadlockrigs
+    cd deadlockrigs
+    python tools/release.py addon               # or: addon patch|minor|major|X.Y.Z to bump the version first
+
+This writes `dist/deadlock_rigs-<version>-<platform>.zip` for Windows, Linux and macOS (Apple silicon and Intel).
+Install the one for your platform as under [Install](#install).
 
 ## Credits
 

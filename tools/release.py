@@ -83,8 +83,9 @@ def addon():
     stage = os.path.join(ROOT, 'build', 'addon')
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(os.path.join(stage, 'tools'))
-    for f in ('__init__.py', 'crop.py', 'look.py'):
-        shutil.copy(os.path.join(ROOT, 'addon', f), stage)
+    for f in os.listdir(os.path.join(ROOT, 'addon')):
+        if f.endswith('.py'):
+            shutil.copy(os.path.join(ROOT, 'addon', f), stage)
     for f in ADDON_TOOLS:
         shutil.copy(os.path.join(TOOLS, f), os.path.join(stage, 'tools'))
     shutil.copy(os.path.join(ROOT, 'heroes.json'), stage)
