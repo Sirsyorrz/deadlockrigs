@@ -104,7 +104,8 @@ if sun:
         map_lighting.exclude_from_light(sun, meshes, f'{title} map meshes')
 
 runtime_lights = map_lighting.add_lights(coll, settings.get('lights') or [])
-print(f'runtime lights: {len(runtime_lights)}')
+print(f'runtime lights: {len(runtime_lights)}, '
+      f'{map_lighting.unblock_own_light(runtime_lights)} shadow linked past their own fixtures')
 
 probes = 0
 volumes = settings.get('probe_volumes')

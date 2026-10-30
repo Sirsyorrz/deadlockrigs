@@ -88,8 +88,8 @@ def lights(ents):
     """The omni2, barn and rect lights the game draws at runtime (directlight 2 dynamic, 3 stationary): the lightmap
     only has their bounce. As Blender point, spot and area lights, in Blender metres and axes: position, forward and
     up (the entity's +X and +Z), watts, linear colour or a colour temperature, cone, cutoff distance. Barn lights are
-    spots from the eye point of their frustum, which reproduces their falloff; orthographic barns and cookies
-    aren't brought over."""
+    spots from the eye point of their frustum, which reproduces their falloff, with `near` from the eye to the
+    entity; orthographic barns and cookies aren't brought over."""
     out = []
     for e in ents:
         kind = str(e.get('classname', ''))
@@ -123,6 +123,7 @@ def lights(ents):
             light.update(type='SPOT', position=to_blender(eye), watts=WATTS * linear * ((near + REFERENCE) / REFERENCE) ** 2,
                          cone=2 * max(half), aspect=math.tan(half[0]) / max(math.tan(half[1]), 1e-6),
                          blend=min(max(num(e, 'softx'), num(e, 'softy')), 1.0), distance=(near + rng) * UNIT,
+                         near=near * UNIT,
                          radius=num(e, 'luminaire_size', 4.0) * UNIT / 2)
         elif kind == 'light_rect':
             light.update(type='AREA', position=to_blender(origin), watts=WATTS * linear / 4,

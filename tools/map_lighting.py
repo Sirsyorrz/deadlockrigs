@@ -592,9 +592,81 @@ def add_lights(coll, lights):
         scale = (min(aspect, 1.0), min(1 / aspect, 1.0), 1.0)
         ob.matrix_world = Matrix.LocRotScale(Vector(spec['position']), basis.to_quaternion(), Vector(scale))
         ob['dlr_fog'] = spec.get('fog', 0.0)
+        ob['dlr_near'] = spec.get('near', 0.0)
         coll.objects.link(ob)
         obs.append(ob)
     return obs
+
+
+# how far round a light its own fixture (bulb, lamp glass, projector housing) reaches
+FIXTURE_REACH = 0.5
+FIXTURE_RAYS = 1024
+
+
+def light_directions(light_ob, count):
+    """World space unit directions spread evenly over the light's cone (its whole sphere for point and area lights)."""
+    from mathutils import Vector
+    half = light_ob.data.spot_size / 2 if light_ob.data.type == 'SPOT' else math.pi
+    basis = light_ob.matrix_world.to_3x3().normalized()
+    i = np.arange(count) + 0.5
+    cos_t = 1 - i / count * (1 - math.cos(half))
+    sin_t = np.sqrt(np.maximum(1 - cos_t ** 2, 0))
+    phi = i * math.pi * (3 - math.sqrt(5))
+    local = np.stack([sin_t * np.cos(phi), sin_t * np.sin(phi), -cos_t], 1)
+    return [(basis @ Vector(d)).normalized() for d in local]
+
+
+def own_blockers(scene, depsgraph, light_ob):
+    """Map objects that would shadow a light from itself in Blender but not in the game: what is between a barn's
+    eye point and the barn (the game's shadow frustum starts at the barn), and fixtures the light sits inside (a
+    bulb or lamp glass seen from inside, or anything within the light's own radius), which the game doesn't let
+    shadow their own light."""
+    from mathutils import Vector
+    origin = light_ob.matrix_world.translation.copy()
+    forward = -(light_ob.matrix_world.to_3x3() @ Vector((0, 0, 1))).normalized()
+    near = float(light_ob.get('dlr_near', 0.0))
+    radius = light_ob.data.shadow_soft_size if light_ob.data.type in ('POINT', 'SPOT') else 0.0
+    found = {}
+    for d in light_directions(light_ob, FIXTURE_RAYS):
+        # past the barn's near plane, or past the fixture
+        limit = near / max(d.dot(forward), 1e-3) if near > 0 else FIXTURE_REACH
+        start, travelled = origin, 0.0
+        while travelled < limit:
+            hit, loc, normal, _, ob, _ = scene.ray_cast(depsgraph, start, d, distance=limit - travelled)
+            if not hit:
+                break
+            if near > 0 or normal.dot(d) > 0 or (loc - origin).length < radius:
+                found[ob.original] = found.get(ob.original, 0) + 1
+            if near <= 0:
+                break
+            step = (loc - start).length + 1e-4
+            travelled += step
+            start = start + d * step
+    # stray rays through cracks of a merged mesh that isn't the fixture
+    return [ob for ob, n in found.items() if n >= FIXTURE_RAYS * 0.01]
+
+
+def unblock_own_light(lights):
+    """Shadow links each light past the map objects that shadow it only in Blender (own_blockers). Returns the number
+    of lights changed."""
+    scene = bpy.context.scene
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    changed = 0
+    for ob in lights:
+        if not ob.data.use_shadow or ob.data.type == 'SUN':
+            continue
+        blockers = own_blockers(scene, depsgraph, ob)
+        if not blockers:
+            continue
+        group = bpy.data.collections.new(f'{ob.name} unblocked')
+        for b in blockers:
+            group.objects.link(b)
+        ob.light_linking.blocker_collection = group
+        for item in group.collection_objects:
+            item.light_linking.link_state = 'EXCLUDE'
+        print(f'  {ob.name}: not shadowed by {", ".join(b.name for b in blockers)}')
+        changed += 1
+    return changed
 
 
 def exclude_from_light(light_ob, objects, name):
