@@ -98,6 +98,8 @@ if sun:
         sun.data.energy = RIG_SUN_STRENGTH
         map_lighting.exclude_from_light(sun, meshes, f'{title} map meshes')
 
+print(f'runtime lights: {map_lighting.add_lights(coll, settings.get("lights") or [])}')
+
 probes = 0
 volumes = settings.get('probe_volumes')
 if volumes and unlit:

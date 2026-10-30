@@ -370,6 +370,43 @@ def apply_glass(mat, bsdf, mask):
     g.links.new(add.outputs[0], output.inputs['Surface'])
 
 
+def add_lights(coll, lights):
+    """The map's runtime lights (map_environment.lights) as Blender lights in the collection."""
+    from mathutils import Matrix, Vector
+    for spec in lights:
+        data = bpy.data.lights.new(spec['name'], spec['type'])
+        data.energy = spec['watts']
+        if 'temperature' in spec:
+            data.use_temperature = True
+            data.temperature = spec['temperature']
+        else:
+            data.color = spec['color']
+        data.use_shadow = spec['shadows']
+        data.use_custom_distance = True
+        data.cutoff_distance = spec['distance']
+        if spec['type'] == 'SPOT':
+            data.spot_size = min(spec['cone'], math.pi)
+            data.spot_blend = spec['blend']
+        if spec['type'] == 'AREA':
+            data.shape = 'DISK' if spec['disc'] else 'RECTANGLE'
+            data.size, data.size_y = spec['size']
+        else:
+            data.shadow_soft_size = spec['radius']
+        ob = bpy.data.objects.new(spec['name'], data)
+        # Blender lights shine down their -Z with +Y up
+        z = -Vector(spec['forward']).normalized()
+        y = Vector(spec['up']).normalized()
+        x = y.cross(z).normalized()
+        y = z.cross(x)
+        basis = Matrix((x, y, z)).transposed()
+        # the cone fits the wider side; scale narrows the other
+        aspect = spec.get('aspect', 1.0) if spec['type'] == 'SPOT' else 1.0
+        scale = (min(aspect, 1.0), min(1 / aspect, 1.0), 1.0)
+        ob.matrix_world = Matrix.LocRotScale(Vector(spec['position']), basis.to_quaternion(), Vector(scale))
+        coll.objects.link(ob)
+    return len(lights)
+
+
 def exclude_from_light(light_ob, objects, name):
     """Light linking: the light skips these objects."""
     coll = bpy.data.collections.new(name)

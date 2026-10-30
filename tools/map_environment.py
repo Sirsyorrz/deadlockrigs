@@ -70,6 +70,72 @@ def sun(ents):
             'shadows': bool(num(e, 'castshadows', 1))}
 
 
+# a light2 (omni2, barn, rect) has 2 ** brightness at this many units in front of it, falling off as 1 / d^2
+REFERENCE = 100.0
+# Blender watts for a point light as bright as a light2 of linear brightness 1: the game's diffuse is
+# albedo * N.L * colour * brightness * (REFERENCE / d)^2 with d in inches, Blender's albedo / pi * N.L * W / (4 pi d^2)
+WATTS = 4 * math.pi ** 2 * (UNIT * REFERENCE) ** 2
+
+
+def to_blender(v, scale=UNIT):
+    return [v[1] * scale, -v[0] * scale, v[2] * scale]
+
+
+def lights(ents):
+    """The omni2, barn and rect lights the game draws at runtime (directlight 2 dynamic, 3 stationary): the lightmap
+    only has their bounce. As Blender point, spot and area lights, in Blender metres and axes: position, forward and
+    up (the entity's +X and +Z), watts, linear colour or a colour temperature, cone, cutoff distance. Barn lights are
+    spots from the eye point of their frustum, which reproduces their falloff; orthographic barns and cookies
+    aren't brought over."""
+    out = []
+    for e in ents:
+        kind = str(e.get('classname', ''))
+        if kind not in ('light_omni2', 'light_barn', 'light_rect') or not enabled(e) or e.get('enabled') is False:
+            continue
+        if int(num(e, 'directlight', 2)) not in (2, 3):
+            continue
+        linear = 2 ** num(e, 'brightness') * num(e, 'brightnessscale', 1.0)
+        rot = angles_matrix(e.get('angles', (0, 0, 0)))
+        # side is VRF's cross(up, forward), the entity's +Y, which the frustum shear is along
+        forward, side, up = ([row[i] for row in rot] for i in range(3))
+        origin = [float(v) for v in e['origin']]
+        size = [float(v) for v in (e.get('size_params') or (0, 0, 0))]
+        rng = num(e, 'range', 512.0)
+        light = {'name': e.get('targetname') or kind, 'forward': to_blender(forward, 1.0), 'up': to_blender(up, 1.0),
+                 'distance': rng * UNIT, 'shadows': int(num(e, 'castshadows', 1)) != 0}
+        if int(num(e, 'colormode')):
+            light['temperature'] = num(e, 'colortemperature', 6600.0)
+        else:
+            light['color'] = color(e, 'color')
+        if kind == 'light_barn':
+            if size[2] <= 0:
+                continue
+            near = 1 / size[2]
+            shear = [float(v) for v in (e.get('shear') or (0, 0))]
+            cx, cy = shear[0] / rng * near, shear[1] / rng * near
+            eye = [o - near * f - cx * s - cy * u for o, f, s, u in zip(origin, forward, side, up)]
+            half = [math.atan2(size[0] + abs(cx), near), math.atan2(size[1] + abs(cy), near)]
+            light.update(type='SPOT', position=to_blender(eye), watts=WATTS * linear * ((near + REFERENCE) / REFERENCE) ** 2,
+                         cone=2 * max(half), aspect=math.tan(half[0]) / max(math.tan(half[1]), 1e-6),
+                         blend=min(max(num(e, 'softx'), num(e, 'softy')), 1.0), distance=(near + rng) * UNIT,
+                         radius=num(e, 'luminaire_size', 4.0) * UNIT / 2)
+        elif kind == 'light_rect':
+            light.update(type='AREA', position=to_blender(origin), watts=WATTS * linear / 4,
+                         size=[2 * size[0] * UNIT, 2 * size[1] * UNIT], disc=num(e, 'shape') == 1)
+        else:
+            # a half angle; Blender spots open to 180 degrees at most, wider cones light all round
+            outer = num(e, 'outer_angle', 180.0)
+            light.update(position=to_blender(origin), watts=WATTS * linear,
+                         radius=min(size[0], size[1]) * UNIT / 2 if size[0] and size[1] else 0.0)
+            if outer < 90:
+                light.update(type='SPOT', cone=math.radians(2 * outer), aspect=1.0,
+                             blend=1 - min(num(e, 'inner_angle'), outer) / outer)
+            else:
+                light['type'] = 'POINT'
+        out.append(light)
+    return out
+
+
 def sky(ents, name=None):
     pred = (lambda e: e.get('targetname') == name) if name else (lambda e: True)
     e = first(ents, 'env_sky', pred) or first(ents, 'env_sky')

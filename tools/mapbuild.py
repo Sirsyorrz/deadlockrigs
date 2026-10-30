@@ -60,7 +60,7 @@ def game_version(pak):
 
 
 # raised when a change to the build makes earlier builds wrong, so they show as needing a rebuild
-BUILDER = 4
+BUILDER = 5
 
 
 def game_stamp(pak, slug, mods=True):
@@ -171,7 +171,7 @@ class MapBuilder(Builder):
                   '-o', m.lighting, '-d'], m, show=False)
         world = self.dump(m, f'maps/{m.slug}/world.vwrld', vpks[:1])
         ents = [e for lump in env.resources(world, 'vents') for e in env.entities(self.dump(m, lump, vpks[:1]))]
-        settings = {'sun': env.sun(ents), 'gradient_fog': env.gradient_fog(ents)}
+        settings = {'sun': env.sun(ents), 'lights': env.lights(ents), 'gradient_fog': env.gradient_fog(ents)}
         cube = env.cubemap_fog(ents)
         settings['cubemap_fog'] = cube
         sky = env.sky(ents, cube and cube['sky_entity'])
@@ -199,7 +199,7 @@ class MapBuilder(Builder):
         os.remove(os.path.join(m.lighting, 'dump.txt'))
         json.dump(settings, open(os.path.join(m.lighting, 'settings.json'), 'w', encoding='utf-8'), indent=1)
         log(f'  lighting: sun {"baked" if settings["sun"] and settings["sun"]["baked"] else "live"}, '
-            f'{len(settings.get("probe_volumes") or [])} light probe volumes, '
+            f'{len(settings["lights"])} runtime lights, {len(settings.get("probe_volumes") or [])} light probe volumes, '
             f'sky {"yes" if "sky" in settings else "no"}, fog {"cubemap " if cube else ""}'
             f'{"gradient" if settings["gradient_fog"] else ""}')
 
