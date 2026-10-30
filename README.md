@@ -65,8 +65,13 @@ skips an up-to-date map.
 textures, such as posters and signs, are in the built map like they are in the game. Turn off Include Mods in the Map
 section and rebuild for the map as Valve ships it.
 
-Append Map adds the map's collection to the open scene, makes the map's sky the scene's world and turns on Game
-Look. The map is at its game position; rigs are at the origin, so move the rig or the map.
+Link Map and Append Map add the map's collection to the open scene, make the map's sky the scene's world and turn on
+Game Look. The map is at its game position; rigs are at the origin, so move the rig or the map.
+
+Link Map takes seconds: the map stays in its own file and your file points at it, so it can't be edited (moved,
+materials, the node group values below) and the map's folder has to come along when the project moves. Append Map
+copies the map into your file so all of it can be edited, but Blender stops responding for several minutes while it
+appends (about 5 for Midtown).
 
 **Lighting.** The map is lit the way the game lights it, from its own files: surfaces with lightmaps get the baked
 lightmap, props get the map's light probe volumes (sampled per vertex when the map is built), unlit materials show
@@ -87,7 +92,9 @@ Works in EEVEE and Cycles. Cycles loads the whole visible map with full size tex
 renders much faster: Add Crop Box and Crop to Boxes keep what is inside the boxes, Crop to Camera keeps what the scene
 camera sees over the frame range. Objects across the edge keep the polygons that reach in. The Keep dropdown picks
 map parts that are never cropped (skyline buildings, sky clouds, smoke, fog planes). Restore Map undoes it; Delete
-Cropped removes the cropped parts for good to make the file smaller.
+Cropped removes the cropped parts for good to make the file smaller. A linked map crops the same way: the map's
+collection is hidden and a `(cropped)` collection next to it holds what is kept, with the cut objects as local
+copies.
 
 ## Help
 

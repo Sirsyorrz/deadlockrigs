@@ -1,9 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Cutting an appended map down to the part a shot needs: inside crop boxes, or what the camera sees over the
-scene's frame range.
+"""Cutting a map down to the part a shot needs: inside crop boxes, or what the camera sees over the scene's frame
+range.
 
-Nothing is deleted until Delete Cropped: hidden objects keep their mesh, and a cut object keeps its whole mesh (with a
-fake user) under the 'dlr_crop_mesh' property, so Restore Map can put everything back.
+An appended map is cropped in place. Nothing is deleted until Delete Cropped: hidden objects keep their mesh, and a cut
+object keeps its whole mesh (with a fake user) under the 'dlr_crop_mesh' property, so Restore Map can put everything
+back.
+
+A linked map can't be changed, so cropping it excludes its collection from the view layers and shows a local '(cropped)'
+collection instead: the linked objects that stay whole, local copies of the cut ones with their trimmed meshes, and
+local copies of the map's light-linked lights whose link collections also cover the cut copies (the rig light would
+otherwise light them). Restore Map removes it and brings back the linked collection.
 """
 import re
 
@@ -14,6 +20,7 @@ import numpy as np
 BOX = 'dlr_crop_box'
 ORIGINAL = 'dlr_crop_mesh'
 HIDDEN = 'dlr_crop_hidden'
+CROP_OF = 'dlr_crop_of'
 
 # map objects are named <cell>__<material>; these match the start of the material
 KEEP_KINDS = (
@@ -24,8 +31,13 @@ KEEP_KINDS = (
 )
 
 
-def map_collections(scene):
-    return [c for c in scene.collection.children_recursive if c.get('dlr_map')]
+def map_collections(scene, linked=False):
+    """The scene's appended maps, or with linked=True its linked ones."""
+    return [c for c in scene.collection.children_recursive if c.get('dlr_map') and (c.library is not None) == linked]
+
+
+def any_map(scene):
+    return bool(map_collections(scene) or map_collections(scene, linked=True))
 
 
 def map_meshes(scene):
@@ -121,12 +133,8 @@ def camera_views(scene, step):
     return views
 
 
-def cut(ob, keep):
-    """Gives the object a copy of its whole mesh with only the kept faces; the whole mesh stays for Restore."""
-    whole = original_mesh(ob)
-    if ORIGINAL not in ob:
-        ob[ORIGINAL] = whole.name
-        whole.use_fake_user = True
+def trimmed(whole, keep):
+    """A local copy of the mesh with only the kept faces."""
     bm = bmesh.new()
     bm.from_mesh(whole)
     bm.faces.ensure_lookup_table()
@@ -135,8 +143,17 @@ def cut(ob, keep):
     piece.name = whole.name + '.crop'
     bm.to_mesh(piece)
     bm.free()
+    return piece
+
+
+def cut(ob, keep):
+    """Gives the object a copy of its whole mesh with only the kept faces; the whole mesh stays for Restore."""
+    whole = original_mesh(ob)
+    if ORIGINAL not in ob:
+        ob[ORIGINAL] = whole.name
+        whole.use_fake_user = True
     old = ob.data
-    ob.data = piece
+    ob.data = trimmed(whole, keep)
     if old is not whole and old.users == 0:
         bpy.data.meshes.remove(old)
 
@@ -163,36 +180,123 @@ def restore(ob):
         set_hidden(ob, False)
 
 
+def faces_kept(ob, mesh, region_codes, whole_objects, keep_re):
+    """Per face, whether the crop keeps it, and the faces' corner counts."""
+    starts, totals, loops = face_vertices(mesh)
+    if is_kept(ob, keep_re):
+        return np.ones(len(starts), bool), totals
+    points = world_vertices(ob, mesh)
+    keep = np.zeros(len(starts), bool)
+    for codes in region_codes(points):
+        keep |= faces_inside(codes, starts, loops)
+        if keep.all():
+            break
+    if whole_objects and keep.any():
+        keep[:] = True
+    return keep, totals
+
+
+def layer_collections(scene, coll):
+    def find(lc):
+        if lc.collection == coll:
+            return lc
+        return next((hit for child in lc.children if (hit := find(child))), None)
+    return [lc for vl in scene.view_layers if (lc := find(vl.layer_collection))]
+
+
+def crop_view(coll):
+    return next((c for c in bpy.data.collections if c.library is None and c.get(CROP_OF) == coll.name_full), None)
+
+
+def restore_linked(scene, coll):
+    view = crop_view(coll)
+    if view is not None:
+        local = [ob for ob in view.objects if ob.library is None]
+        data = {ob.data for ob in local if ob.data and ob.data.library is None}
+        links = {c for ob in local for c in (ob.light_linking.receiver_collection, ob.light_linking.blocker_collection)
+                 if c and c.library is None}
+        bpy.data.batch_remove(local + [view])
+        bpy.data.batch_remove([d for d in data | links if d.users == 0])
+    for lc in layer_collections(scene, coll):
+        lc.exclude = False
+
+
+def mirror_links(src, cuts):
+    """A local copy of a light linking collection that also links each cut copy the way it links the original."""
+    dst = bpy.data.collections.new(src.name + ' (cropped)')
+    states = []
+    for ob, item in zip(src.objects, src.collection_objects):
+        for target in (ob, cuts.get(ob)):
+            if target is not None:
+                dst.objects.link(target)
+                states.append(item.light_linking.link_state)
+    for item, state in zip(dst.collection_objects, states):
+        item.light_linking.link_state = state
+    for child, item in zip(src.children, src.collection_children):
+        dst.children.link(child)
+        dst.collection_children[-1].light_linking.link_state = item.light_linking.link_state
+    return dst
+
+
+def crop_linked(scene, coll, region_codes, whole_objects, keep_re):
+    restore_linked(scene, coll)
+    view = bpy.data.collections.new(coll.name + ' (cropped)')
+    view[CROP_OF] = coll.name_full
+    scene.collection.children.link(view)
+    kept = total = 0
+    cuts = {}
+    lights = []
+    for ob in coll.all_objects:
+        if ob.type == 'LIGHT' and (ob.light_linking.receiver_collection or ob.light_linking.blocker_collection):
+            lights.append(ob)
+            continue
+        if ob.type != 'MESH':
+            view.objects.link(ob)
+            continue
+        keep, totals = faces_kept(ob, ob.data, region_codes, whole_objects, keep_re)
+        total += int((totals - 2).sum())
+        if not keep.any():
+            continue
+        kept += int((totals[keep] - 2).sum())
+        if keep.all():
+            view.objects.link(ob)
+            continue
+        piece = ob.copy()
+        piece.data = trimmed(ob.data, keep)
+        view.objects.link(piece)
+        cuts[ob] = piece
+    for ob in lights:
+        light = ob.copy()
+        ll = ob.light_linking
+        if ll.receiver_collection:
+            light.light_linking.receiver_collection = mirror_links(ll.receiver_collection, cuts)
+        if ll.blocker_collection:
+            light.light_linking.blocker_collection = mirror_links(ll.blocker_collection, cuts)
+        view.objects.link(light)
+    for lc in layer_collections(scene, coll):
+        lc.exclude = True
+    return kept, total
+
+
 def crop(scene, region_codes, whole_objects, keep):
     """region_codes(points) -> list of outcode arrays, one per region; a face stays if it is inside any.
     Returns (triangles kept, triangles before)."""
     kept = total = 0
     keep_re = keep_pattern(keep)
     for ob in list(map_meshes(scene)):
-        whole = original_mesh(ob)
-        tris = sum(len(p.vertices) - 2 for p in whole.polygons)
-        total += tris
-        if is_kept(ob, keep_re):
-            restore(ob)
-            kept += tris
-            continue
-        starts, totals, loops = face_vertices(whole)
-        points = world_vertices(ob, whole)
-        keep = np.zeros(len(starts), bool)
-        for codes in region_codes(points):
-            keep |= faces_inside(codes, starts, loops)
-            if keep.all():
-                break
-        if whole_objects and keep.any():
-            keep[:] = True
         restore(ob)
+        keep, totals = faces_kept(ob, ob.data, region_codes, whole_objects, keep_re)
+        total += int((totals - 2).sum())
         if not keep.any():
             set_hidden(ob, True)
-        elif not keep.all():
+            continue
+        kept += int((totals[keep] - 2).sum())
+        if not keep.all():
             cut(ob, keep)
-            kept += int((totals[keep] - 2).sum())
-        else:
-            kept += tris
+    for coll in map_collections(scene, linked=True):
+        k, t = crop_linked(scene, coll, region_codes, whole_objects, keep_re)
+        kept += k
+        total += t
     return kept, total
 
 
@@ -204,11 +308,20 @@ class DLR_PT_crop_keep(bpy.types.Panel):
     def draw(self, context):
         col = self.layout.column(align=True)
         col.label(text='Never Crop')
-        col.prop(context.scene, 'dlr_crop_keep_kinds', expand=True)
+        for ident, *_ in KEEP_KINDS:
+            col.prop(context.scene, keep_prop(ident))
+
+
+def keep_prop(ident):
+    return f'dlr_crop_keep_{ident.lower()}'
+
+
+def keep_kinds(scene):
+    return {ident for ident, *_ in KEEP_KINDS if getattr(scene, keep_prop(ident))}
 
 
 def keep_summary(scene):
-    names = [name for ident, name, _, _ in KEEP_KINDS if ident in scene.dlr_crop_keep_kinds]
+    names = [name for ident, name, _, _ in KEEP_KINDS if getattr(scene, keep_prop(ident))]
     return ', '.join(names) if names else 'Nothing'
 
 
@@ -238,7 +351,7 @@ class CropOperator(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.mode == 'OBJECT' and bool(map_collections(context.scene))
+        return context.mode == 'OBJECT' and any_map(context.scene)
 
     def report_result(self, kept, total):
         self.report({'INFO'}, f'Kept {kept:,} of {total:,} map triangles')
@@ -258,7 +371,7 @@ class DLR_OT_crop_boxes(CropOperator):
         def regions(points):
             return [outcodes_box(points, box, sc.dlr_crop_margin) for box in boxes]
 
-        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', sc.dlr_crop_keep_kinds))
+        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', keep_kinds(sc)))
         return {'FINISHED'}
 
 
@@ -279,7 +392,7 @@ class DLR_OT_crop_camera(CropOperator):
         def regions(points):
             return [outcodes_camera(points, v, fov) for v in views]
 
-        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', sc.dlr_crop_keep_kinds))
+        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', keep_kinds(sc)))
         return {'FINISHED'}
 
 
@@ -291,6 +404,8 @@ class DLR_OT_crop_restore(CropOperator):
     def execute(self, context):
         for ob in list(map_meshes(context.scene)):
             restore(ob)
+        for coll in map_collections(context.scene, linked=True):
+            restore_linked(context.scene, coll)
         return {'FINISHED'}
 
 
@@ -298,7 +413,12 @@ class DLR_OT_crop_delete(CropOperator):
     bl_idname = 'dlr.crop_delete'
     bl_label = 'Delete Cropped'
     bl_description = ('Delete the hidden map objects and the cut-away polygons for good, to make the file smaller '
-                      'and faster. Restore Map can no longer bring them back')
+                      'and faster. Restore Map can no longer bring them back. Only for appended maps: a linked '
+                      "map's cropped parts aren't in this file")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT' and bool(map_collections(context.scene))
 
     def invoke(self, context, event):
         return context.window_manager.invoke_confirm(self, event)
@@ -364,14 +484,13 @@ def register():
     S.dlr_crop_step = bpy.props.IntProperty(
         name='Frame Step', default=5, min=1, soft_max=50,
         description='Sample the camera every this many frames')
-    S.dlr_crop_keep_kinds = bpy.props.EnumProperty(
-        name='Keep', options={'ENUM_FLAG'}, default=set(),
-        items=[(ident, name, desc, 1 << i) for i, (ident, name, desc, _) in enumerate(KEEP_KINDS)],
-        description='Map parts that are never cropped')
+    for ident, name, desc, _ in KEEP_KINDS:
+        setattr(S, keep_prop(ident), bpy.props.BoolProperty(name=name, description=desc))
 
 
 def unregister():
-    for name in ('dlr_crop_mode', 'dlr_crop_margin', 'dlr_crop_fov_margin', 'dlr_crop_step', 'dlr_crop_keep_kinds'):
+    keep = [keep_prop(ident) for ident, *_ in KEEP_KINDS]
+    for name in ('dlr_crop_mode', 'dlr_crop_margin', 'dlr_crop_fov_margin', 'dlr_crop_step', *keep):
         delattr(bpy.types.Scene, name)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)

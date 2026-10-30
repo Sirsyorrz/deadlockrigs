@@ -323,10 +323,10 @@ def append_rig(path, slug):
     register_rig_ui()
 
 
-def append_map(path, slug):
-    """Appends the map's collection, makes its sky the scene's world and turns on the game's tonemapping."""
+def append_map(path, slug, link=False):
+    """Appends or links the map's collection, makes its sky the scene's world and turns on the game's tonemapping."""
     title = tools_module('mapbuild').MAPS[slug]
-    with bpy.data.libraries.load(path) as (src, dst):
+    with bpy.data.libraries.load(path, link=link) as (src, dst):
         dst.collections = [c for c in src.collections if c == title]
         dst.worlds = [w for w in src.worlds if w == f'{title} sky']
     scene = bpy.context.scene
@@ -410,7 +410,25 @@ class DLR_OT_open(bpy.types.Operator):
 class DLR_OT_append_map(bpy.types.Operator):
     bl_idname = 'dlr.append_map'
     bl_label = 'Append Map'
-    bl_description = 'Append the built map into this scene'
+
+    link: bpy.props.BoolProperty()
+
+    @classmethod
+    def description(cls, context, props):
+        if props.link:
+            return ('Link the built map into this scene (about 10 seconds). It lights, renders and crops the same '
+                    "but can't be edited, and the file keeps pointing at the map in the output folder")
+        return ('Copy the built map into this scene so it can be edited. Blender freezes for several '
+                'minutes while it appends (Midtown takes about 5); Link Map is much faster')
+
+    def invoke(self, context, event):
+        if self.link:
+            return self.execute(context)
+        return context.window_manager.invoke_confirm(
+            self, event, title='Append Map',
+            message='Appending takes several minutes and Blender stops responding until it finishes. '
+                    'Use Link Map unless you need to edit the map.',
+            confirm_text='Append')
 
     def execute(self, context):
         slug = context.scene.dlr_map
@@ -419,8 +437,8 @@ class DLR_OT_append_map(bpy.types.Operator):
             self.report({'ERROR'}, f'No map built yet at {path}')
             return {'CANCELLED'}
         if any(c.get('dlr_map') == slug for c in context.scene.collection.children_recursive):
-            self.report({'WARNING'}, 'This scene already has the map; appending another copy')
-        append_map(path, slug)
+            self.report({'WARNING'}, 'This scene already has the map; adding another copy')
+        append_map(path, slug, self.link)
         return {'FINISHED'}
 
 
@@ -546,9 +564,11 @@ class DLR_PT_map(bpy.types.Panel):
         if _job is not None and _job.kind == 'MAP' and _job.slug == slug:
             draw_job(layout, context, tools_module('mapbuild').MAPS[slug])
         if state != 'missing':
-            layout.operator('dlr.append_map', icon='APPEND_BLEND')
+            row = layout.row(align=True)
+            row.operator('dlr.append_map', text='Link Map', icon='LINK_BLEND').link = True
+            row.operator('dlr.append_map', text='Append Map', icon='APPEND_BLEND').link = False
         look.draw(layout, context)
-        if crop.map_collections(sc):
+        if crop.any_map(sc):
             crop.draw(layout, context)
 
 
