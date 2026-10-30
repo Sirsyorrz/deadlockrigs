@@ -4,7 +4,8 @@ python tools/map_rebatch.py <world.gltf> <out.gltf> [--cell-size 100] [--max-tri
 
 The export has ~30,000 objects, which Blender imports and draws slowly. Every node transform (and the rest pose of
 the few skinned props) is baked into the vertices; triangles, the material UVs (TEXCOORD_0), vertex colours and
-materials are unchanged. The other UV sets and custom attributes, which no material reads, are left out, except the
+materials are unchanged, as are environment_blend's layer reveal (_BLEND) and, where a material reads it, the second
+UV set (_UV2, v flipped). The other UV sets and custom attributes, which no material reads, are left out, except the
 lightmap UVs: those become _LIGHTMAP_UV (u, v flipped for Blender, 1), so a material can tell lightmapped surfaces
 (z = 1) from the rest (z = 0, the attribute is missing). The output's buffers go in <out>_bins/ next to it and its
 images keep the export's URIs, made relative to the output, so textures load from where Source2Viewer wrote them.
@@ -26,6 +27,11 @@ TYPE = {1: 'SCALAR', 2: 'VEC2', 3: 'VEC3', 4: 'VEC4'}
 TRIANGLES = 4
 KEPT = ('NORMAL', 'TANGENT', 'TEXCOORD_0', 'COLOR_0')
 LIGHTMAP = '_LIGHTMAP_UV'
+# environment_blend's per-vertex layer reveal (VertexPaintBlendParams) and, for materials that ask for it, the
+# second UV set (vTexCoord2) its reveal masks and overlays can use
+BLEND = '_BLEND'
+UV2 = '_UV2'
+SECONDARY_UV_FLAGS = ('g_bUseSecondaryUvForOverlay', 'g_bRevealUseSecondaryUv2', 'g_bRevealUseSecondaryUv3')
 
 
 class Source:
@@ -194,9 +200,24 @@ def scan(src, cell_size, worlds, skin_mats):
             lm = lightmap_uv(src, prim)
             if lm:
                 attrs[LIGHTMAP] = at[lm]
+            if '_TEXCOORD_4' in at:
+                attrs[BLEND] = at['_TEXCOORD_4']
+            uv2 = next((n for n in sorted(at) if n.startswith('TEXCOORD_') and n not in ('TEXCOORD_0', lm)), None)
+            if uv2 and wants_secondary_uv(src, prim.get('material', -1)):
+                attrs[UV2] = at[uv2]
             groups[cell, prim.get('material', -1), bool(lm)].append(
                 Piece(prim, world, skin, len(remap) // 3, len(used), attrs))
     return groups, lo, hi, skipped
+
+
+def wants_secondary_uv(src, material):
+    if material < 0:
+        return False
+    vmat = (src.j['materials'][material].get('extras') or {}).get('vmat') or {}
+    ints = vmat.get('IntParams') or {}
+    # the UV overlay defaults to the second UV set
+    return any(ints.get(k) for k in SECONDARY_UV_FLAGS) or \
+        bool(ints.get('F_UV_OVERLAY') and ints.get('g_bUseSecondaryUvForOverlay', 1))
 
 
 def split(pieces, max_tris):
@@ -223,7 +244,7 @@ def merge(src, part, skin_mats):
     widths = {}
     for p in part:
         for name, acc in p.attrs.items():
-            widths[name] = 3 if name == LIGHTMAP else max(widths.get(name, 0), WIDTH[src.j['accessors'][acc]['type']])
+            widths[name] = 3 if name in (LIGHTMAP, BLEND, UV2) else max(widths.get(name, 0), WIDTH[src.j['accessors'][acc]['type']])
     nverts = sum(p.verts for p in part)
     pos = np.empty((nverts, 3), np.float32)
     idx = np.empty(sum(p.tris for p in part) * 3, np.uint32)
@@ -255,7 +276,11 @@ def merge(src, part, skin_mats):
                 dest[:] = default(name, w)
                 continue
             data = src.read(p.attrs[name], used).astype(np.float32)
-            if name == LIGHTMAP:
+            if name == UV2:
+                data = np.column_stack([data[:, 0], 1 - data[:, 1], np.zeros(n, np.float32)])
+            elif name == BLEND:
+                data = data[:, :3]
+            elif name == LIGHTMAP:
                 data = np.column_stack([data[:, 0], 1 - data[:, 1], np.ones(n, np.float32)])
             elif name == 'NORMAL':
                 data = xform(data.astype(float), normal_mat)

@@ -456,7 +456,7 @@ def apply_overlay(mat, bsdf, floats, vectors):
     image.image.alpha_mode = 'STRAIGHT'
 
 
-def apply_vmat(mat, glass_masks=None):
+def apply_vmat(mat, glass_masks=None, layer_textures=None):
     """What the glTF export loses of the game's shading: unlit and additive materials show their colour as it is,
     glass lets the scene through, and self-illumination is scaled by g_flSelfIllumScale. Returns 'unlit', 'glass',
     'self_illum' or None."""
@@ -470,6 +470,10 @@ def apply_vmat(mat, glass_masks=None):
     strength = paint_strength(mat, ints, floats)
     set_vertex_paint(mat, bsdf, strength)
     apply_albedo_correction(mat, bsdf, ints, floats, strength)
+    if vmat_dict(mat).get('ShaderName') == 'environment_blend.vfx':
+        import map_blend
+        map_blend.apply_blend(mat, bsdf, ints, floats, dict(vmat_dict(mat).get('VectorParams') or {}),
+                              layer_textures or {})
     if vmat_dict(mat).get('ShaderName') == 'citadel_overlay.vfx':
         apply_overlay(mat, bsdf, floats, dict(vmat_dict(mat).get('VectorParams') or {}))
         return 'overlay'

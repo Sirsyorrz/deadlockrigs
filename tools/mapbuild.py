@@ -60,7 +60,7 @@ def game_version(pak):
 
 
 # raised when a change to the build makes earlier builds wrong, so they show as needing a rebuild
-BUILDER = 7
+BUILDER = 9
 
 
 def game_stamp(pak, slug, mods=True):
@@ -195,13 +195,18 @@ class MapBuilder(Builder):
             volumes = [v for v in volumes if v['texture'] == atlas]
         if volumes and self.decompile(m, volumes[0]['texture'], vpks[:1]):
             settings['probe_volumes'] = volumes
+        fog = env.volumetric_fog(ents)
+        if fog and self.decompile(m, fog['texture'], vpks[:1], os.path.join(m.lighting, 'volumetric_fog')):
+            settings['volumetric_fog'] = fog
         settings['glass_masks'] = self.glass_masks(m, vpks)
+        settings['layer_textures'] = self.layer_textures(m, vpks)
         os.remove(os.path.join(m.lighting, 'dump.txt'))
         json.dump(settings, open(os.path.join(m.lighting, 'settings.json'), 'w', encoding='utf-8'), indent=1)
         log(f'  lighting: sun {"baked" if settings["sun"] and settings["sun"]["baked"] else "live"}, '
             f'{len(settings["lights"])} runtime lights, {len(settings.get("probe_volumes") or [])} light probe volumes, '
             f'sky {"yes" if "sky" in settings else "no"}, fog {"cubemap " if cube else ""}'
-            f'{"gradient" if settings["gradient_fog"] else ""}')
+            f'{"gradient " if settings["gradient_fog"] else ""}'
+            f'{"volumetric" if settings.get("volumetric_fog") else ""}')
 
     def glass_masks(self, m, vpks):
         """The glass mask textures (g_tGlass) of F_GLASS materials that don't give it as a constant; the glTF export
@@ -216,6 +221,30 @@ class MapBuilder(Builder):
         dest = os.path.join(m.lighting, 'glass')
         return {p: os.path.splitext(os.path.basename(p))[0] + '.png' for p in sorted(paths)
                 if self.decompile(m, p, vpks, dest)}
+
+    def layer_textures(self, m, vpks):
+        """The textures of environment_blend's upper layers, reveal masks and overlays, which the glTF export leaves
+        out. Texture path -> file under the lighting folder."""
+        paths = set()
+        for mat in json.load(open(m.world, encoding='utf-8')).get('materials', []):
+            vmat = (mat.get('extras') or {}).get('vmat') or {}
+            if vmat.get('ShaderName') == 'environment_blend.vfx':
+                textures = vmat.get('TextureParams') or {}
+                paths.update(textures[k] for k in env.BLEND_TEXTURES if textures.get(k))
+        dest = os.path.join(m.lighting, 'layers')
+        wanted = sorted(paths)
+        for vpk in vpks:
+            missing = [p for p in wanted if not os.path.exists(os.path.join(dest, os.path.splitext(p)[0] + '.png'))]
+            if not missing:
+                break
+            # Source2Viewer exits 0 when the archive doesn't have a file
+            try:
+                self.run([self.s2v, '-i', vpk, '-f', ','.join(p + '_c' for p in missing), '-o', dest, '-d',
+                          '--threads', str(os.cpu_count() or 4), '-q'], m, show=False)
+            except BuildError:
+                continue
+        found = {p: os.path.relpath(os.path.join(dest, os.path.splitext(p)[0] + '.png'), m.lighting) for p in wanted}
+        return {p: f for p, f in found.items() if os.path.exists(os.path.join(m.lighting, f))}
 
     def rebatch(self, m):
         self.run([self.python, os.path.join(TOOLS, 'map_rebatch.py'), m.world, m.rebatched], m)

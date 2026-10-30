@@ -15,6 +15,8 @@ import sys
 import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import map_blend  # noqa: E402
+import map_fog  # noqa: E402
 import map_lighting  # noqa: E402
 
 args = sys.argv[sys.argv.index('--') + 1:]
@@ -78,9 +80,11 @@ unlit = [ob for ob in meshes if '_LIGHTMAP_UV' not in ob.data.attributes]
 mats = {slot.material for ob in meshes for slot in ob.material_slots if slot.material}
 
 glass_masks = {path: found[0] for path, name in (settings.get('glass_masks') or {}).items() if (found := find(name))}
-kinds = [map_lighting.apply_vmat(m, glass_masks) for m in mats]
+layer_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.get('layer_textures') or {}).items()}
+kinds = [map_lighting.apply_vmat(m, glass_masks, layer_textures) for m in mats]
 print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '
       f'{kinds.count("self_illum")} self-illuminated, {kinds.count("overlay")} decals')
+print(f'blend layers: {map_blend.applied} materials, {len(layer_textures)} layer textures')
 print(f'vertex paint: decoded on {map_lighting.decode_paint(meshes)} meshes')
 
 sun = next((ob for ob in coll.objects if ob.type == 'LIGHT' and ob.data.type == 'SUN'), None)
@@ -135,6 +139,13 @@ if (cube and sky_mips) or gradient:
     fog = map_lighting.fog_group(cube, gradient, sky_mips, sky.get('strength', 1.0), face)
     done = sum(map_lighting.add_fog(m, fog) for m in mats)
     print(f'fog: {"cubemap " if cube and sky_mips else ""}{"gradient " if gradient else ""}on {done} materials')
+
+fog_volume = settings.get('volumetric_fog')
+if fog_volume:
+    os.makedirs(light_dir, exist_ok=True)
+    fog_ob = map_fog.add_volumetric_fog(coll, fog_volume, os.path.join(lighting_dir, 'volumetric_fog'),
+                                        os.path.join(light_dir, 'volumetric_fog.vdb'), title)
+    print(f'volumetric fog: {len(fog_volume["volumes"])} fog volumes' if fog_ob else 'volumetric fog: none')
 
 os.makedirs(tex_dir, exist_ok=True)
 for img in bpy.data.images:

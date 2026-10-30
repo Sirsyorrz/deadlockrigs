@@ -7,6 +7,9 @@ import math
 import re
 
 UNIT = 0.0254
+# environment_blend textures beyond layer 1's, which the glTF export leaves out (map_blend.py uses them)
+BLEND_TEXTURES = ('g_tColor2', 'g_tColor3', 'g_tRevealMask2', 'g_tRevealMask3', 'g_tColorWorldOverlay',
+                  'g_tColorWorldOverlay2', 'g_tColorOverlay', 'g_tRevealOverlay')
 
 _ENTITY = re.compile(r'keyValues3Data\s*=\s*\{\s*version\s*=\s*\d+\s*values\s*=\s*\{(.*?)\n\t*\}', re.S)
 _PAIR = re.compile(r'^\s*([\w.]+) = (.+?)\s*$', re.M)
@@ -181,6 +184,30 @@ def angles_matrix(angles):
     up = (cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp)
     # columns are the local axes
     return [[forward[i], left[i], up[i]] for i in range(3)]
+
+
+def volumetric_fog(ents):
+    """The master env_volumetric_fog_controller and its env_volumetric_fog_volumes, Source units. Only the indirect
+    light baked into the controller's fog irradiance volume lights the fog."""
+    c = first(ents, 'env_volumetric_fog_controller', lambda e: e.get('ismaster', True))
+    if not c or not c.get('indirectenabled') or not c.get('fogirradiancevolume'):
+        return None
+    origin = [float(v) for v in c['origin']]
+    bounds = [[o + float(v) for o, v in zip(origin, str(c[k]).split())] for k in ('box_mins', 'box_maxs')]
+    volumes = []
+    for e in ents:
+        if e.get('classname') != 'env_volumetric_fog_volume' or not enabled(e) or num(e, 'fogstrength', 1.0) <= 0:
+            continue
+        volumes.append({'origin': [float(v) for v in e['origin']], 'rotation': angles_matrix(e.get('angles', (0, 0, 0))),
+                        'mins': [float(v) for v in e['box_mins']], 'maxs': [float(v) for v in e['box_maxs']],
+                        'strength': num(e, 'fogstrength', 1.0), 'exponent': num(e, 'falloffexponent', 1.0),
+                        'sphere': int(num(e, 'shape')) == 1, 'indirect': num(e, 'fogindirectstrength', 1.0),
+                        'tint': color(e, 'tintcolor')})
+    return {'texture': c['fogirradiancevolume'], 'mins': bounds[0], 'maxs': bounds[1],
+            'dims': [int(num(c, f'indirectvoxeldim{a}')) for a in 'xyz'],
+            'strength': num(c, 'fogstrength', 1.0), 'indirect': num(c, 'indirectstrength', 1.0),
+            'tint': color(c, 'tintcolor'), 'draw_distance': num(c, 'drawdistance', 600.0),
+            'fade_in': [num(c, 'fadeinstart', 20.0), num(c, 'fadeinend', 100.0)], 'volumes': volumes}
 
 
 def probe_volumes(ents):
