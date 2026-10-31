@@ -107,6 +107,9 @@ if sun:
 runtime_lights = map_lighting.add_lights(coll, settings.get('lights') or [])
 print(f'runtime lights: {len(runtime_lights)}, '
       f'{map_lighting.unblock_own_light(runtime_lights)} shadow linked past their own fixtures')
+# after unblock_own_light, which would take the masks for fixtures
+barn_masks = map_lighting.add_barn_masks(coll, runtime_lights, settings.get('lights') or [], title)
+print(f'barn masks: {len(barn_masks)}')
 
 probes = 0
 volumes = settings.get('probe_volumes')

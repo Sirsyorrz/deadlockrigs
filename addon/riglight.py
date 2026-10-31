@@ -387,9 +387,41 @@ def map_exposure(scene):
     return 0.0
 
 
+BARN_MASK = 'dlr_barn_mask'
+
+
+def exclude_barn_masks(scene):
+    """Shadow links the scene's own lights past the map's barn light masks, which only their barn light should see.
+    The map's lights are linked at build time. Returns the number of lights changed."""
+    masks = [ob for ob in scene.objects if BARN_MASK in ob]
+    if not masks:
+        return 0
+    changed = 0
+    for light in scene.objects:
+        if light.type != 'LIGHT' or light.library is not None or light.get('dlr_map_light'):
+            continue
+        coll = light.light_linking.blocker_collection
+        if coll is not None and coll.library is not None:
+            continue
+        if coll is None:
+            coll = bpy.data.collections.new(f'{light.name} barn masks')
+            light.light_linking.blocker_collection = coll
+        missing = [m for m in masks if m.name_full not in {o.name_full for o in coll.objects}]
+        for m in missing:
+            coll.objects.link(m)
+        excluded = {m.name_full for m in masks}
+        # the light linking entries follow the order of coll.objects
+        for ob, item in zip(coll.objects, coll.collection_objects):
+            if ob.name_full in excluded:
+                item.light_linking.link_state = 'EXCLUDE'
+        changed += bool(missing)
+    return changed
+
+
 def light_rigs(scene):
-    """Adds the probe light to the scene's rig materials. Returns the number of materials, or None if no map in the
-    file has light probes for rigs."""
+    """Adds the probe light to the scene's rig materials and keeps the scene's own lights from seeing the barn light
+    masks. Returns the number of materials, or None if no map in the file has light probes for rigs."""
+    exclude_barn_masks(scene)
     probes = probe_group()
     if probes is None:
         return None
@@ -402,8 +434,9 @@ def light_rigs(scene):
 class DLR_OT_light_rigs(bpy.types.Operator):
     bl_idname = 'dlr.light_rigs'
     bl_label = 'Light Rigs'
-    bl_description = ("Light the scene's rigs with the map's light probes, as the game lights heroes. Linking or "
-                      'appending a map, or appending a rig with a map in the scene, does this already')
+    bl_description = ("Light the scene's rigs with the map's light probes, as the game lights heroes, and keep "
+                      "lights you added from casting the map's barn light masks. Linking or appending a map, or "
+                      'appending a rig with a map in the scene, does this already')
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):

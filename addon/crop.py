@@ -18,6 +18,8 @@ import bpy
 import numpy as np
 
 BOX = 'dlr_crop_box'
+# barn light masks (tools/map_lighting.add_barn_masks) shape lights wherever they reach; never cropped
+BARN_MASK = 'dlr_barn_mask'
 ORIGINAL = 'dlr_crop_mesh'
 HIDDEN = 'dlr_crop_hidden'
 CROP_OF = 'dlr_crop_of'
@@ -44,7 +46,7 @@ def map_meshes(scene):
     seen = set()
     for c in map_collections(scene):
         for ob in c.all_objects:
-            if ob.type == 'MESH' and ob.name not in seen:
+            if ob.type == 'MESH' and ob.name not in seen and BARN_MASK not in ob:
                 seen.add(ob.name)
                 yield ob
 
@@ -250,7 +252,7 @@ def crop_linked(scene, coll, region_codes, whole_objects, keep_re):
         if ob.type == 'LIGHT' and (ob.light_linking.receiver_collection or ob.light_linking.blocker_collection):
             lights.append(ob)
             continue
-        if ob.type != 'MESH':
+        if ob.type != 'MESH' or BARN_MASK in ob:
             view.objects.link(ob)
             continue
         keep, totals = faces_kept(ob, ob.data, region_codes, whole_objects, keep_re)

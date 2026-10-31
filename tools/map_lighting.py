@@ -634,6 +634,7 @@ def add_lights(coll, lights):
         ob.matrix_world = Matrix.LocRotScale(Vector(spec['position']), basis.to_quaternion(), Vector(scale))
         ob['dlr_fog'] = spec.get('fog', 0.0)
         ob['dlr_near'] = spec.get('near', 0.0)
+        ob['dlr_map_light'] = True
         coll.objects.link(ob)
         obs.append(ob)
     return obs
@@ -708,6 +709,93 @@ def unblock_own_light(lights):
         print(f'  {ob.name}: not shadowed by {", ".join(b.name for b in blockers)}')
         changed += 1
     return changed
+
+
+MASK = 'dlr_barn_mask'
+MASK_POINTS = 96
+# a rectangle's exponent; high enough for sharp corners, low enough to stay finite
+RECTANGLE_EXPONENT = 200.0
+
+
+def mask_mesh(name, half, reach, exponent, margin):
+    """A flat ring in XY: the opening (a superellipse of half size `half`) cut out of a rectangle wide enough to
+    take the cone's footprint and the penumbra round it."""
+    p = exponent or RECTANGLE_EXPONENT
+    outer = [r * 1.5 + margin for r in reach]
+    verts, faces = [], []
+    for i in range(MASK_POINTS):
+        t = 2 * math.pi * i / MASK_POINTS
+        c, s = math.cos(t), math.sin(t)
+        verts.append((half[0] * math.copysign(abs(c) ** (2 / p), c), half[1] * math.copysign(abs(s) ** (2 / p), s), 0))
+        k = min(outer[0] / max(abs(c), 1e-9), outer[1] / max(abs(s), 1e-9))
+        verts.append((c * k, s * k, 0))
+    for i in range(MASK_POINTS):
+        j = (i + 1) % MASK_POINTS
+        faces.append((2 * i, 2 * j, 2 * j + 1, 2 * i + 1))
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, [], faces)
+    return mesh
+
+
+def blocker_collection(light_ob):
+    coll = light_ob.light_linking.blocker_collection
+    if coll is None:
+        coll = bpy.data.collections.new(f'{light_ob.name} unblocked')
+        light_ob.light_linking.blocker_collection = coll
+    return coll
+
+
+def exclude_blockers(light_ob, objects):
+    coll = blocker_collection(light_ob)
+    for ob in objects:
+        if ob.name not in coll.objects:
+            coll.objects.link(ob)
+    excluded = {ob.name for ob in objects}
+    # the light linking entries follow the order of coll.objects
+    for ob, item in zip(coll.objects, coll.collection_objects):
+        if ob.name in excluded:
+            item.light_linking.link_state = 'EXCLUDE'
+
+
+def add_barn_masks(coll, light_obs, specs, title):
+    """Cuts each barn light's cone to the game's rectangle or superellipse: a ring round the opening that only that
+    light sees, as a shadow (shadow linking); every other light in the collection skips them all. A barn the game
+    draws without shadows keeps only its mask as a blocker. Returns the masks."""
+    from mathutils import Matrix
+    masks_coll = bpy.data.collections.new(f'{title} barn masks')
+    coll.children.link(masks_coll)
+    masks = {}
+    for ob, spec in zip(light_obs, specs):
+        m = spec.get('mask')
+        if not m:
+            continue
+        mask = bpy.data.objects.new(f'{ob.name} mask', mask_mesh(f'{ob.name} mask', m['half'], m['reach'],
+                                                                   m['exponent'], 2 * ob.data.shadow_soft_size))
+        rotation = ob.matrix_world.to_quaternion()
+        mask.matrix_world = Matrix.LocRotScale(m['origin'], rotation, None)
+        mask.visible_camera = mask.visible_diffuse = mask.visible_glossy = False
+        mask.visible_transmission = mask.visible_volume_scatter = False
+        mask.hide_probe_volume = mask.hide_probe_sphere = mask.hide_probe_plane = True
+        mask.hide_select = True
+        mask[MASK] = ob.name
+        masks_coll.objects.link(mask)
+        masks[ob] = mask
+        if not ob.data.use_shadow:
+            ob.data.use_shadow = True
+            only = bpy.data.collections.new(f'{ob.name} mask only')
+            only.objects.link(mask)
+            ob.light_linking.blocker_collection = only
+    all_masks = list(masks.values())
+    for ob in coll.all_objects:
+        if ob.type != 'LIGHT':
+            continue
+        others = [m for m in all_masks if m is not masks.get(ob)]
+        if ob in masks and ob.light_linking.blocker_collection and \
+                ob.light_linking.blocker_collection.name.endswith(' mask only'):
+            continue
+        if others:
+            exclude_blockers(ob, others)
+    return all_masks
 
 
 def exclude_from_light(light_ob, objects, name):
