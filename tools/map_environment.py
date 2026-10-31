@@ -232,6 +232,25 @@ def probe_volumes(ents):
     return vols
 
 
+def env_maps(ents):
+    """Box projected reflection cubemaps (env_combined_light_probe_volume, env_cubemap_box) in the order the game
+    blends them: highest indoor/outdoor level first, then by array index. Source units. Sphere cubemaps are left out
+    (neither map has any)."""
+    maps = []
+    for e in ents:
+        if e.get('classname') not in ('env_combined_light_probe_volume', 'env_cubemap_box') or not enabled(e):
+            continue
+        if not e.get('cubemaptexture') or e.get('customcubemaptexture') or 'array_index' not in e:
+            continue
+        maps.append({'origin': [float(v) for v in e['origin']], 'rotation': angles_matrix(e.get('angles', (0, 0, 0))),
+                     'mins': [float(v) for v in e['box_mins']], 'maxs': [float(v) for v in e['box_maxs']],
+                     'fade': [float(v) for v in e.get('edge_fade_dists') or (0, 0, 0)],
+                     'level': int(num(e, 'indoor_outdoor_level')), 'index': int(num(e, 'array_index')),
+                     'texture': e['cubemaptexture']})
+    maps.sort(key=lambda m: (-m['level'], m['index']))
+    return maps
+
+
 def tonemap(vpost_dump):
     block = re.search(r'm_toneMapParams\s*=\s*\{(.*?)\}', vpost_dump, re.S)
     if not block:

@@ -15,13 +15,18 @@ What the game does for the ambient part, and so does the group:
 - Rim light: the light on the point times a wrap term toward the silhouette, on upward facing normals only, not
   multiplied by albedo. The game also rims the direct light and occludes rims by screen depth; this only rims the
   ambient.
+- Reflections, when the map has 'Deadlock reflections' (tools/map_reflections.py): the cubemaps through the split
+  sum, scaled by the ambient's luminance over what the cubemaps saw, capped at (2 roughness + 1), 32 times that
+  under exposure control. No multiple scattering, unlike map surfaces, and none at full roughness where the
+  material asks (F_NO_SPECULAR_AT_FULL_ROUGHNESS).
 """
 import bpy
 
 PROBE_GROUP = 'Deadlock probe light'
+REFLECTION_GROUP = 'Deadlock reflections'
 RIG_GROUP = 'Deadlock rig light'
 NODE = 'dlr_rig_light'
-VERSION = 2
+VERSION = 3
 
 # materials/dev/npr_dummy.vmat, which the engine feeds to every NPR material (game version 6821)
 NPR = {'diffuse_step_sharpness': 0.9, 'diffuse_pbr_blend': 0.25, 'primary_light_camera_weight': 0.35,
@@ -38,6 +43,10 @@ def source_of(socket):
 
 def probe_group():
     return next((g for g in bpy.data.node_groups if g.name == PROBE_GROUP), None)
+
+
+def reflection_group():
+    return next((g for g in bpy.data.node_groups if g.name == REFLECTION_GROUP), None)
 
 
 class Graph:
@@ -135,11 +144,41 @@ class Graph:
         return total
 
 
-def build_rig_group(tree, probes):
+def add_reflections(g, reflections, inp, ambient, normal, ao, control):
+    """The game's hero env map specular; see the module docstring."""
+    albedo, metallic = inp.outputs['Base Color'], inp.outputs['Metallic']
+    rough = g.sat(inp.outputs['Roughness'])
+    f0 = g.vlerp((0.04, 0.04, 0.04), albedo, metallic)
+    ax, ay, az = g.split(albedo)
+    f0 = g.vec('SCALE', f0, scale=g.sat(g.math('MULTIPLY', g.math('MAXIMUM', ax, g.math('MAXIMUM', ay, az)), 25.0)))
+    node = g.nodes.new('ShaderNodeGroup')
+    node.name = node.label = 'Reflections'
+    node.node_tree = reflections
+    g.put(node.inputs['Normal'], normal)
+    g.put(node.inputs['Roughness'], rough)
+    g.put(node.inputs['Specular Color'], f0)
+    luma = g.vec('DOT_PRODUCT', ambient, (0.2125, 0.7154, 0.0721))
+    baked = node.outputs['Baked Luma']
+    ceiling = g.math('MULTIPLY', g.math('MULTIPLY_ADD', rough, 2.0, 1.0), g.lerp(1.0, 32.0, control))
+    norm = g.math('MINIMUM', g.math('DIVIDE', luma, g.math('MAXIMUM', baked, 1e-6)), ceiling)
+    norm = g.select(g.math('GREATER_THAN', baked, 0.0), norm, 1.0)
+    kill = g.sat(g.math('MULTIPLY_ADD', g.math('SUBTRACT', rough, 0.99608), -255.0, 1.0))
+    kill = g.lerp(1.0, kill, inp.outputs['No Rough Specular'])
+    to_camera = g.nodes.new('ShaderNodeNewGeometry').outputs['Incoming']
+    n_dot_v = g.sat(g.vec('DOT_PRODUCT', normal, to_camera))
+    occlusion = g.sat(g.math('ADD', g.math('SUBTRACT', g.math('POWER', g.math('ADD', n_dot_v, ao),
+                                                                g.math('MULTIPLY', rough, rough)), 1.0), ao))
+    scale = g.math('MULTIPLY', g.math('MULTIPLY', norm, kill), occlusion)
+    return g.vec('SCALE', g.vec('MULTIPLY', node.outputs['Radiance'], node.outputs['Single Scatter']), scale=scale)
+
+
+def build_rig_group(tree, probes, reflections=None):
     for name, kind, default in (('Base Color', 'NodeSocketColor', None), ('Alpha', 'NodeSocketFloat', 1.0),
-                                ('Metallic', 'NodeSocketFloat', 0.0), ('Occlusion', 'NodeSocketFloat', 1.0),
+                                ('Metallic', 'NodeSocketFloat', 0.0), ('Roughness', 'NodeSocketFloat', 0.5),
+                                ('Occlusion', 'NodeSocketFloat', 1.0),
                                 ('Normal', 'NodeSocketVector', None), ('Rim Mask', 'NodeSocketFloat', 1.0),
-                                ('Transmissive', 'NodeSocketColor', (0.0, 0.0, 0.0, 1.0))):
+                                ('Transmissive', 'NodeSocketColor', (0.0, 0.0, 0.0, 1.0)),
+                                ('No Rough Specular', 'NodeSocketFloat', 0.0)):
         sock = tree.interface.new_socket(name=name, in_out='INPUT', socket_type=kind)
         if default is not None:
             sock.default_value = default
@@ -212,22 +251,29 @@ def build_rig_group(tree, probes):
     rim = g.math('MULTIPLY', g.math('MULTIPLY', rim, upward),
                  g.math('MULTIPLY', g.math('MULTIPLY', ao, inp.outputs['Rim Mask']), NPR['rim_strength']))
     total = g.vec('ADD', lit_ambient, g.vec('SCALE', ambient, scale=rim))
+    if reflections is not None:
+        specular = add_reflections(g, reflections, inp, bounce, normal, ao, control)
+        total = g.vec('ADD', total, g.vec('SCALE', specular, scale=g.value('Reflection strength', 1.0)))
     total = g.vec('SCALE', total, scale=g.math('MULTIPLY', inp.outputs['Alpha'], strength))
     g.links.new(total, out.inputs['Emission'])
     tree['dlr_version'] = VERSION
+    tree['dlr_reflections'] = reflections is not None
     return tree
 
 
-def rig_group(probes):
+def rig_group(probes, reflections=None):
     tree = bpy.data.node_groups.get(RIG_GROUP)
-    if tree is not None and tree.library is None and tree.get('dlr_version') == VERSION:
+    if tree is not None and tree.library is None and tree.get('dlr_version') == VERSION and \
+            tree.get('dlr_reflections') == (reflections is not None):
         for n in tree.nodes:
             if n.name.startswith('Probes'):
                 n.node_tree = probes
+            elif n.name == 'Reflections':
+                n.node_tree = reflections
         return tree
     if tree is not None and tree.library is None:
         tree.name = RIG_GROUP + ' (old)'
-    return build_rig_group(bpy.data.node_groups.new(RIG_GROUP, 'ShaderNodeTree'), probes)
+    return build_rig_group(bpy.data.node_groups.new(RIG_GROUP, 'ShaderNodeTree'), probes, reflections)
 
 
 def principled(mat):
@@ -261,13 +307,14 @@ def npr_inputs(mat):
     vmat = mat.get('vmat') or {}
     textures, vectors = vmat.get('TextureParams') or {}, vmat.get('VectorParams') or {}
     rim, transmissive = 1.0, (0.0, 0.0, 0.0)
+    no_rough_spec = float(bool((vmat.get('IntParams') or {}).get('F_NO_SPECULAR_AT_FULL_ROUGHNESS')))
     if '_vmat_g_ttintmaskrimlightmask' in str(textures.get('g_tTintMaskRimLightMask', '')):
         rim = float((vectors.get('TextureRimLightMask1') or (1.0,))[0])
     if '_vmat_g_tnprtransmissivecolor' in str(textures.get('g_tNprTransmissiveColor', '')):
         # the generated texture is sRGB (its reflectivity is the linearized constant)
         transmissive = tuple(srgb_to_linear(float(c)) for c in
                              list(vectors.get('TextureNprTramsissiveColor1') or (0.0, 0.0, 0.0))[:3])
-    return rim, transmissive
+    return rim, transmissive, no_rough_spec
 
 
 def light_material(mat, group):
@@ -275,7 +322,7 @@ def light_material(mat, group):
     if NODE in nodes:
         node = nodes[NODE]
         node.node_tree = group
-        for name in ('Base Color', 'Alpha', 'Metallic', 'Occlusion', 'Normal'):
+        for name in ('Base Color', 'Alpha', 'Metallic', 'Roughness', 'Occlusion', 'Normal'):
             if node.inputs[name].is_linked:
                 continue
             found = principled(mat)
@@ -293,7 +340,7 @@ def light_material(mat, group):
         node.name = node.label = NODE
         node.node_tree = group
         node.location = bsdf.location.x, bsdf.location.y - 700
-        for name in ('Base Color', 'Alpha', 'Metallic'):
+        for name in ('Base Color', 'Alpha', 'Metallic', 'Roughness'):
             src = source_of(bsdf.inputs[name])
             if src:
                 links.new(src, node.inputs[name])
@@ -312,9 +359,10 @@ def light_material(mat, group):
         links.new(surface, add.inputs[0])
         links.new(emission.outputs[0], add.inputs[1])
         links.new(add.outputs[0], output.inputs['Surface'])
-    rim, transmissive = npr_inputs(mat)
+    rim, transmissive, no_rough_spec = npr_inputs(mat)
     node.inputs['Rim Mask'].default_value = rim
     node.inputs['Transmissive'].default_value = (*transmissive, 1.0)
+    node.inputs['No Rough Specular'].default_value = no_rough_spec
     return True
 
 
@@ -345,7 +393,7 @@ def light_rigs(scene):
     probes = probe_group()
     if probes is None:
         return None
-    group = rig_group(probes)
+    group = rig_group(probes, reflection_group())
     group.nodes['Tonemap scale'].outputs[0].default_value = 2.0 ** map_exposure(scene)
     mats = {slot.material for ob in rig_meshes(scene) for slot in ob.material_slots if slot.material}
     return sum(light_material(m, group) for m in mats)
@@ -376,6 +424,8 @@ def draw(layout, context):
         row.prop(tree.nodes['Strength'].outputs[0], 'default_value', text='Strength')
         if 'Exposure control' in tree.nodes:
             layout.prop(tree.nodes['Exposure control'].outputs[0], 'default_value', text='Exposure Control')
+        if 'Reflection strength' in tree.nodes:
+            layout.prop(tree.nodes['Reflection strength'].outputs[0], 'default_value', text='Reflections')
 
 
 def register():

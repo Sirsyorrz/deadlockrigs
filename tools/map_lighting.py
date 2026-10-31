@@ -113,12 +113,45 @@ def sh_factor(g, w, normal):
     return g.math('MAXIMUM', 0.0, g.math('ADD', linear, zonal))
 
 
-def baked_light_group(dc_path=None, band_paths=()):
-    """Node group: Base Color, Alpha, Normal -> Emission (albedo * the baked irradiance: the lightmap's on lightmapped
-    surfaces, the light probes' elsewhere)."""
+def specular_color(g, albedo, metallic):
+    """The game's F0: mix(0.04, albedo, metalness), faded out on near black albedo."""
+    f0 = g.vec('ADD', (0.04, 0.04, 0.04), g.vec('SCALE', g.vec('SUBTRACT', albedo, (0.04, 0.04, 0.04)), metallic))
+    c = g.split(albedo)
+    peak = g.math('MAXIMUM', c[0], g.math('MAXIMUM', c[1], c[2]))
+    return g.vec('SCALE', f0, g.math('MULTIPLY', peak, 25.0, clamp=True))
+
+
+def add_env_specular(g, reflections, albedo, metallic, roughness, normal, irradiance, diffuse):
+    """The game's indirect specular on top of a baked diffuse: the cubemaps through the split sum, scaled by the env
+    map normalization (the irradiance's luminance over what the cubemaps saw, capped at 2 roughness + 1), plus the
+    multiple scattering lit by the irradiance; the diffuse loses the energy both take. Returns the sum."""
+    rough = g.math('MAXIMUM', roughness, 0.05)
+    node = g.node('ShaderNodeGroup', node_tree=reflections)
+    for name, value in (('Normal', normal), ('Roughness', rough),
+                        ('Specular Color', specular_color(g, albedo, metallic))):
+        g.put(node.inputs[name], value)
+    single, multi = node.outputs['Single Scatter'], node.outputs['Multi Scatter']
+    luma = g.vec('DOT_PRODUCT', irradiance, (0.2125, 0.7154, 0.0721))
+    ceiling = g.math('ADD', g.math('MULTIPLY', rough, 2.0), 1.0)
+    baked = node.outputs['Baked Luma']
+    norm = g.math('MINIMUM', g.math('DIVIDE', luma, g.math('MAXIMUM', baked, 1e-6)), ceiling)
+    # no cubemap baked here: the game skips the division
+    norm = g.math('ADD', g.math('MULTIPLY', norm, g.math('GREATER_THAN', baked, 0.0)),
+                  g.math('LESS_THAN', baked, 1e-9))
+    specular = g.vec('ADD', g.vec('MULTIPLY', g.vec('SCALE', node.outputs['Radiance'], norm), single),
+                     g.vec('MULTIPLY', multi, irradiance))
+    keep = g.vec('MAXIMUM', g.vec('SUBTRACT', (1.0, 1.0, 1.0), g.vec('ADD', single, multi)), (0.0, 0.0, 0.0))
+    return g.vec('ADD', g.vec('MULTIPLY', diffuse, keep), specular)
+
+
+def baked_light_group(dc_path=None, band_paths=(), reflections=None):
+    """Node group: Base Color, Alpha, Normal, Roughness, Metallic -> Emission (albedo * the baked irradiance: the
+    lightmap's on lightmapped surfaces, the light probes' elsewhere; with the reflections group, plus the game's
+    cubemap specular)."""
     tree = bpy.data.node_groups.new(GROUP, 'ShaderNodeTree')
     for name, kind in (('Base Color', 'NodeSocketColor'), ('Alpha', 'NodeSocketFloat'),
-                       ('Normal', 'NodeSocketVector')):
+                       ('Normal', 'NodeSocketVector'), ('Roughness', 'NodeSocketFloat'),
+                       ('Metallic', 'NodeSocketFloat')):
         tree.interface.new_socket(name=name, in_out='INPUT', socket_type=kind)
     tree.interface.new_socket(name='Emission', in_out='OUTPUT', socket_type='NodeSocketColor')
     g = Graph(tree)
@@ -145,6 +178,12 @@ def baked_light_group(dc_path=None, band_paths=()):
     strength.outputs[0].default_value = 1.0
     scale = g.math('MULTIPLY', inp.outputs['Alpha'], strength.outputs[0])
     albedo_light = g.mix('MULTIPLY', inp.outputs['Base Color'], irradiance)
+    if reflections is not None:
+        metallic = inp.outputs['Metallic']
+        diffuse_albedo = g.vec('SCALE', inp.outputs['Base Color'], g.math('SUBTRACT', 1.0, metallic))
+        albedo_light = add_env_specular(g, reflections, inp.outputs['Base Color'], metallic,
+                                        inp.outputs['Roughness'], g.vec('NORMALIZE', inp.outputs['Normal']),
+                                        irradiance, g.vec('MULTIPLY', diffuse_albedo, irradiance))
     g.links.new(g.vec('SCALE', albedo_light, scale), out.inputs['Emission'])
     return tree
 
@@ -181,7 +220,9 @@ def add_baked_light(mat, group):
     node = nodes.new('ShaderNodeGroup')
     node.node_tree = group
     node.location = bsdf.location.x, bsdf.location.y - 700
-    for name in ('Base Color', 'Alpha'):
+    for name in ('Base Color', 'Alpha', 'Roughness', 'Metallic'):
+        if name not in node.inputs:
+            continue
         src = source_of(bsdf.inputs[name])
         if src:
             links.new(src, node.inputs[name])

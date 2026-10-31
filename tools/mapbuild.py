@@ -60,7 +60,7 @@ def game_version(pak):
 
 
 # raised when a change to the build makes earlier builds wrong, so they show as needing a rebuild
-BUILDER = 12
+BUILDER = 13
 
 
 def game_stamp(pak, slug, mods=True):
@@ -195,6 +195,15 @@ class MapBuilder(Builder):
             volumes = [v for v in volumes if v['texture'] == atlas]
         if volumes and self.decompile(m, volumes[0]['texture'], vpks[:1]):
             settings['probe_volumes'] = volumes
+        env_maps = env.env_maps(ents)
+        if env_maps:
+            # every cubemap of a map is a slice of one array texture
+            texture = max({e['texture'] for e in env_maps}, key=[e['texture'] for e in env_maps].count)
+            env_maps = [e for e in env_maps if e['texture'] == texture]
+            core = os.path.join(os.path.dirname(os.path.dirname(self.pak)), 'core', 'pak01_dir.vpk')
+            if self.decompile(m, texture, vpks[:1], os.path.join(m.lighting, 'cubemaps')) and \
+                    self.decompile(m, 'textures/dev/brdf_lut.vtex', [core, self.pak], os.path.join(m.lighting, 'brdf')):
+                settings['env_maps'] = env_maps
         fog = env.volumetric_fog(ents)
         if fog and self.decompile(m, fog['texture'], vpks[:1], os.path.join(m.lighting, 'volumetric_fog')):
             settings['volumetric_fog'] = fog
@@ -204,6 +213,7 @@ class MapBuilder(Builder):
         json.dump(settings, open(os.path.join(m.lighting, 'settings.json'), 'w', encoding='utf-8'), indent=1)
         log(f'  lighting: sun {"baked" if settings["sun"] and settings["sun"]["baked"] else "live"}, '
             f'{len(settings["lights"])} runtime lights, {len(settings.get("probe_volumes") or [])} light probe volumes, '
+            f'{len(settings.get("env_maps") or [])} cubemaps, '
             f'sky {"yes" if "sky" in settings else "no"}, fog {"cubemap " if cube else ""}'
             f'{"gradient " if settings["gradient_fog"] else ""}'
             f'{"volumetric" if settings.get("volumetric_fog") else ""}')

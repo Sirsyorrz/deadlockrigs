@@ -19,6 +19,7 @@ import map_blend  # noqa: E402
 import map_fog  # noqa: E402
 import map_lighting  # noqa: E402
 import map_probes  # noqa: E402
+import map_reflections  # noqa: E402
 
 args = sys.argv[sys.argv.index('--') + 1:]
 gltf, out_blend, slug, title, version = args[:5]
@@ -116,8 +117,13 @@ if volumes:
     map_probes.add_probe_light(coll, title, atlas, volumes, light_dir)
     del atlas
 lightmaps = lightmap_files() if lit else None
+reflections = None
+if settings.get('env_maps'):
+    reflections = map_reflections.add_reflections(coll, title, settings['env_maps'],
+                                                  os.path.join(lighting_dir, 'cubemaps'),
+                                                  os.path.join(lighting_dir, 'brdf'), light_dir)
 if lightmaps or probes:
-    group = map_lighting.baked_light_group(*(lightmaps or (None, ())))
+    group = map_lighting.baked_light_group(*(lightmaps or (None, ())), reflections=reflections)
     done = sum(map_lighting.add_baked_light(m, group) for m in mats)
     print(f'baked light: {len(lit)} lightmapped meshes, {probes:,} vertices lit from light probes, '
           f'{done}/{len(mats)} materials')
