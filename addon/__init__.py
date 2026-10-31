@@ -284,21 +284,21 @@ def start(context, slug, kind):
 
 # ---------------------------------------------------------------- opening a rig
 
+def has_rigs():
+    return any('dlrig' in o for o in bpy.data.objects if o.type == 'ARMATURE')
+
+
 def register_rig_ui():
-    """Runs the rig's panel script. Only for rigs in the output folder, which this add-on built."""
-    text = bpy.data.texts.get('dlrig_ui.py')
-    if text is None or hasattr(bpy.types, 'DLRIG_PT_main'):
-        return
-    exec(compile(text.as_string(), text.name, 'exec'), {'__name__': 'dlrig_ui'})
+    """Registers the add-on's own copy of the rig panel. It serves every rig in the file and replaces the copy saved
+    in a rig's text block, which in older rigs only knows its own hero."""
+    path = os.path.join(tools_dir(), 'rig_ui.py')
+    with open(path) as f:
+        exec(compile(f.read(), path, 'exec'), {'__name__': 'dlrig_ui'})
 
 
 @persistent
 def on_load(_dummy):
-    # with "Auto Run Python Scripts" off Blender skips the rig's panel script; rigs this add-on built are trusted
-    if bpy.context.preferences.filepaths.use_scripts_auto_execute or not bpy.data.filepath:
-        return
-    out = os.path.normcase(os.path.realpath(output_dir()))
-    if os.path.normcase(os.path.realpath(bpy.data.filepath)).startswith(out + os.sep):
+    if has_rigs():
         register_rig_ui()
 
 
@@ -309,8 +309,6 @@ def open_rig(path):
 
 def append_rig(path, slug):
     name = hero_name(slug)
-    if bpy.data.texts.get('dlrig_ui.py') or any('dlrig' in o for o in bpy.data.objects if o.type == 'ARMATURE'):
-        print('[Deadlock Rigs] this file already has a rig; its panel serves the first one')
     with bpy.data.libraries.load(path) as (src, dst):
         dst.collections = [c for c in src.collections if c == name]
         dst.texts = [t for t in src.texts if t.startswith('dlrig_')]
@@ -320,6 +318,11 @@ def append_rig(path, slug):
         for ob in c.all_objects:
             if ob.type == 'ARMATURE' and 'dlrig' in ob:
                 ob['anim_library'] = os.path.join(os.path.dirname(path), f'{slug}_anims.blend')
+                # older rigs don't point to their texts, and a second rig's texts arrive renamed (.001)
+                for t in dst.texts:
+                    prop = next((p for p in ('dlrig_ui', 'dlrig_physics') if t.name.startswith(p)), None)
+                    if prop and not isinstance(ob.get(prop), bpy.types.Text):
+                        ob[prop] = t
     register_rig_ui()
     riglight.light_rigs(bpy.context.scene)
 

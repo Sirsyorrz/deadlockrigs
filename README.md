@@ -46,8 +46,9 @@ Export Animations saves all of the hero's game animations as `<hero>_animations.
 next to the rig. With that file there, the rig gets a Game Animations panel to load clips as actions, insert them at
 the current frame, copy a pose, or layer the idle's breathing on top. Keep it next to the rig file.
 
-The rig's controls are in the sidebar under a tab named after the hero, in Pose Mode. If you open a rig file
-yourself, allow "Run Python Scripts" so that panel loads.
+The rig's controls are in the sidebar under the Hero Rig tab, in Pose Mode. With several rigs in a scene the panel
+follows the selected rig (or the selected hero's mesh). If you open a rig file without the add-on, allow "Run
+Python Scripts" so that panel loads.
 
 Settings are in Preferences > Add-ons > Deadlock Rigs: output folder, Deadlock folder (found through Steam when
 empty), an existing Source2Viewer-CLI, saving the model as `.glb`/`.fbx` too, and keeping build files for bug reports.

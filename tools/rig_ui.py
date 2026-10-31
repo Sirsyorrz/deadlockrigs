@@ -1,5 +1,8 @@
-# Hero rig panel: 3D View sidebar (N) > <hero>. rig.py prepends HERO, HAS_FACE, CLOTH_LINKS and the preset data
-# (ARKIT, GROUPS, EXPRESSIONS, VISEMES, HAND_POSES) and stores this as a registered text block.
+# Hero rig panel: 3D View sidebar (N) > Hero Rig. rig.py prepends the hero's data (HERO, HAS_FACE, ARKIT, GROUPS,
+# EXPRESSIONS, VISEMES, HAND_POSES) and stores this as a registered text block, which the armature points to as
+# 'dlrig_ui'. One registered copy serves every rig in the file, so the panels read that data from the rig's own
+# text block instead of from this module's globals.
+import ast
 import json
 import math
 import os
@@ -14,18 +17,80 @@ LIMBS = {
     'arm': ('arm_upper', 'arm_lower', 'hand', 'IK_hand', 'pole_elbow', 0.45),
     'leg': ('leg_upper', 'leg_lower', 'ankle', 'IK_foot', 'pole_knee', 0.55),
 }
+UI_TEXT = 'dlrig_ui.py'
 PHYS_TEXT = 'dlrig_physics.json'
+CATEGORY = 'Hero Rig'
 
 
 def rigs():
     return [o for o in bpy.data.objects if o.type == 'ARMATURE' and 'dlrig' in o]
 
 
+def is_rig(ob):
+    return ob is not None and ob.type == 'ARMATURE' and 'dlrig' in ob
+
+
 def rig(context):
     ob = context.active_object
-    if ob and ob.type == 'ARMATURE' and 'dlrig' in ob:
+    if ob is not None and not is_rig(ob):
+        # a selected body mesh or prop stands for its rig
+        ob = ob.find_armature() or ob.parent
+    if is_rig(ob):
         return ob
     return next(iter(rigs()), None)
+
+
+_headers = {}
+
+
+def parse_header(text):
+    key = (text.name, len(text.lines))
+    if key not in _headers:
+        data = {}
+        for line in text.lines:
+            if line.body.startswith('#'):
+                break
+            name, sep, value = line.body.partition(' = ')
+            if sep and name.isupper():
+                data[name] = ast.literal_eval(value)
+        _headers[key] = data
+    return _headers[key]
+
+
+def in_collection_named(ob, name):
+    return any((c.name == name or c.name.startswith(name + '.')) and ob.name in c.all_objects
+               for c in bpy.data.collections)
+
+
+def ui_text(ob):
+    t = ob.get('dlrig_ui')
+    if isinstance(t, bpy.types.Text):
+        return t
+    # rigs built before the armature pointed to its text: a second appended rig's text became dlrig_ui.py.001
+    texts = [t for t in bpy.data.texts if t.name.startswith(UI_TEXT)]
+    if len(texts) > 1:
+        match = next((t for t in texts if in_collection_named(ob, parse_header(t).get('HERO', ''))), None)
+        if match:
+            return match
+    return bpy.data.texts.get(UI_TEXT) or next(iter(texts), None)
+
+
+def rig_data(ob):
+    t = ui_text(ob) if ob else None
+    return parse_header(t) if t else {}
+
+
+def phys_text(ob):
+    t = ob.get('dlrig_physics')
+    if isinstance(t, bpy.types.Text):
+        return t
+    ui = ui_text(ob)
+    return bpy.data.texts.get(ui.name.replace(UI_TEXT, PHYS_TEXT) if ui else PHYS_TEXT)
+
+
+def phys_config(ob):
+    t = phys_text(ob) if ob else None
+    return json.loads(t.as_string()) if t else {}
 
 
 def limb_list(ob):
@@ -128,10 +193,11 @@ class DLRIG_OT_expression(bpy.types.Operator):
 
     def execute(self, context):
         ob = rig(context)
+        data = rig_data(ob)
         pb = ob.pose.bones[FACE]
-        preset = (VISEMES if self.viseme else EXPRESSIONS)[self.name]
+        preset = data['VISEMES' if self.viseme else 'EXPRESSIONS'][self.name]
         s = context.scene.dlrig_strength
-        for k in ARKIT:
+        for k in data['ARKIT']:
             v = preset.get(k, 0.0) * s
             pb[k] = min(1.0, pb[k] + v) if self.add else v
             if autokey(context):
@@ -149,7 +215,7 @@ class DLRIG_OT_reset_face(bpy.types.Operator):
     def execute(self, context):
         ob = rig(context)
         pb = ob.pose.bones[FACE]
-        for k in ARKIT:
+        for k in rig_data(ob)['ARKIT']:
             pb[k] = 0.0
             if autokey(context):
                 pb.keyframe_insert(f'["{k}"]', group='Face')
@@ -175,7 +241,7 @@ class DLRIG_OT_key_face(bpy.types.Operator):
     def execute(self, context):
         ob = rig(context)
         pb = ob.pose.bones[FACE]
-        for k in ARKIT:
+        for k in rig_data(ob)['ARKIT']:
             pb.keyframe_insert(f'["{k}"]', group='Face')
         for b in ob.pose.bones:
             if b.name.startswith(FACE_CTRLS):
@@ -198,7 +264,7 @@ class DLRIG_OT_hand(bpy.types.Operator):
         ob = rig(context)
         s = context.scene.dlrig_strength
         for side in ('L', 'R') if self.side == 'B' else (self.side,):
-            for bone, q in HAND_POSES[self.name].get(side, {}).items():
+            for bone, q in rig_data(ob)['HAND_POSES'][self.name].get(side, {}).items():
                 pb = ob.pose.bones[bone]
                 pb.rotation_mode = 'QUATERNION'
                 pb.rotation_quaternion = Quaternion().slerp(Quaternion(q), s)
@@ -618,7 +684,7 @@ class DLRIG_OT_switch_follow(bpy.types.Operator):
 
 # ---------------------------------------------------------------- game animations
 
-_clips = []
+_clips = {}
 
 
 def anim_library(ob):
@@ -627,16 +693,17 @@ def anim_library(ob):
 
 
 def clip_items(self, context):
-    if not _clips:
-        ob = rig(context)
-        path = anim_library(ob) if ob else ''
+    ob = rig(context)
+    path = anim_library(ob) if ob else ''
+    # kept in a module dict: Blender reads the item strings after the callback returns
+    if path not in _clips:
         try:
             with bpy.data.libraries.load(path) as (src, _dst):
                 names = sorted(src.actions)
         except OSError:
             names = []
-        _clips.extend((n, n[5:] if n.startswith('game_') else n, '') for n in names)
-    return _clips
+        _clips[path] = [(n, n[5:] if n.startswith('game_') else n, '') for n in names]
+    return _clips[path]
 
 
 def append_clip(ob, name):
@@ -1131,7 +1198,7 @@ Uses the game's own cloth settings and body collision capsules"""
     def execute(self, context):
         ob = rig(context)
         sc = context.scene
-        cfg = json.loads(bpy.data.texts[PHYS_TEXT].as_string())
+        cfg = phys_config(ob)
         t0 = time.time()
         clear_physics(ob)
         pb = ob.pose.bones
@@ -1272,14 +1339,19 @@ class DLRIG_OT_clear_physics(bpy.types.Operator):
 def dlrig_auto_physics(scene, *_args):
     if not scene.dlrig_phys_auto:
         return
-    ob = bpy.context.active_object if bpy.context.active_object in rigs() else next(iter(rigs()), None)
-    if not ob or not ob.animation_data or not ob.animation_data.action:
-        return
-    try:
-        with bpy.context.temp_override(active_object=ob, object=ob):
-            bpy.ops.dlrig.bake_physics()
-    except RuntimeError as e:
-        print('dlrig physics:', e)
+    for ob in rigs():
+        if not ob.animation_data or not ob.animation_data.action or not has_physics(ob):
+            continue
+        try:
+            with bpy.context.temp_override(active_object=ob, object=ob):
+                bpy.ops.dlrig.bake_physics()
+        except RuntimeError as e:
+            print('dlrig physics:', e)
+
+
+def has_physics(ob):
+    cfg = phys_config(ob)
+    return bool(cfg.get('chains') or cfg.get('cloth', {}).get('nodes'))
 
 
 # ---------------------------------------------------------------- panels
@@ -1288,12 +1360,16 @@ def dlrig_auto_physics(scene, *_args):
 class DLRIG_PT_main(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = HERO
-    bl_label = HERO + ' Rig'
+    bl_category = CATEGORY
+    bl_label = ''
 
     @classmethod
     def poll(cls, context):
         return rig(context) is not None
+
+    def draw_header(self, context):
+        ob = rig(context)
+        self.layout.label(text=f"{rig_data(ob).get('HERO', ob['dlrig'])} Rig")
 
     def draw(self, context):
         ob = rig(context)
@@ -1307,7 +1383,7 @@ class DLRIG_PT_main(bpy.types.Panel):
             grid.prop(c, 'is_visible', text=c.name, toggle=True)
         col.separator()
         col.prop(context.scene, 'dlrig_strength', slider=True)
-        if HAS_FACE:
+        if FACE in ob.pose.bones:
             row = col.row(align=True)
             row.operator('dlrig.reset_face', icon='LOOP_BACK')
             row.operator('dlrig.key_face', icon='KEY_HLT')
@@ -1317,7 +1393,7 @@ class DLRIG_PT_main(bpy.types.Panel):
 class DLRIG_PT_body(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = HERO
+    bl_category = CATEGORY
     bl_label = 'Arms & Legs (FK / IK)'
     bl_parent_id = 'DLRIG_PT_main'
 
@@ -1375,7 +1451,7 @@ def parent_row(layout, ob, bone, label):
 class DLRIG_PT_ik(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = HERO
+    bl_category = CATEGORY
     bl_label = 'IK Options'
     bl_parent_id = 'DLRIG_PT_body'
     bl_options = {'DEFAULT_CLOSED'}
@@ -1410,7 +1486,7 @@ class DLRIG_PT_ik(bpy.types.Panel):
 class DLRIG_PT_follow(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = HERO
+    bl_category = CATEGORY
     bl_label = 'Head & Arms Follow'
     bl_parent_id = 'DLRIG_PT_body'
     bl_options = {'DEFAULT_CLOSED'}
@@ -1433,7 +1509,7 @@ class DLRIG_PT_follow(bpy.types.Panel):
 class DLRIG_PT_game(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = HERO
+    bl_category = CATEGORY
     bl_label = 'Game Animations'
     bl_parent_id = 'DLRIG_PT_main'
 
@@ -1462,15 +1538,14 @@ class DLRIG_PT_game(bpy.types.Panel):
 class DLRIG_PT_physics(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = HERO
+    bl_category = CATEGORY
     bl_label = 'Physics (hair, cloth)'
     bl_parent_id = 'DLRIG_PT_main'
 
     @classmethod
     def poll(cls, context):
-        t = bpy.data.texts.get(PHYS_TEXT)
-        cfg = json.loads(t.as_string()) if t else {}
-        return bool(cfg.get('chains') or cfg.get('cloth', {}).get('nodes'))
+        ob = rig(context)
+        return ob is not None and has_physics(ob)
 
     def draw(self, context):
         ob = rig(context)
@@ -1492,17 +1567,22 @@ class DLRIG_PT_physics(bpy.types.Panel):
 class DLRIG_PT_expressions(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = HERO
+    bl_category = CATEGORY
     bl_label = 'Expressions'
     bl_parent_id = 'DLRIG_PT_main'
 
+    @classmethod
+    def poll(cls, context):
+        return rig_data(rig(context)).get('HAS_FACE', False)
+
     def draw(self, context):
+        data = rig_data(rig(context))
         grid = self.layout.grid_flow(columns=3, align=True)
-        for name in EXPRESSIONS:
+        for name in data['EXPRESSIONS']:
             grid.operator('dlrig.expression', text=name).name = name
         self.layout.label(text='Mouth shapes (lip sync)')
         grid = self.layout.grid_flow(columns=5, align=True)
-        for name in VISEMES:
+        for name in data['VISEMES']:
             op = grid.operator('dlrig.expression', text=name)
             op.name = name
             op.viseme = True
@@ -1512,16 +1592,23 @@ class DLRIG_PT_expressions(bpy.types.Panel):
 class DLRIG_PT_hands(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = HERO
+    bl_category = CATEGORY
     bl_label = 'Hands'
     bl_parent_id = 'DLRIG_PT_main'
     bl_options = {'DEFAULT_CLOSED'}
 
+    @classmethod
+    def poll(cls, context):
+        return any(rig_data(rig(context)).get('HAND_POSES', {}).values())
+
     def draw(self, context):
-        for name in HAND_POSES:
+        poses = rig_data(rig(context))['HAND_POSES']
+        for name in poses:
+            if not poses[name]:
+                continue
             row = self.layout.row(align=True)
             row.label(text=name)
-            sides = HAND_POSES[name]
+            sides = poses[name]
             for side, label in (('L', 'Left'), ('R', 'Right'), ('B', 'Both')):
                 if side != 'B' and side not in sides or side == 'B' and len(sides) < 2:
                     continue
@@ -1534,15 +1621,21 @@ def make_group_panel(title):
     class P(bpy.types.Panel):
         bl_space_type = 'VIEW_3D'
         bl_region_type = 'UI'
-        bl_category = HERO
+        bl_category = CATEGORY
         bl_label = 'Sliders: ' + title
         bl_parent_id = 'DLRIG_PT_main'
         bl_options = {'DEFAULT_CLOSED'}
 
+        @classmethod
+        def poll(cls, context):
+            data = rig_data(rig(context))
+            return data.get('HAS_FACE', False) and title in data.get('GROUPS', {})
+
         def draw(self, context):
-            pb = rig(context).pose.bones[FACE]
+            ob = rig(context)
+            pb = ob.pose.bones[FACE]
             col = self.layout.column(align=True)
-            for k in GROUPS[title]:
+            for k in rig_data(ob)['GROUPS'][title]:
                 col.prop(pb, f'["{k}"]', text=k, slider=True)
     P.__name__ = 'DLRIG_PT_sliders_' + ''.join(ch for ch in title if ch.isalnum())
     return P
@@ -1552,13 +1645,9 @@ classes = [DLRIG_OT_expression, DLRIG_OT_reset_face, DLRIG_OT_key_face, DLRIG_OT
            DLRIG_OT_snap, DLRIG_OT_mech_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
            DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
            DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_PT_main, DLRIG_PT_body, DLRIG_PT_ik, DLRIG_PT_follow,
-           DLRIG_PT_game, DLRIG_PT_physics]
-if HAS_FACE:
-    classes += [DLRIG_PT_expressions]
-if any(HAND_POSES.values()):
-    classes += [DLRIG_PT_hands]
-if HAS_FACE:
-    classes += [make_group_panel(t) for t in GROUPS]
+           DLRIG_PT_game, DLRIG_PT_physics, DLRIG_PT_expressions, DLRIG_PT_hands]
+# a panel per slider group of any rig in the file; the add-on runs this again after appending another rig
+classes += [make_group_panel(t) for t in dict.fromkeys(g for ob in rigs() for g in rig_data(ob).get('GROUPS', {}))]
 
 
 def show_tab():
@@ -1568,7 +1657,7 @@ def show_tab():
                 for r in area.regions:
                     if r.type == 'UI':
                         try:
-                            r.active_panel_category = HERO
+                            r.active_panel_category = CATEGORY
                         except (TypeError, AttributeError):
                             pass
     return None

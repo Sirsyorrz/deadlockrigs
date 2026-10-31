@@ -1774,6 +1774,9 @@ header = (f'HERO = {hero.name!r}\nHAS_FACE = {HAS_FACE!r}\nCLOTH_LINKS = {hero.c
 with open(os.path.join(os.path.dirname(__file__), 'rig_ui.py')) as f:
     ui.write(header + f.read())
 ui.use_module = True
+# ID pointers follow the rig when it is appended, through the .001 renames of a second rig's texts
+arm['dlrig_ui'] = ui
+arm['dlrig_physics'] = txt
 if HAVE_CLIPS:
     arm['anim_library'] = '//' + os.path.basename(hero.anims_blend)
     # the add-on's copy of rigdata/ is not ours to rewrite
