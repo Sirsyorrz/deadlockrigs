@@ -18,7 +18,9 @@ What the game does for the ambient part, and so does the group:
 - Reflections, when the map has 'Deadlock reflections' (tools/map_reflections.py): the cubemaps through the split
   sum, scaled by the ambient's luminance over what the cubemaps saw, capped at (2 roughness + 1), 32 times that
   under exposure control. No multiple scattering, unlike map surfaces, and none at full roughness where the
-  material asks (F_NO_SPECULAR_AT_FULL_ROUGHNESS).
+  material asks (F_NO_SPECULAR_AT_FULL_ROUGHNESS). Every term checks out against the shader, yet that reads about
+  ten times too shiny next to the game, which also has screen space AO on it and its direct and rim light under
+  it; REFLECTION_STRENGTH is matched to in-game screenshots by eye.
 """
 import bpy
 
@@ -26,7 +28,8 @@ PROBE_GROUP = 'Deadlock probe light'
 REFLECTION_GROUP = 'Deadlock reflections'
 RIG_GROUP = 'Deadlock rig light'
 NODE = 'dlr_rig_light'
-VERSION = 3
+VERSION = 4
+REFLECTION_STRENGTH = 0.1
 
 # materials/dev/npr_dummy.vmat, which the engine feeds to every NPR material (game version 6821)
 NPR = {'diffuse_step_sharpness': 0.9, 'diffuse_pbr_blend': 0.25, 'primary_light_camera_weight': 0.35,
@@ -253,7 +256,7 @@ def build_rig_group(tree, probes, reflections=None):
     total = g.vec('ADD', lit_ambient, g.vec('SCALE', ambient, scale=rim))
     if reflections is not None:
         specular = add_reflections(g, reflections, inp, bounce, normal, ao, control)
-        total = g.vec('ADD', total, g.vec('SCALE', specular, scale=g.value('Reflection strength', 1.0)))
+        total = g.vec('ADD', total, g.vec('SCALE', specular, scale=g.value('Reflection strength', REFLECTION_STRENGTH)))
     total = g.vec('SCALE', total, scale=g.math('MULTIPLY', inp.outputs['Alpha'], strength))
     g.links.new(total, out.inputs['Emission'])
     tree['dlr_version'] = VERSION
