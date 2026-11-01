@@ -13,6 +13,8 @@ BLEND_TEXTURES = ('g_tColor2', 'g_tColor3', 'g_tRevealMask2', 'g_tRevealMask3', 
 
 _ENTITY = re.compile(r'keyValues3Data\s*=\s*\{\s*version\s*=\s*\d+\s*values\s*=\s*\{(.*?)\n\t*\}', re.S)
 _PAIR = re.compile(r'^\s*([\w.]+) = (.+?)\s*$', re.M)
+# multi-line values (world panels' opacity curves) have lines with a lone } that would end the entity
+_MULTILINE = re.compile(r'""".*?"""', re.S)
 
 
 def value(text):
@@ -32,6 +34,7 @@ def value(text):
 
 def entities(dump):
     """Keys lowercased: Source entity keys are case-insensitive, and maps mix cases (light_probe_atlas_x, _Y, _Z)."""
+    dump = _MULTILINE.sub('""', dump)
     return [{k.lower(): value(v) for k, v in _PAIR.findall(body)} for body in _ENTITY.findall(dump)]
 
 
