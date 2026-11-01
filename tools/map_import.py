@@ -32,6 +32,28 @@ tex_dir = os.path.join(out_dir, 'textures')
 light_dir = os.path.join(out_dir, 'lightmaps')
 # lights the rigs where the map's own sun is off (Midtown's); the map doesn't see it
 RIG_SUN_STRENGTH = 3.0
+# where each part of the import ends, as a share of a Midtown import's time; mapbuild.py counts the glTF import's
+# meshes up to GLTF_END
+GLTF_END = 0.22
+PROGRESS = {'props': 0.23, 'materials': 0.47, 'paint': 0.48, 'lights': 0.485, 'bake': 0.69, 'probes': 0.905,
+            'baked': 0.96, 'fog': 0.97, 'motion': 0.97, 'volumes': 0.98, 'textures': 0.99}
+
+
+def progress(frac):
+    print(f'PROGRESS {frac:.3f}', flush=True)
+
+
+def tracked(items, start, end):
+    """The items, reporting progress from part `start` to part `end` as they're gone through."""
+    items = list(items)
+    for i, item in enumerate(items):
+        if i % 10 == 0:
+            between(start, end, i / len(items))
+        yield item
+
+
+def between(start, end, frac):
+    progress(PROGRESS[start] + (PROGRESS[end] - PROGRESS[start]) * frac)
 
 
 def load_settings():
@@ -78,6 +100,7 @@ coll['dlr_map_version'] = version
 if props_file and os.path.exists(props_file):
     props = map_anim.import_props(props_file, coll)
     print(f'animated props: {sum(ob.type == "ARMATURE" for ob in props)}')
+progress(PROGRESS['props'])
 if settings.get('tonemap'):
     coll['dlr_tonemap'] = dict(settings['tonemap'], exposure_bias=settings['tonemap']['exposure_bias'] +
                                settings.get('exposure', 0.0), exposure=settings.get('exposure', 0.0))
@@ -89,11 +112,12 @@ mats = {slot.material for ob in meshes for slot in ob.material_slots if slot.mat
 
 glass_masks = {path: found[0] for path, name in (settings.get('glass_masks') or {}).items() if (found := find(name))}
 layer_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.get('layer_textures') or {}).items()}
-kinds = [map_lighting.apply_vmat(m, glass_masks, layer_textures) for m in mats]
+kinds = [map_lighting.apply_vmat(m, glass_masks, layer_textures) for m in tracked(mats, 'props', 'materials')]
 print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '
       f'{kinds.count("self_illum")} self-illuminated, {kinds.count("overlay")} decals')
 print(f'blend layers: {map_blend.applied} materials, {len(layer_textures)} layer textures')
 print(f'vertex paint: decoded on {map_lighting.decode_paint(meshes)} meshes')
+progress(PROGRESS['paint'])
 
 sun = next((ob for ob in coll.objects if ob.type == 'LIGHT' and ob.data.type == 'SUN'), None)
 game_sun = settings.get('sun')
@@ -112,10 +136,12 @@ if sun:
 
 runtime_lights = map_lighting.add_lights(coll, settings.get('lights') or [])
 print(f'runtime lights: {len(runtime_lights)}, '
-      f'{map_lighting.unblock_own_light(runtime_lights)} shadow linked past their own fixtures')
+      f'{map_lighting.unblock_own_light(runtime_lights, lambda f: between("paint", "lights", f))} '
+      'shadow linked past their own fixtures')
 # after unblock_own_light, which would take the masks for fixtures
 barn_masks = map_lighting.add_barn_masks(coll, runtime_lights, settings.get('lights') or [], title)
 print(f'barn masks: {len(barn_masks)}')
+progress(PROGRESS['lights'])
 
 probes = 0
 volumes = settings.get('probe_volumes')
@@ -123,6 +149,7 @@ if volumes:
     atlas = map_lighting.load_probe_atlas(lighting_dir)
     if atlas is not None and unlit:
         probes = map_lighting.bake_probes(unlit, atlas, volumes)
+    progress(PROGRESS['bake'])
     map_probes.add_probe_light(coll, title, atlas, volumes, light_dir)
     del atlas
 lightmaps = lightmap_files() if lit else None
@@ -131,9 +158,10 @@ if settings.get('env_maps'):
     reflections = map_reflections.add_reflections(coll, title, settings['env_maps'],
                                                   os.path.join(lighting_dir, 'cubemaps'),
                                                   os.path.join(lighting_dir, 'brdf'), light_dir)
+progress(PROGRESS['probes'])
 if lightmaps or probes:
     group = map_lighting.baked_light_group(*(lightmaps or (None, ())), reflections=reflections)
-    done = sum(map_lighting.add_baked_light(m, group) for m in mats)
+    done = sum(map_lighting.add_baked_light(m, group) for m in tracked(mats, 'probes', 'baked'))
     print(f'baked light: {len(lit)} lightmapped meshes, {probes:,} vertices lit from light probes, '
           f'{done}/{len(mats)} materials')
 else:
@@ -156,13 +184,15 @@ cube, gradient = settings.get('cubemap_fog'), settings.get('gradient_fog')
 if (cube and sky_mips) or gradient:
     face = sky_mips[0][1].size[0] * 16 // 4 if sky_mips else 1024
     fog = map_lighting.fog_group(cube, gradient, sky_mips, sky.get('strength', 1.0), face)
-    done = sum(map_lighting.add_fog(m, fog) for m in mats)
+    done = sum(map_lighting.add_fog(m, fog) for m in tracked(mats, 'baked', 'fog'))
     print(f'fog: {"cubemap " if cube and sky_mips else ""}{"gradient " if gradient else ""}on {done} materials')
 
+progress(PROGRESS['fog'])
 print(f'additive: {sum(map_lighting.make_additive(m) for m in mats)} lit materials')
 anim_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.get('anim_textures') or {}).items()}
 moving, moved = map_anim.animate(meshes, anim_textures)
 print(f'motion: {moving} scrolling or jittering materials, {moved} jittering meshes')
+progress(PROGRESS['motion'])
 
 fog_volume = settings.get('volumetric_fog')
 if fog_volume:
@@ -175,8 +205,9 @@ if fog_volume:
     else:
         print('volumetric fog: none')
 
+progress(PROGRESS['volumes'])
 os.makedirs(tex_dir, exist_ok=True)
-for img in bpy.data.images:
+for img in tracked(bpy.data.images, 'volumes', 'textures'):
     src = bpy.path.abspath(img.filepath) if img.filepath else ''
     # the lighting files are already next to the map
     if img.packed_file or not os.path.isfile(src) or os.path.abspath(src).startswith(out_dir + os.sep):
@@ -186,5 +217,6 @@ for img in bpy.data.images:
         shutil.copyfile(src, dest)
     img.filepath = dest
 
+progress(PROGRESS['textures'])
 bpy.ops.wm.save_as_mainfile(filepath=out_blend, relative_remap=True)
 print(f'wrote {out_blend}: {len(meshes)} meshes, {len(bpy.data.images)} textures')

@@ -26,6 +26,12 @@ import map_environment as env  # noqa: E402
 MAPS = {'dl_midtown': 'Midtown', 'dl_hideout': 'Hideout'}
 # the export, rebatched copy and saved scene of Midtown take about 11 GB together
 NEEDED_GB = 12
+# meshes Source2Viewer writes for each map's export, for its progress
+EXPORT_MESHES = {'dl_midtown': 32000, 'dl_hideout': 1060}
+# each step's share of a Midtown build's time, for the progress bar
+# map_import.py's GLTF_END; it can't report progress during Blender's glTF import, so its log lines are counted
+GLTF_IMPORT_END = 0.22
+STEP_WEIGHTS = {'export': 0.25, 'props': 0.005, 'rebatch': 0.015, 'lighting': 0.08, 'import': 0.65}
 
 
 class MapFiles:
@@ -158,7 +164,8 @@ class MapBuilder(Builder):
             game = ['--game', gameinfo]
         try:
             self.run([self.s2v, '-i', vpk, '-f', f'maps/{m.slug}/world.vwrld_c', '-o', m.export, *game,
-                      '--gltf_export_format', 'gltf', '--gltf_textures_adapt', '--gltf_export_extras'], m, show=False)
+                      '--gltf_export_format', 'gltf', '--gltf_textures_adapt', '--gltf_export_extras'], m, show=False,
+                     count=('Creating mesh', EXPORT_MESHES.get(m.slug, 10000), 1.0))
         finally:
             shutil.rmtree(vanilla, ignore_errors=True)
         if not os.path.exists(m.world):
@@ -364,9 +371,11 @@ class MapBuilder(Builder):
     def import_(self, m):
         os.makedirs(m.out, exist_ok=True)
         tmp = m.blend[:-len('.blend')] + '.new.blend'
+        meshes = sum('mesh' in n for n in json.load(open(m.rebatched, encoding='utf-8'))['nodes'])
         self.run([self.blender, '-b', '--factory-startup', '--python-exit-code', '1',
                   '-P', os.path.join(TOOLS, 'map_import.py'), '--', m.rebatched, tmp, m.slug, m.title,
-                  game_version(self.pak), m.lighting, m.props_file], m, env=self.blender_env(m))
+                  game_version(self.pak), m.lighting, m.props_file], m, env=self.blender_env(m),
+                 count=('Blender create Mesh node', meshes, GLTF_IMPORT_END))
         if not os.path.exists(tmp):
             raise BuildError('map_import.py wrote no ' + tmp)
         os.replace(tmp, m.blend)
@@ -391,9 +400,11 @@ class MapBuilder(Builder):
         shutil.rmtree(m.export, ignore_errors=True)
         steps = [('export', self.export), ('props', self.props), ('rebatch', self.rebatch),
                  ('lighting', self.lighting), ('import', self.import_)]
+        done = 0.0
         for i, (name, step) in enumerate(steps):
-            log(f'STEP {i + 1}/{len(steps)} map_{name}')
+            self.begin_step(i, len(steps), 'map_' + name, done, done + STEP_WEIGHTS[name])
             step(m)
+            done += STEP_WEIGHTS[name]
         json.dump(stamp, open(m.stamp_file, 'w', encoding='utf-8'))
         if not self.keep:
             shutil.rmtree(os.path.join(m.dir, 'export'), ignore_errors=True)

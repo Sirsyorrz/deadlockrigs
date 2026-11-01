@@ -209,6 +209,22 @@ class Builder:
             os.environ['DLRIG_OUT'] = os.path.abspath(args.out)
         if args.exports:
             os.environ['DLRIG_EXPORTS'] = '1'
+        self.span = (0.0, 1.0)
+        self.shown_progress = None
+
+    def begin_step(self, i, n, name, lo=None, hi=None):
+        """Logs the step for the add-on; its PROGRESS lines from here on cover lo..hi of the whole build."""
+        log(f'STEP {i + 1}/{n} {name}')
+        self.span = (i / n if lo is None else lo, (i + 1) / n if hi is None else hi)
+        self.progress(0.0)
+
+    def progress(self, frac):
+        lo, hi = self.span
+        text = f'PROGRESS {lo + (hi - lo) * min(max(frac, 0.0), 1.0):.3f}'
+        # tools that count lines would flood the add-on's console otherwise
+        if text != self.shown_progress:
+            self.shown_progress = text
+            log(text)
 
     @property
     def blender(self):
@@ -228,8 +244,11 @@ class Builder:
             self._pak = find_pak(self._pak)
         return self._pak
 
-    def run(self, cmd, h, show=True, stdout_file=None, env=None):
-        """Runs a tool; its output goes to <work>/<hero>/build.log, the lines worth seeing to the console."""
+    def run(self, cmd, h, show=True, stdout_file=None, env=None, count=None):
+        """Runs a tool; its output goes to <work>/<hero>/build.log, the lines worth seeing to the console.
+        The tool's own 'PROGRESS <0..1>' lines move the step's progress; count=(text, total, upto) moves it to
+        upto by the share of an expected total of lines with that text, for tools that don't report progress."""
+        seen = 0
         os.makedirs(h.dir, exist_ok=True)
         with open(os.path.join(h.dir, 'build.log'), 'a', encoding='utf-8') as logf:
             logf.write('$ ' + ' '.join(cmd) + '\n')
@@ -246,6 +265,12 @@ class Builder:
                 if out:
                     out.write(line)
                 tail = (tail + [line.rstrip()])[-20:]
+                if line.startswith('PROGRESS '):
+                    self.progress(float(line.split()[1]))
+                    continue
+                if count and count[0] in line:
+                    seen += 1
+                    self.progress(count[2] * min(seen / count[1], 0.99))
                 if show and SHOW.search(line):
                     log('  ' + line.rstrip())
             if out:
@@ -383,7 +408,7 @@ class Builder:
         open(os.path.join(h.dir, 'build.log'), 'w').close()
         log(f'== {h.name} ({h.model}): {" ".join(steps)}')
         for i, step in enumerate(steps):
-            log(f'STEP {i + 1}/{len(steps)} {step}')
+            self.begin_step(i, len(steps), step)
             getattr(self, step)(h)
         log(f'DONE {slug} ' + (h.rig_blend if os.path.exists(h.rig_blend) else h.out))
 

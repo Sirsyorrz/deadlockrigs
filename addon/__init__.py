@@ -197,12 +197,13 @@ class Job:
                 if self.ok:
                     self.status, self.progress = 'Done', 1.0
                 return
+            if line.startswith('PROGRESS '):
+                self.progress = float(line.split()[1])
+                continue
             self.log = (self.log + [line])[-200:]
             print('[Deadlock Rigs]', line)
             if line.startswith('STEP '):
-                count, step = line.split()[1:3]
-                i, n = (int(x) for x in count.split('/'))
-                self.progress = (i - 1) / n
+                step = line.split()[2]
                 self.status = self.STEP_TEXT.get(step, step)
             elif line.startswith('downloading'):
                 self.status = 'Downloading Source2Viewer (first build only)'
@@ -520,7 +521,7 @@ class DLR_PT_main(bpy.types.Panel):
 def draw_job(layout, context, name):
     box = layout.box()
     if not _job.done:
-        box.progress(factor=_job.progress, type='BAR', text=_job.status)
+        box.progress(factor=_job.progress, type='BAR', text=f'{_job.status}  {_job.progress:.0%}')
         box.operator('dlr.cancel', icon='X')
     elif _job.ok:
         box.label(text=f'{name}: done', icon='CHECKMARK')
