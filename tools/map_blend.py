@@ -9,8 +9,8 @@ Source inches, from Blender metres and axes.
 """
 import bpy
 
-from map_lighting import (Graph, average_color, color_correct_matrix, color_tint_matrix, is_identity, srgb_to_linear,
-                          transform_color, vmat_dict, UNIT)
+from map_lighting import (Graph, average_color, color_correct_matrix, color_tint_matrix, is_identity, node_group,
+                          srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
 import numpy as np
 
 from map_environment import BLEND_TEXTURES as TEXTURES
@@ -18,12 +18,143 @@ SHADER = 'environment_blend.vfx'
 NO_TRANSFORM = (1.0, 0.0, 0.0, 0.0)
 
 
+# The pure maths of the shader is in node groups shared by all the materials (map_lighting.node_group), which builds
+# Midtown's ~1,100 blend materials many times faster than repeating it in each.
+
+def flip_v_group():
+    def build(g, uv):
+        a = g.split(uv)
+        return [g.combine(a[0], g.math('SUBTRACT', 1.0, a[1]), 0.0)]
+    return node_group('Deadlock flip V', [('UV', 'Vector')], [('UV', 'Vector')], build)
+
+
+def uv_transform_group():
+    """ApplyUvTransform: scale * rotate(uv + translation / scale)."""
+    def build(g, uv, shift, cos, sin, scale):
+        shifted = g.vec('ADD', uv, shift)
+        x, y = g.split(shifted)[0], g.split(shifted)[1]
+        rx = g.math('SUBTRACT', g.math('MULTIPLY', x, cos), g.math('MULTIPLY', y, sin))
+        ry = g.math('ADD', g.math('MULTIPLY', x, sin), g.math('MULTIPLY', y, cos))
+        return [g.vec('SCALE', g.combine(rx, ry, 0.0), scale)]
+    return node_group('Deadlock UV transform', [('UV', 'Vector'), ('Shift', 'Vector'), ('Cos', 'Float'),
+                                                ('Sin', 'Float'), ('Scale', 'Float')], [('UV', 'Vector')], build)
+
+
+def planar_group():
+    """GetPlanarAxes and GetPlanarTexCoord: the texture coordinates on the major and median planes, divided by
+    the tiling, and the median plane's blend weight."""
+    def build(g, inverse_tiling):
+        n = g.split(g.node('ShaderNodeNewGeometry').outputs['True Normal'])
+        a = [g.math('ABSOLUTE', n[1]), g.math('ABSOLUTE', n[0]), g.math('ABSOLUTE', n[2])]
+        gt = lambda x, y: g.math('GREATER_THAN', x, y)
+        lt = lambda x, y: g.math('LESS_THAN', x, y)
+        both = lambda x, y: g.math('MULTIPLY', x, y)
+        not_ = lambda x: g.math('SUBTRACT', 1.0, x)
+        major0 = both(gt(a[0], a[1]), gt(a[0], a[2]))
+        major1 = both(not_(major0), gt(a[1], a[2]))
+        major = [major0, major1, not_(g.math('ADD', major0, major1))]
+        minor0 = both(lt(a[0], a[1]), lt(a[0], a[2]))
+        minor1 = both(not_(minor0), lt(a[1], a[2]))
+        minor = [minor0, minor1, not_(g.math('ADD', minor0, minor1))]
+        median = [not_(g.math('ADD', major[k], minor[k])) for k in range(3)]
+
+        def pick(weights):
+            return g.math('ADD', g.math('ADD', both(weights[0], a[0]), both(weights[1], a[1])),
+                          both(weights[2], a[2]))
+
+        def plane(x):
+            return g.math('MULTIPLY', g.math('SUBTRACT', x, 0.5773), 2.3657441, clamp=True)
+        wa, wb = plane(pick(major)), plane(pick(median))
+        w_median = g.math('DIVIDE', wb, g.math('MAXIMUM', g.math('ADD', wa, wb), 1e-5))
+
+        # Source world position in inches
+        p = g.split(g.node('ShaderNodeNewGeometry').outputs['Position'])
+        x, y, z = (g.math('MULTIPLY', p[1], -1 / UNIT), g.math('MULTIPLY', p[0], 1 / UNIT),
+                   g.math('MULTIPLY', p[2], 1 / UNIT))
+        neg = lambda s: g.math('MULTIPLY', s, -1.0)
+        per_axis = [(y, neg(z)), (x, neg(z)), (x, neg(y))]
+
+        def coords(weights):
+            u = v = 0.0
+            for w, (pu, pv) in zip(weights, per_axis):
+                u = g.math('ADD', u, g.math('MULTIPLY', w, pu))
+                v = g.math('ADD', v, g.math('MULTIPLY', w, pv))
+            return g.combine(g.math('MULTIPLY', u, inverse_tiling), g.math('MULTIPLY', v, inverse_tiling), 0.0)
+        return [coords(major), coords(median), w_median]
+    return node_group('Deadlock planar UV', [('Inverse tiling', 'Float')],
+                      [('Major', 'Vector'), ('Median', 'Vector'), ('Median weight', 'Float')], build)
+
+
+def select(g, cond, a, b):
+    """cond ? a : b for a 0/1 condition."""
+    return g.math('ADD', g.math('MULTIPLY', cond, a), g.math('MULTIPLY', g.math('SUBTRACT', 1.0, cond), b))
+
+
+def smoothstep(g, e0, e1, x):
+    t = g.math('DIVIDE', g.math('SUBTRACT', x, e0), g.math('SUBTRACT', e1, e0), clamp=True)
+    return g.math('MULTIPLY', g.math('MULTIPLY', t, t), g.math('SUBTRACT', 3.0, g.math('MULTIPLY', t, 2.0)))
+
+
+def reveal_group():
+    """The reveal mask's value remapped around the reveal offset to the layer's blend threshold."""
+    def build(g, reveal, mid, high_scale, spread, softness):
+        low = g.math('MULTIPLY', g.math('MULTIPLY', reveal, 2.0, clamp=True), mid)
+        high = g.math('ADD', g.math('MULTIPLY', g.math('MULTIPLY', g.math('SUBTRACT', reveal, 0.5), 2.0, clamp=True),
+                                    high_scale), mid)
+        remapped = select(g, g.math('LESS_THAN', reveal, 0.5), low, high)
+        remapped = g.math('MINIMUM', g.math('MAXIMUM', remapped, 1e-4), 0.9999)
+        return [g.math('ADD', g.math('MULTIPLY', remapped, spread), softness)]
+    return node_group('Deadlock reveal threshold', [('Reveal', 'Float'), ('Mid', 'Float'), ('High scale', 'Float'),
+                                                    ('Spread', 'Float'), ('Softness', 'Float')],
+                      [('Threshold', 'Float')], build)
+
+
+def weight_group():
+    def build(g, blend, threshold, low, high):
+        soft = smoothstep(g, low, high, g.math('SUBTRACT', blend, threshold))
+        return [select(g, g.math('GREATER_THAN', blend, 0.99999), 1.0, soft)]
+    return node_group('Deadlock layer weight', [('Blend', 'Float'), ('Threshold', 'Float'), ('Low', 'Float'),
+                                                ('High', 'Float')], [('Weight', 'Float')], build)
+
+
+def border_group():
+    def build(g, blend, threshold, width0, width1, half0, half1, soft0, soft1):
+        below = g.math('LESS_THAN', blend, threshold)
+        edge = select(g, below, soft0, soft1)
+        outer = select(g, below, g.math('MAXIMUM', g.math('SUBTRACT', threshold, width0), 1e-4),
+                       g.math('MINIMUM', g.math('ADD', threshold, width1), 0.9999))
+        inner = select(g, below, g.math('MAXIMUM', g.math('SUBTRACT', threshold, half0), 1e-4),
+                       g.math('MINIMUM', g.math('ADD', threshold, half1), 0.9999))
+        lerp = lambda a, b, t: g.math('ADD', a, g.math('MULTIPLY', g.math('SUBTRACT', b, a), t))
+        amount = smoothstep(g, lerp(inner, outer, edge), lerp(inner, threshold, edge), blend)
+        # unpainted surfaces get no border
+        return [g.math('MULTIPLY', amount, g.math('GREATER_THAN', blend, 0.0))]
+    names = ('Blend', 'Threshold', 'Width 0', 'Width 1', 'Half width 0', 'Half width 1', 'Softness 0', 'Softness 1')
+    return node_group('Deadlock border amount', [(n, 'Float') for n in names], [('Amount', 'Float')], build)
+
+
+def overlay_factor_group():
+    """GetOverlayFactor on a colour socket."""
+    def build(g, overlay, dark, bright):
+        dark3, bright3 = g.combine(dark, dark, dark), g.combine(bright, bright, bright)
+        signed = g.vec('SUBTRACT', g.vec('SCALE', overlay, 2.0), (1.0, 1.0, 1.0))
+        up = g.vec('SUBTRACT', (1.0, 1.0, 1.0), g.vec('MAXIMUM', signed, (0.0, 0.0, 0.0)))
+        brighten = g.vec('SCALE', g.vec('SUBTRACT', (1.0, 1.0, 1.0),
+                                        g.vec('POWER', g.vec('MAXIMUM', up, (1e-6,) * 3), bright3)), bright)
+        down = g.vec('ADD', (1.0, 1.0, 1.0), g.vec('MINIMUM', signed, (0.0, 0.0, 0.0)))
+        darken = g.vec('SCALE', g.vec('SUBTRACT', g.vec('POWER', g.vec('MAXIMUM', down, (1e-6,) * 3), dark3),
+                                      (1.0, 1.0, 1.0)), dark)
+        return [g.vec('MAXIMUM', g.vec('ADD', g.vec('ADD', brighten, darken), (1.0, 1.0, 1.0)), (0.0, 0.0, 0.0))]
+    return node_group('Deadlock overlay factor', [('Overlay', 'Vector'), ('Dark', 'Float'), ('Bright', 'Float')],
+                      [('Factor', 'Vector')], build)
+
+
 class Blend:
     def __init__(self, mat, ints, floats, vectors, textures):
         self.mat, self.ints, self.floats, self.vectors = mat, ints, floats, vectors
         self.paths = dict(textures)
         self.g = Graph(mat.node_tree)
-        self._uv, self._uv2, self._pos, self._normal, self._planar, self._paint = (None,) * 6
+        self._uv, self._uv2, self._paint = None, None, None
         self.model_tint = None
 
     def i(self, name, default=0):
@@ -51,12 +182,10 @@ class Blend:
         g = self.g
         if secondary:
             if self._uv2 is None:
-                a = g.split(g.attribute('_UV2'))
-                self._uv2 = g.combine(a[0], g.math('SUBTRACT', 1.0, a[1]), 0.0)
+                self._uv2 = self.to_blender_uv(g.attribute('_UV2'))
             return self._uv2
         if self._uv is None:
-            a = g.split(g.node('ShaderNodeUVMap').outputs['UV'])
-            self._uv = g.combine(a[0], g.math('SUBTRACT', 1.0, a[1]), 0.0)
+            self._uv = self.to_blender_uv(g.node('ShaderNodeUVMap').outputs['UV'])
         return self._uv
 
     def transform(self, uv, srt):
@@ -64,70 +193,18 @@ class Blend:
         scale, rotation, tu, tv = (list(srt) + [0, 0, 0, 0])[:4]
         if np.allclose((scale, rotation, tu, tv), NO_TRANSFORM):
             return uv
-        g = self.g
         safe = scale or 1.0
-        shifted = g.vec('ADD', uv, (tu / safe, tv / safe, 0.0))
         c, s = np.cos(np.radians(rotation)), np.sin(np.radians(rotation))
-        x, y = g.split(shifted)[0], g.split(shifted)[1]
-        rx = g.math('SUBTRACT', g.math('MULTIPLY', x, c), g.math('MULTIPLY', y, s))
-        ry = g.math('ADD', g.math('MULTIPLY', x, s), g.math('MULTIPLY', y, c))
-        return g.vec('SCALE', g.combine(rx, ry, 0.0), scale)
+        return self.g.call(uv_transform_group(), uv, (tu / safe, tv / safe, 0.0), float(c), float(s),
+                           float(scale))[0]
 
     def to_blender_uv(self, uv):
-        g = self.g
-        a = g.split(uv)
-        return g.combine(a[0], g.math('SUBTRACT', 1.0, a[1]), 0.0)
+        """The game's v down UVs to Blender's, and back."""
+        return self.g.call(flip_v_group(), uv)[0]
 
-    def position(self):
-        """Source world position in inches."""
-        if self._pos is None:
-            g = self.g
-            p = g.split(g.node('ShaderNodeNewGeometry').outputs['Position'])
-            self._pos = [g.math('MULTIPLY', p[1], -1 / UNIT), g.math('MULTIPLY', p[0], 1 / UNIT),
-                         g.math('MULTIPLY', p[2], 1 / UNIT)]
-        return self._pos
-
-    def planar(self):
-        """GetPlanarAxes as per-axis weights: (major, median) indicators and the median plane's blend weight."""
-        if self._planar is None:
-            g = self.g
-            n = g.split(g.node('ShaderNodeNewGeometry').outputs['True Normal'])
-            a = [g.math('ABSOLUTE', n[1]), g.math('ABSOLUTE', n[0]), g.math('ABSOLUTE', n[2])]
-            gt = lambda x, y: g.math('GREATER_THAN', x, y)
-            lt = lambda x, y: g.math('LESS_THAN', x, y)
-            both = lambda x, y: g.math('MULTIPLY', x, y)
-            not_ = lambda x: g.math('SUBTRACT', 1.0, x)
-            major0 = both(gt(a[0], a[1]), gt(a[0], a[2]))
-            major1 = both(not_(major0), gt(a[1], a[2]))
-            major = [major0, major1, not_(g.math('ADD', major0, major1))]
-            minor0 = both(lt(a[0], a[1]), lt(a[0], a[2]))
-            minor1 = both(not_(minor0), lt(a[1], a[2]))
-            minor = [minor0, minor1, not_(g.math('ADD', minor0, minor1))]
-            median = [not_(g.math('ADD', major[k], minor[k])) for k in range(3)]
-
-            def pick(weights):
-                return g.math('ADD', g.math('ADD', both(weights[0], a[0]), both(weights[1], a[1])),
-                              both(weights[2], a[2]))
-
-            def plane(x):
-                return g.math('MULTIPLY', g.math('SUBTRACT', x, 0.5773), 2.3657441, clamp=True)
-            wa, wb = plane(pick(major)), plane(pick(median))
-            w_median = g.math('DIVIDE', wb, g.math('MAXIMUM', g.math('ADD', wa, wb), 1e-5))
-            self._planar = major, median, w_median
-        return self._planar
-
-    def planar_uv(self, weights, tiling):
-        """GetPlanarTexCoord for whichever axis the weights pick, divided by the tiling."""
-        g = self.g
-        x, y, z = self.position()
-        neg = lambda s: g.math('MULTIPLY', s, -1.0)
-        per_axis = [(y, neg(z)), (x, neg(z)), (x, neg(y))]
-        u = v = 0.0
-        for w, (pu, pv) in zip(weights, per_axis):
-            u = g.math('ADD', u, g.math('MULTIPLY', w, pu))
-            v = g.math('ADD', v, g.math('MULTIPLY', w, pv))
-        inv = 1.0 / (tiling or 1.0)
-        return g.combine(g.math('MULTIPLY', u, inv), g.math('MULTIPLY', v, inv), 0.0)
+    def planar_uv(self, tiling):
+        """(major plane coords, median plane coords, median plane weight) sockets."""
+        return tuple(self.g.call(planar_group(), 1.0 / (tiling or 1.0)))
 
     def sample(self, img, game_uv):
         n = self.g.node('ShaderNodeTexImage', image=img, interpolation='Linear', extension='REPEAT')
@@ -146,14 +223,12 @@ class Blend:
 
     def layer_coords(self, n):
         if self.i(f'F_LAYER{n}_BIPLANAR'):
-            major, _median, _w = self.planar()
-            return self.planar_uv(major, self.f(f'g_flBiPlanarTiling{n}', 196.0))
+            return self.planar_uv(self.f(f'g_flBiPlanarTiling{n}', 196.0))[0]
         return self.transform(self.uv(), self.v(f'g_vScaleRotationTranslation{n}', NO_TRANSFORM))
 
     def tint_mask(self, alpha, n):
-        g = self.g
         contrast, brightness = self.v(f'g_vLayerTintMaskContrastBrightness{n}', (1.0, 0.0))
-        return g.math('ADD', g.math('MULTIPLY', g.math('ADD', alpha, brightness - 0.5), contrast), 0.5, clamp=True)
+        return tint_mask(self.g, alpha, contrast, brightness)
 
     def layer(self, n):
         """SampleLayer for layer 2 or 3: albedo and tint mask sockets, or None without its colour texture."""
@@ -188,44 +263,17 @@ class Blend:
         if self.i(f'g_bRevealInvert{n}'):
             reveal = g.math('SUBTRACT', 1.0, reveal)
         half = self.f(f'g_flRevealOffset{n}') * 0.5
-        mid = 0.5 + half
         softness = self.f(f'g_flRevealSoftness{n}', 0.125)
-        low = g.math('MULTIPLY', g.math('MULTIPLY', reveal, 2.0, clamp=True), mid)
-        high = g.math('ADD', g.math('MULTIPLY', g.math('MULTIPLY', g.math('SUBTRACT', reveal, 0.5), 2.0, clamp=True),
-                                    0.5 - half), mid)
-        remapped = self.select(g.math('LESS_THAN', reveal, 0.5), low, high)
-        remapped = g.math('MINIMUM', g.math('MAXIMUM', remapped, 1e-4), 0.9999)
-        return g.math('ADD', g.math('MULTIPLY', remapped, 1 - 2 * softness), softness)
-
-    def select(self, cond, a, b):
-        """cond ? a : b for a 0/1 condition."""
-        g = self.g
-        return g.math('ADD', g.math('MULTIPLY', cond, a), g.math('MULTIPLY', g.math('SUBTRACT', 1.0, cond), b))
-
-    def smoothstep(self, e0, e1, x):
-        g = self.g
-        t = g.math('DIVIDE', g.math('SUBTRACT', x, e0), g.math('SUBTRACT', e1, e0), clamp=True)
-        return g.math('MULTIPLY', g.math('MULTIPLY', t, t), g.math('SUBTRACT', 3.0, g.math('MULTIPLY', t, 2.0)))
+        return g.call(reveal_group(), reveal, 0.5 + half, 0.5 - half, 1 - 2 * softness, softness)[0]
 
     def weight(self, blend, threshold, softness):
-        g = self.g
-        soft = self.smoothstep(-softness, softness, g.math('SUBTRACT', blend, threshold))
-        return self.select(g.math('GREATER_THAN', blend, 0.99999), 1.0, soft)
+        return self.g.call(weight_group(), blend, threshold, -softness, softness)[0]
 
     def border_amount(self, blend, threshold, n):
-        g = self.g
         width = self.v(f'g_vBorderWidth{n}', (0.125, 0.125))
         soft = self.v(f'g_vBorderSoftness{n}', (0.5, 0.5))
-        below = g.math('LESS_THAN', blend, threshold)
-        edge = self.select(below, soft[0], soft[1])
-        outer = self.select(below, g.math('MAXIMUM', g.math('SUBTRACT', threshold, width[0]), 1e-4),
-                            g.math('MINIMUM', g.math('ADD', threshold, width[1]), 0.9999))
-        inner = self.select(below, g.math('MAXIMUM', g.math('SUBTRACT', threshold, 0.5 * width[0]), 1e-4),
-                            g.math('MINIMUM', g.math('ADD', threshold, 0.5 * width[1]), 0.9999))
-        lerp = lambda a, b, t: g.math('ADD', a, g.math('MULTIPLY', g.math('SUBTRACT', b, a), t))
-        amount = self.smoothstep(lerp(inner, outer, edge), lerp(inner, threshold, edge), blend)
-        # unpainted surfaces get no border
-        return g.math('MULTIPLY', amount, g.math('GREATER_THAN', blend, 0.0))
+        return self.g.call(border_group(), blend, threshold, width[0], width[1], 0.5 * width[0], 0.5 * width[1],
+                           soft[0], soft[1])[0]
 
     def border_tint(self, albedo, amount, n):
         g = self.g
@@ -240,16 +288,7 @@ class Blend:
         return g.mix('MULTIPLY', albedo, factor)
 
     def overlay_factor(self, overlay, dark, bright):
-        """GetOverlayFactor on a colour socket."""
-        g = self.g
-        signed = g.vec('SUBTRACT', g.vec('SCALE', overlay, 2.0), (1.0, 1.0, 1.0))
-        up = g.vec('SUBTRACT', (1.0, 1.0, 1.0), g.vec('MAXIMUM', signed, (0.0, 0.0, 0.0)))
-        brighten = g.vec('SCALE', g.vec('SUBTRACT', (1.0, 1.0, 1.0),
-                                        g.vec('POWER', g.vec('MAXIMUM', up, (1e-6,) * 3), (bright,) * 3)), bright)
-        down = g.vec('ADD', (1.0, 1.0, 1.0), g.vec('MINIMUM', signed, (0.0, 0.0, 0.0)))
-        darken = g.vec('SCALE', g.vec('SUBTRACT', g.vec('POWER', g.vec('MAXIMUM', down, (1e-6,) * 3), (dark,) * 3),
-                                      (1.0, 1.0, 1.0)), dark)
-        return g.vec('MAXIMUM', g.vec('ADD', g.vec('ADD', brighten, darken), (1.0, 1.0, 1.0)), (0.0, 0.0, 0.0))
+        return self.g.call(overlay_factor_group(), overlay, dark, bright)[0]
 
     def overlay_layer(self, albedo, mask, factor, mode, strength):
         g = self.g
@@ -275,9 +314,9 @@ class Blend:
                 dark = self.f('g_flWorldOverlayDarknessContrast', 1.0)
                 bright = self.f('g_flWorldOverlayBrightnessContrast', 1.0)
                 strengths = [self.f(f'g_flWorldOverlayStrength{n}', 1.0) for n in (1, 2, 3)]
-            major, median, w_median = self.planar()
-            a = self.sample(img, self.planar_uv(major, tiling))[0]
-            b = self.sample(img, self.planar_uv(median, tiling))[0]
+            major, median, w_median = self.planar_uv(tiling)
+            a = self.sample(img, major)[0]
+            b = self.sample(img, median)[0]
             overlay = self.g.mix('MIX', a, b, w_median)
             out.append((self.overlay_factor(overlay, dark, bright), strengths))
         return out
@@ -293,9 +332,9 @@ class Blend:
         blend = g.split(g.attribute('_BLEND'))
         blend2, blend3 = blend[0], (blend[1] if three else 0.0)
         if three:
-            blend2 = self.select(g.math('LESS_THAN', blend3, 1.0), blend2, 0.0)
-            blend3 = self.select(g.math('GREATER_THAN', blend3, 1e-5), blend3, 0.0)
-        blend2 = self.select(g.math('GREATER_THAN', blend2, 1e-5), blend2, 0.0)
+            blend2 = select(g, g.math('LESS_THAN', blend3, 1.0), blend2, 0.0)
+            blend3 = select(g, g.math('GREATER_THAN', blend3, 1e-5), blend3, 0.0)
+        blend2 = select(g, g.math('GREATER_THAN', blend2, 1e-5), blend2, 0.0)
         if self.i('F_UV_OVERLAY'):
             img = self.image('g_tRevealOverlay', False)
             if img is not None:
@@ -348,8 +387,7 @@ class Blend:
 def layer1_coords(blend, mat):
     """Points layer 1's glTF textures at its biplanar or transformed UVs, which the export doesn't apply."""
     if blend.i('F_LAYER1_BIPLANAR'):
-        major, _median, _w = blend.planar()
-        coords = blend.planar_uv(major, blend.f('g_flBiPlanarTiling1', 196.0))
+        coords = blend.planar_uv(blend.f('g_flBiPlanarTiling1', 196.0))[0]
     else:
         srt = blend.v('g_vScaleRotationTranslation1', NO_TRANSFORM)
         if np.allclose(srt, NO_TRANSFORM):

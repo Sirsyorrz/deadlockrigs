@@ -16,6 +16,7 @@ import os
 
 import bpy
 import numpy as np
+from mathutils import Vector
 
 GROUP = 'Deadlock baked light'
 FOG_GROUP = 'Deadlock fog'
@@ -31,17 +32,29 @@ class Graph:
     def __init__(self, tree):
         self.nodes, self.links = tree.nodes, tree.links
 
+    # every change to a node tree makes Blender update the whole tree, so the cost of building a graph grows with its
+    # size squared; settings that are already right are left alone
     def put(self, socket, value):
         if hasattr(value, 'node'):
             self.links.new(value, socket)
-        else:
+            return
+        current = socket.default_value
+        if (tuple(current) != tuple(value)) if hasattr(current, '__len__') else current != value:
             socket.default_value = value
 
     def node(self, kind, **props):
         n = self.nodes.new(kind)
         for k, v in props.items():
-            setattr(n, k, v)
+            if getattr(n, k) != v:
+                setattr(n, k, v)
         return n
+
+    def call(self, tree, *args):
+        """A node of a shared group (node_group) on the args; its output sockets."""
+        n = self.node('ShaderNodeGroup', node_tree=tree)
+        for socket, value in zip(n.inputs, args):
+            self.put(socket, value)
+        return n.outputs
 
     def math(self, op, a, b=None, clamp=False):
         n = self.node('ShaderNodeMath', operation=op, use_clamp=clamp)
@@ -83,6 +96,26 @@ class Graph:
 
     def attribute(self, name, output='Vector'):
         return self.node('ShaderNodeAttribute', attribute_type='GEOMETRY', attribute_name=name).outputs[output]
+
+
+def node_group(name, inputs, outputs, build):
+    """A shader node group made once and shared by every material that calls it, for graphs that would otherwise
+    be built over and over into each material (see Graph.put). inputs and outputs are (name, socket kind) pairs
+    ('Float', 'Vector', 'Color'); build(g, *input sockets) returns the output sockets or values."""
+    tree = bpy.data.node_groups.get(name)
+    if tree is not None:
+        return tree
+    tree = bpy.data.node_groups.new(name, 'ShaderNodeTree')
+    for socket_name, kind in inputs:
+        tree.interface.new_socket(socket_name, in_out='INPUT', socket_type='NodeSocket' + kind)
+    for socket_name, kind in outputs:
+        tree.interface.new_socket(socket_name, in_out='OUTPUT', socket_type='NodeSocket' + kind)
+    g = Graph(tree)
+    group_in = g.node('NodeGroupInput').outputs
+    group_out = g.node('NodeGroupOutput').inputs
+    for socket, value in zip(group_out, build(g, *(group_in[n] for n, _ in inputs))):
+        g.put(socket, value)
+    return tree
 
 
 def load_image(path):
@@ -374,10 +407,14 @@ def average_color(img):
     if img is None:
         return np.ones(3)
     if img.name not in _average_colors:
-        px = np.empty(len(img.pixels), np.float32)
+        px = np.empty(img.size[0] * img.size[1] * img.channels, np.float32)
         img.pixels.foreach_get(px)
-        rgb = px.reshape(-1, img.channels)[:, :3] if img.channels >= 3 else np.repeat(px[:, None], 3, 1)
-        mean = rgb.mean(0) if len(rgb) else np.ones(3)
+        # the decoded pixels would otherwise stay in memory for the rest of the import
+        img.buffers_free()
+        texels = px.reshape(-1, img.channels)
+        # einsum sums the columns several times faster than mean(0)
+        sums = np.einsum('ij->j', texels) / len(texels) if len(texels) else np.ones(img.channels)
+        mean = sums[:3] if img.channels >= 3 else np.repeat(sums[:1], 3)
         if img.colorspace_settings.name == 'sRGB' and not img.is_float:
             mean = srgb_to_linear(mean)
         _average_colors[img.name] = mean
@@ -417,8 +454,22 @@ def paint_mix(bsdf):
 
 def transform_color(g, color, m):
     """[color, 1] @ m as nodes."""
-    channels = [g.math('ADD', g.vec('DOT_PRODUCT', color, tuple(m[:3, j])), float(m[3, j])) for j in range(3)]
-    return g.combine(*channels)
+    def build(g, color, r, gr, b, offset):
+        o = g.split(offset)
+        return [g.combine(*(g.math('ADD', g.vec('DOT_PRODUCT', color, col), o[j]) for j, col in enumerate((r, gr, b))))]
+    tree = node_group('Deadlock colour transform', [('Color', 'Vector'), ('R', 'Vector'), ('G', 'Vector'),
+                                                    ('B', 'Vector'), ('Offset', 'Vector')], [('Color', 'Vector')], build)
+    return g.call(tree, color, *(tuple(float(x) for x in m[:3, j]) for j in range(3)),
+                  tuple(float(x) for x in m[3, :3]))[0]
+
+
+def tint_mask(g, alpha, contrast, brightness):
+    """The layer tint mask from the colour's alpha (g_vLayerTintMaskContrastBrightness)."""
+    def build(g, alpha, offset, contrast):
+        return [g.math('ADD', g.math('MULTIPLY', g.math('ADD', alpha, offset), contrast), 0.5, clamp=True)]
+    tree = node_group('Deadlock tint mask', [('Alpha', 'Float'), ('Offset', 'Float'), ('Contrast', 'Float')],
+                      [('Mask', 'Float')], build)
+    return g.call(tree, alpha, brightness - 0.5, contrast)[0]
 
 
 def apply_albedo_correction(mat, bsdf, ints, floats, strength):
@@ -453,8 +504,7 @@ def apply_albedo_correction(mat, bsdf, ints, floats, strength):
     environment = shader.startswith('environment_')
     if environment and image and not (ints.get('F_ALPHA_TEST') or ints.get('F_TRANSLUCENT')):
         contrast, brightness = (list(vectors.get('g_vLayerTintMaskContrastBrightness1') or (1, 0)) + [0])[:2]
-        a = image.outputs['Alpha']
-        mask = g.math('ADD', g.math('MULTIPLY', g.math('ADD', a, brightness - 0.5), contrast), 0.5, clamp=True)
+        mask = tint_mask(g, image.outputs['Alpha'], contrast, brightness)
     elif not environment:
         constant = vectors.get('TextureTintMask')
         mask = float(constant[0]) if constant else 1.0
@@ -691,7 +741,6 @@ FIXTURE_RAYS = 1024
 
 def light_directions(light_ob, count):
     """World space unit directions spread evenly over the light's cone (its whole sphere for point and area lights)."""
-    from mathutils import Vector
     half = light_ob.data.spot_size / 2 if light_ob.data.type == 'SPOT' else math.pi
     basis = light_ob.matrix_world.to_3x3().normalized()
     i = np.arange(count) + 0.5
@@ -702,46 +751,113 @@ def light_directions(light_ob, count):
     return [(basis @ Vector(d)).normalized() for d in local]
 
 
-def own_blockers(scene, depsgraph, light_ob):
+class MeshBounds:
+    """The scene's meshes with their world bounding boxes. scene.ray_cast tests every object in turn, which over
+    thousands of map meshes makes each cast take milliseconds; casting against only the meshes whose boxes a ray
+    crosses is hundreds of times faster."""
+
+    def __init__(self, depsgraph):
+        self.depsgraph = depsgraph
+        self.objects, self.inverse, lo, hi = [], [], [], []
+        for ob in depsgraph.objects:
+            if ob.type != 'MESH':
+                continue
+            corners = np.array([ob.matrix_world @ Vector(c) for c in ob.bound_box])
+            self.objects.append(ob.original)
+            self.inverse.append(ob.matrix_world.inverted())
+            lo.append(corners.min(0))
+            hi.append(corners.max(0))
+        # a little slack for faces lying on a box's sides
+        self.lo = np.array(lo).reshape(-1, 3) - 1e-3
+        self.hi = np.array(hi).reshape(-1, 3) + 1e-3
+
+    def crossed(self, origin, dirs, limits):
+        """(mesh index, ray index) pairs whose box the ray from origin crosses before its limit."""
+        o = np.asarray(origin)
+        near_box = np.linalg.norm(np.maximum(np.maximum(self.lo - o, o - self.hi), 0), axis=1) <= limits.max()
+        candidates = np.flatnonzero(near_box)
+        safe = np.where(np.abs(dirs) < 1e-12, 1e-12, dirs)
+        inv = 1.0 / safe
+        pairs = []
+        for chunk in np.array_split(candidates, max(1, len(candidates) // 256)):
+            t1 = (self.lo[chunk, None, :] - o) * inv
+            t2 = (self.hi[chunk, None, :] - o) * inv
+            t_in = np.minimum(t1, t2).max(2)
+            t_out = np.maximum(t1, t2).min(2)
+            m, r = np.nonzero((t_out >= np.maximum(t_in, 0)) & (t_in <= limits))
+            pairs.append(np.stack([chunk[m], r], 1))
+        return np.concatenate(pairs) if pairs else np.zeros((0, 2), int)
+
+    def hits(self, index, origin, d, limit, all_hits):
+        """(distance, world normal) of the mesh's surfaces along the ray up to limit: the first, or all of them."""
+        ob, inv = self.objects[index], self.inverse[index]
+        start = inv @ origin
+        span = inv @ (origin + d * limit) - start
+        length = span.length
+        if length <= 0:
+            return []
+        direction = span / length
+        normal_matrix = inv.to_3x3().transposed()
+        out, travelled = [], 0.0
+        while travelled < length:
+            hit, loc, normal, _ = ob.ray_cast(start, direction, distance=length - travelled,
+                                              depsgraph=self.depsgraph)
+            if not hit:
+                break
+            step = (loc - start).length
+            out.append(((travelled + step) / length * limit, normal_matrix @ normal))
+            if not all_hits:
+                break
+            step += 1e-4
+            travelled += step
+            start = start + direction * step
+        return out
+
+
+def own_blockers(meshes, light_ob):
     """Map objects that would shadow a light from itself in Blender but not in the game: what is between a barn's
     eye point and the barn (the game's shadow frustum starts at the barn), and fixtures the light sits inside (a
     bulb or lamp glass seen from inside, or anything within the light's own radius), which the game doesn't let
-    shadow their own light."""
-    from mathutils import Vector
+    shadow their own light. meshes is a MeshBounds."""
     origin = light_ob.matrix_world.translation.copy()
     forward = -(light_ob.matrix_world.to_3x3() @ Vector((0, 0, 1))).normalized()
     near = float(light_ob.get('dlr_near', 0.0))
     radius = light_ob.data.shadow_soft_size if light_ob.data.type in ('POINT', 'SPOT') else 0.0
+    dirs = light_directions(light_ob, FIXTURE_RAYS)
+    d_np = np.array(dirs)
+    # past the barn's near plane, or past the fixture
+    limits = near / np.maximum(d_np @ np.array(forward), 1e-3) if near > 0 else np.full(len(dirs), FIXTURE_REACH)
+    per_ray = {}
+    for index, ray in meshes.crossed(origin, d_np, limits):
+        for t, normal in meshes.hits(index, origin, dirs[ray], limits[ray], near > 0):
+            per_ray.setdefault(ray, []).append((t, index, normal))
     found = {}
-    for d in light_directions(light_ob, FIXTURE_RAYS):
-        # past the barn's near plane, or past the fixture
-        limit = near / max(d.dot(forward), 1e-3) if near > 0 else FIXTURE_REACH
-        start, travelled = origin, 0.0
-        while travelled < limit:
-            hit, loc, normal, _, ob, _ = scene.ray_cast(depsgraph, start, d, distance=limit - travelled)
-            if not hit:
-                break
-            if near > 0 or normal.dot(d) > 0 or (loc - origin).length < radius:
-                found[ob.original] = found.get(ob.original, 0) + 1
-            if near <= 0:
-                break
-            step = (loc - start).length + 1e-4
-            travelled += step
-            start = start + d * step
+    for ray in sorted(per_ray):
+        hits = sorted(per_ray[ray], key=lambda h: h[0])
+        if near <= 0:
+            # only the nearest surface, as one cast through the whole scene finds it
+            t, index, normal = hits[0]
+            if not (normal.dot(dirs[ray]) > 0 or t < radius):
+                continue
+            hits = hits[:1]
+        for _, index, _ in hits:
+            ob = meshes.objects[index]
+            found[ob] = found.get(ob, 0) + 1
     # stray rays through cracks of a merged mesh that isn't the fixture
     return [ob for ob, n in found.items() if n >= FIXTURE_RAYS * 0.01]
 
 
-def unblock_own_light(lights):
+def unblock_own_light(lights, report=None):
     """Shadow links each light past the map objects that shadow it only in Blender (own_blockers). Returns the number
-    of lights changed."""
-    scene = bpy.context.scene
-    depsgraph = bpy.context.evaluated_depsgraph_get()
+    of lights changed. report(fraction) is called as the lights are done."""
+    meshes = MeshBounds(bpy.context.evaluated_depsgraph_get())
     changed = 0
-    for ob in lights:
+    for i, ob in enumerate(lights):
+        if report:
+            report(i / len(lights))
         if not ob.data.use_shadow or ob.data.type == 'SUN':
             continue
-        blockers = own_blockers(scene, depsgraph, ob)
+        blockers = own_blockers(meshes, ob)
         if not blockers:
             continue
         group = bpy.data.collections.new(f'{ob.name} unblocked')
