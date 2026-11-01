@@ -100,10 +100,7 @@ rigs, so lower Strength there if they look too bright. Maps built before this ne
 filmic curve, bloom and vignette, and the view transform is set to Standard. That is most of what makes a render look
 like Deadlock rather than Blender. Bloom and Vignette in the Map section set their strength.
 
-Works in EEVEE and Cycles. Cycles loads the whole visible map with full size textures, which runs out of memory on
-32 GB for Midtown: crop the map to the shot first and set Render > Simplify > Texture Limit to 1024 or 2048.
-
-**Crop.** With a map in the scene, the Map section can cut it down to what a shot needs, which makes the viewport and
+**Crop.** With a map in the scene, the crop section can cut it down to what a shot needs, which makes the viewport and
 renders much faster: Add Crop Box and Crop to Boxes keep what is inside the boxes, Crop to Camera keeps what the scene
 camera sees over the frame range. Objects across the edge keep the polygons that reach in. The Keep dropdown picks
 map parts that are never cropped (skyline buildings, sky clouds, smoke, fog planes). Restore Map undoes it; Delete
