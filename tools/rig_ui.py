@@ -786,14 +786,7 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
                 for pb in body_bones(ob):
                     key_bone(pb)
         else:
-            cb = channelbag(ob)
-            off = sc.frame_current - start
-            for f in cb_src.fcurves:
-                dst = cb.fcurves.find(f.data_path, index=f.array_index) or \
-                    new_fcurve(cb, f.data_path, f.array_index, f.group.name if f.group else '')
-                for k in f.keyframe_points:
-                    dst.keyframe_points.insert(k.co[0] + off, k.co[1], options={'FAST'})
-                dst.update()
+            insert_clip(ob, channelbag(ob), cb_src, sc.frame_current, start, clip.frame_range[1])
             sc.frame_end = max(sc.frame_end, int(sc.frame_current + clip.frame_range[1] - start))
             act = ob.animation_data.action
             if act.use_frame_range:
@@ -803,6 +796,71 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
         bpy.data.actions.remove(clip)
         update(context)
         return {'FINISHED'}
+
+
+def rest_value(ob, path, index):
+    """What reset_bones() would give this channel, or None for channels it doesn't cover."""
+    if not path.startswith('pose.bones["'):
+        return None
+    bone, prop = path.split('"')[1], path.rsplit('.', 1)[1]
+    hold = ob.get('prop_pose', {})
+    if bone in hold:
+        v = list(hold[bone])
+        held = {'location': v[0:3], 'rotation_quaternion': v[3:7], 'scale': v[7:10]}
+        if prop in held:
+            return held[prop][index]
+    if prop == 'scale' or (prop == 'rotation_quaternion' and index == 0):
+        return 1.0
+    if prop in ('location', 'rotation_quaternion', 'rotation_euler'):
+        return 0.0
+    return None
+
+
+def insert_clip(ob, cb, cb_src, at, start, end):
+    # the clips key a channel that doesn't move once, at their first frame, and a curve interpolates between whatever
+    # keys it has, so a channel still on that one key from the first clip would glide over the whole of it towards the
+    # inserted clip's values (Shiv's coat swung round his shoulder all through an idle once a slide was inserted after
+    # it). Every touched channel is pinned on both sides of the inserted clip: the old animation keeps its value up to
+    # the frame before, the clip holds its own from its first frame to its last, and channels only one of them keys
+    # sit at rest in the other
+    off = at - start
+    c0, c1 = at, end + off
+    old = {(f.data_path, f.array_index): f for f in cb.fcurves
+           if f.keyframe_points and not f.data_path.startswith('pose.bones["PHYS-')}
+    ranges = [f.range() for f in old.values()]
+    before = any(r[0] < c0 for r in ranges)
+    after = any(r[1] > c1 for r in ranges)
+    body = {b.name for b in body_bones(ob)}
+    src = {(f.data_path, f.array_index): f for f in cb_src.fcurves}
+    touched = set(src) | {k for k in old if k[0].startswith('pose.bones["') and k[0].split('"')[1] in body
+                          and rest_value(ob, *k) is not None}
+    for key in touched:
+        dst = old.get(key)
+        f = src.get(key)
+        rest = rest_value(ob, *key)
+        if dst:
+            lo, hi = dst.range()
+            outside = [(c0 - 1, dst.evaluate(c0 - 1)) if lo < c0 else None,
+                       (c1 + 1, dst.evaluate(c1 + 1)) if hi > c1 else None]
+        else:
+            if rest is None and f is None:
+                continue
+            dst = new_fcurve(cb, key[0], key[1], f.group.name if f and f.group else '')
+            outside = [(c0 - 1, rest) if before and rest is not None else None,
+                       (c1 + 1, rest) if after and rest is not None else None]
+        pts = dst.keyframe_points
+        for fr_val in outside:
+            if fr_val:
+                pts.insert(fr_val[0], fr_val[1], options={'FAST'})
+        if f:
+            for k in f.keyframe_points:
+                pts.insert(k.co[0] + off, k.co[1], options={'FAST'})
+            ends = [(c0, f.evaluate(start)), (c1, f.evaluate(end))]
+        else:
+            ends = [(c0, rest), (c1, rest)]
+        for fr, v in ends:
+            pts.insert(fr, v, options={'FAST'})
+        dst.update()
 
 
 IDLE_TRACK = 'Idle motion'

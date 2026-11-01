@@ -738,9 +738,22 @@ if RUN and limbs:
 if IDLE and JUMP:
     reset()
     bpy.ops.dlrig.game_anim(clip=IDLE, mode='NEW')
-    sc.frame_set(40)
+    idle_end = sc.frame_end
+    probe = [0, idle_end // 3, 2 * idle_end // 3]
+
+    def body_pose():
+        out = {}
+        for f in probe:
+            sc.frame_set(f)
+            out[f] = {b.name: b.matrix.translation.copy() for b in pb if not b.name.startswith('PHYS-')}
+        return out
+    idle_pose = body_pose()
+    sc.frame_set(idle_end + 10)
     bpy.ops.dlrig.game_anim(clip=JUMP, mode='INSERT')
-    check('insert clip', sc.frame_end >= 40, f'range now {sc.frame_start}-{sc.frame_end}')
+    check('insert clip', sc.frame_end > idle_end, f'range now {sc.frame_start}-{sc.frame_end}')
+    after = body_pose()
+    drift = max((after[f][n] - v).length for f in probe for n, v in idle_pose[f].items())
+    check('insert leaves the clip before it alone', drift < 1e-4 * SCALE, f'{drift * 1000:.2f} mm')
 
 # bake time on a long clip
 if IDLE and phys['chains']:
