@@ -551,9 +551,53 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
             apply_glass(mat, bsdf, mask)
             return 'glass'
     if ints.get('F_SELF_ILLUM'):
-        bsdf.inputs['Emission Strength'].default_value *= param(floats, 'g_flSelfIllumScale', 1.0)
+        apply_self_illum(mat, bsdf, floats, dict(vmat_dict(mat).get('VectorParams') or {}))
         return 'self_illum'
     return None
+
+
+def apply_self_illum(mat, bsdf, floats, vectors):
+    """pbr's self-illumination, which the export leaves unlit (it writes no emissive factor): the albedo turns to
+    the illum tint (mixed towards tint * albedo by g_flSelfIllumAlbedoFactor) where the mask is, by
+    mask * saturate(scale), and glows with that colour * mask * scale."""
+    g = Graph(mat.node_tree)
+    scale = param(floats, 'g_flSelfIllumScale', 1.0)
+    mask_source = source_of(bsdf.inputs['Emission Color'])
+    mask = g.split(mask_source)[0] if mask_source else 1.0
+    albedo = source_of(bsdf.inputs['Base Color']) or tuple(bsdf.inputs['Base Color'].default_value)
+    tint = tuple(srgb_to_linear(np.asarray(list(vectors.get('g_vSelfIllumTint1') or (1, 1, 1))[:3], float))) + (1,)
+    illum_tint = g.mix('MIX', tint, g.mix('MULTIPLY', tint, albedo), param(floats, 'g_flSelfIllumAlbedoFactor', 1.0))
+    amount = g.math('MULTIPLY', mask, min(max(scale, 0.0), 1.0)) if mask_source else min(max(scale, 0.0), 1.0)
+    lit = g.mix('MIX', albedo, illum_tint, amount)
+    g.links.new(lit, bsdf.inputs['Base Color'])
+    g.put(bsdf.inputs['Emission Color'], g.mix('MULTIPLY', lit, g.combine(mask, mask, mask)) if mask_source else lit)
+    bsdf.inputs['Emission Strength'].default_value = scale
+
+
+def make_additive(mat):
+    """Lit materials with F_ADDITIVE_BLEND add their colour over what is behind them instead of covering it: the
+    surface, which already lets 1 - alpha of the background through, gets alpha more of it. Run after the fog,
+    which goes on the surface. Returns whether it applied."""
+    ints, _ = vmat_params(mat)
+    if not ints.get('F_ADDITIVE_BLEND') or ints.get('F_UNLIT'):
+        return False
+    output = material_output(mat)
+    surface = source_of(output.inputs['Surface']) if output else None
+    bsdf = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    if surface is None or bsdf is None:
+        return False
+    g = Graph(mat.node_tree)
+    behind = g.node('ShaderNodeMixShader')
+    g.put(behind.inputs[0], source_of(bsdf.inputs['Alpha']) or bsdf.inputs['Alpha'].default_value)
+    nothing = g.node('ShaderNodeEmission')
+    nothing.inputs['Strength'].default_value = 0.0
+    g.links.new(nothing.outputs[0], behind.inputs[1])
+    g.links.new(g.node('ShaderNodeBsdfTransparent').outputs[0], behind.inputs[2])
+    add = g.node('ShaderNodeAddShader')
+    g.links.new(surface, add.inputs[0])
+    g.links.new(behind.outputs[0], add.inputs[1])
+    g.links.new(add.outputs[0], output.inputs['Surface'])
+    return True
 
 
 def glass_mask(mat, glass_masks):
