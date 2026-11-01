@@ -66,8 +66,8 @@ skips an up-to-date map.
 textures, such as posters and signs, are in the built map like they are in the game. Turn off Include Mods in the Map
 section and rebuild for the map as Valve ships it.
 
-Link Map and Append Map add the map's collection to the open scene, make the map's sky the scene's world and turn on
-Game Look. The map is at its game position; rigs are at the origin, so move the rig or the map.
+Link Map and Append Map add the map's collection to the open scene, make the map's sky the scene's world and put the
+game look on the scene. The map is at its game position; rigs are at the origin, so move the rig or the map.
 
 Link Map takes seconds: the map stays in its own file and your file points at it, so it can't be edited (moved,
 materials, the node group values below) and the map's folder has to come along when the project moves. Append Map
@@ -96,9 +96,9 @@ does appending a rig to a scene with a map; Light Rigs (Map section) does it by 
 emission on top of the rig's materials, like the map's baked light. In Cycles the map's baked light also bounces onto
 rigs, so lower Strength there if they look too bright. Maps built before this need a rebuild.
 
-**Game Look** (Map section) puts the game's tonemapping on the scene: its compositor gets the game's exposure and
-filmic curve, and the view transform is set to Standard. That is most of what makes a render look like Deadlock
-rather than Blender. Click it again to go back to your previous view settings.
+**Game look.** Adding a map puts the game's post-processing on the scene: its compositor gets the game's exposure,
+filmic curve, bloom and vignette, and the view transform is set to Standard. That is most of what makes a render look
+like Deadlock rather than Blender. Bloom and Vignette in the Map section set their strength.
 
 Works in EEVEE and Cycles. Cycles loads the whole visible map with full size textures, which runs out of memory on
 32 GB for Midtown: crop the map to the shot first and set Render > Simplify > Texture Limit to 1024 or 2048.

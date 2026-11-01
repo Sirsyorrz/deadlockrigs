@@ -606,7 +606,6 @@ def register():
                ('NONE', 'Just Save', 'Only save it to the output folder')])
     bpy.app.handlers.load_post.append(on_load)
     crop.register()
-    look.register()
     riglight.register()
 
 
@@ -614,7 +613,6 @@ def unregister():
     if _job:
         _job.cancel()
     riglight.unregister()
-    look.unregister()
     crop.unregister()
     if on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load)

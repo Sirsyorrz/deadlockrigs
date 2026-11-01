@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Game Look: the game's post-processing as the scene's compositor, so renders get Deadlock's brightness, contrast,
-bloom and vignette.
+bloom and vignette. Linking or appending a map turns it on.
 
 In the order of Deadlock's post_process.vfx (citadel, decompiled): the scene exposed by the map's exposure times
 2^ExposureBias, plus bloom, then the vignette, then the 2.8 and the Uncharted 2 style filmic curve normalized to a
@@ -20,7 +20,6 @@ not in the shader (it is set on the CPU) and is a guess: 2 / roundness, an ellip
 import bpy
 
 GROUP = 'Deadlock Game Look'
-SAVED = 'dlr_look_saved'
 # basepostprocess_deadlock.vpost m_toneMapParams, game version 6821
 DEFAULT_TONEMAP = {'exposure_bias': 0.8992, 'shoulder_strength': 0.3538, 'linear_strength': 0.3258,
                    'linear_angle': 0.2528, 'toe_strength': 0.6966, 'toe_num': 0.0, 'toe_denom': 0.7819,
@@ -224,28 +223,7 @@ def enable(scene):
             tree.links.new(target.links[0].from_socket, node.inputs[0])
         tree.links.new(node.outputs[0], target)
     vs = scene.view_settings
-    if SAVED not in scene:
-        scene[SAVED] = {'view_transform': vs.view_transform, 'look': vs.look, 'exposure': vs.exposure,
-                        'gamma': vs.gamma}
     vs.view_transform, vs.look, vs.exposure, vs.gamma = 'Standard', 'None', 0.0, 1.0
-
-
-def disable(scene):
-    tree = scene.compositing_node_group
-    node = look_node(tree) if tree else None
-    if node is not None:
-        src = node.inputs[0].links[0].from_socket if node.inputs[0].is_linked else None
-        targets = [link.to_socket for link in node.outputs[0].links]
-        tree.nodes.remove(node)
-        for t in targets:
-            if src is not None:
-                tree.links.new(src, t)
-    saved = scene.get(SAVED)
-    if saved:
-        vs = scene.view_settings
-        vs.view_transform, vs.look = saved['view_transform'], saved['look']
-        vs.exposure, vs.gamma = saved['exposure'], saved['gamma']
-        del scene[SAVED]
 
 
 def is_enabled(scene):
@@ -262,37 +240,10 @@ def show_in_viewport(context):
                     space.shading.use_compositor = 'ALWAYS'
 
 
-class DLR_OT_game_look(bpy.types.Operator):
-    bl_idname = 'dlr.game_look'
-    bl_label = 'Game Look'
-    bl_description = ("Toggle the game's tonemapping on the scene (as its compositor, with the Standard view "
-                      'transform), so renders get the brightness and contrast of Deadlock')
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        sc = context.scene
-        if is_enabled(sc):
-            disable(sc)
-        else:
-            enable(sc)
-            show_in_viewport(context)
-        return {'FINISHED'}
-
-
 def draw(layout, context):
-    on = is_enabled(context.scene)
-    layout.operator('dlr.game_look', icon='CHECKBOX_HLT' if on else 'CHECKBOX_DEHLT', depress=on)
     group = bpy.data.node_groups.get(GROUP)
-    if on and group:
+    if is_enabled(context.scene) and group:
         col = layout.column(align=True)
         for name in ('Bloom', 'Vignette'):
             if name in group.nodes:
                 col.prop(group.nodes[name].outputs[0], 'default_value', text=name)
-
-
-def register():
-    bpy.utils.register_class(DLR_OT_game_look)
-
-
-def unregister():
-    bpy.utils.unregister_class(DLR_OT_game_look)
