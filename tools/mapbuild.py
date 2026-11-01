@@ -4,6 +4,7 @@ calls it too.
 python tools/mapbuild.py <map> [options]
 
   export    the map's world as glTF with textures (Source2Viewer)
+  props     the props that play an idle animation, each as its own glTF with that clip; the rebatch leaves them out
   rebatch   one mesh per grid cell and material instead of ~30,000 objects (map_rebatch.py)
   lighting  the baked lighting (lightmaps, light probes) and the sky, sun, fog and tonemapping the map uses
   import    <out>/maps/<map>/<map>.blend, textures in textures/ and lighting files in lightmaps/ next to it
@@ -37,6 +38,8 @@ class MapFiles:
         self.world = os.path.join(self.export, 'maps', slug, 'world.gltf')
         self.lighting = os.path.join(self.dir, 'lighting')
         self.rebatched = os.path.join(self.dir, 'rebatched', slug + '.gltf')
+        self.props = os.path.join(self.dir, 'props')
+        self.props_file = os.path.join(self.props, 'props.json')
         self.blend = os.path.join(self.out, slug + '.blend')
         self.stamp_file = os.path.join(self.out, 'map.json')
 
@@ -60,7 +63,7 @@ def game_version(pak):
 
 
 # raised when a change to the build makes earlier builds wrong, so they show as needing a rebuild
-BUILDER = 14
+BUILDER = 15
 
 
 def game_stamp(pak, slug, mods=True):
@@ -94,6 +97,33 @@ def vanilla_vpk(pak, slug, folder):
         f.write('"GameInfo"\n{\n\tgame "citadel"\n\tFileSystem\n\t{\n\t\tSearchPaths\n\t\t{\n'
                 + ''.join(f'\t\t\tGame "{p}"\n' for p in paths) + '\t\t}\n\t}\n}\n')
     return vpk, gameinfo
+
+
+def prop_nodes(j, model, origin):
+    """The nodes Source2Viewer wrote for a model placed at a game-space origin: the root named after the model and
+    its descendants, and the skinned meshes those joints move. Returns (root node, sorted node indices) or None."""
+    stem = os.path.splitext(os.path.basename(model))[0]
+    want = [origin[1] * env.UNIT, origin[2] * env.UNIT, origin[0] * env.UNIT]
+    children = {c for n in j['nodes'] for c in n.get('children', ())}
+    for i, node in enumerate(j['nodes']):
+        if i in children or node.get('name') != stem or 'mesh' in node:
+            continue
+        at = node['matrix'][12:15] if 'matrix' in node else node.get('translation', (0, 0, 0))
+        if max(abs(a - b) for a, b in zip(at, want)) > 0.01:
+            continue
+        found, stack = set(), [i]
+        while stack:
+            k = stack.pop()
+            found.add(k)
+            stack += j['nodes'][k].get('children', ())
+        skins = {s for s, skin in enumerate(j.get('skins', ())) if set(skin['joints']) <= found}
+        found |= {k for k, n in enumerate(j['nodes']) if n.get('skin') in skins}
+        return node, sorted(found)
+    return None
+
+
+def idle_anim(ent):
+    return ent.get('model') and (ent.get('idleanim') or ent.get('defaultanim'))
 
 
 def built_stamp(out, slug):
@@ -134,9 +164,58 @@ class MapBuilder(Builder):
         if not os.path.exists(m.world):
             raise BuildError('Source2Viewer wrote no ' + m.world)
 
+    def entities(self, m, vpks):
+        world = self.dump(m, f'maps/{m.slug}/world.vwrld', vpks[:1])
+        return [e for lump in env.resources(world, 'vents') for e in env.entities(self.dump(m, lump, vpks[:1]))]
+
+    def props(self, m):
+        shutil.rmtree(m.props, ignore_errors=True)
+        os.makedirs(m.props)
+        vpks = [map_vpk(self.pak, m.slug), self.pak]
+        ents = [e for e in self.entities(m, vpks) if idle_anim(e)]
+        world = json.load(open(m.world, encoding='utf-8'))
+        vanilla = os.path.join(m.dir, 'vanilla')
+        game = [] if self.mods else ['--game', vanilla_vpk(self.pak, m.slug, vanilla)[1]]
+        props, exclude, exported = [], set(), {}
+        try:
+            for ent in ents:
+                found = prop_nodes(world, ent['model'], ent['origin'])
+                if not found:
+                    continue
+                root, nodes = found
+                key = (ent['model'], idle_anim(ent))
+                if key not in exported:
+                    exported[key] = self.export_prop(m, *key, len(exported), game)
+                if not exported[key]:
+                    continue
+                props.append({'model': ent['model'], 'anim': idle_anim(ent), 'gltf': exported[key],
+                              'transform': {k: root[k] for k in ('matrix', 'translation', 'rotation', 'scale')
+                                            if k in root}})
+                exclude.update(nodes)
+        finally:
+            shutil.rmtree(vanilla, ignore_errors=True)
+        json.dump({'props': props, 'exclude': sorted(exclude)}, open(m.props_file, 'w', encoding='utf-8'), indent=1)
+        log(f'  props: {len(props)} animated, {len(exported)} models')
+
+    def export_prop(self, m, model, anim, n, game):
+        """The model with only its idle clip as glTF; the path relative to the props folder, or None if the model
+        has no such clip."""
+        rel = os.path.join(str(n), os.path.splitext(os.path.basename(model))[0] + '.gltf')
+        path = os.path.join(m.props, rel)
+        try:
+            self.run([self.s2v, '-i', self.pak, '-f', model + '_c', '-o', path, *game, '--gltf_export_format', 'gltf',
+                      '--gltf_textures_adapt', '--gltf_export_extras', '--gltf_animation_list', anim], m, show=False)
+        except BuildError:
+            return None
+        try:
+            anims = json.load(open(path, encoding='utf-8')).get('animations', ())
+        except (OSError, ValueError):
+            return None
+        return rel if any(a.get('name') == anim for a in anims) else None
+
     def dump(self, m, path, vpks):
         """Source2Viewer's text dump of a resource's data, from the first of the archives that has it."""
-        out = os.path.join(m.lighting, 'dump.txt')
+        out = os.path.join(m.dir, 'dump.txt')
         for vpk in vpks:
             try:
                 self.run([self.s2v, '-i', vpk, '-f', path + '_c', '-b', 'DATA'], m, show=False, stdout_file=out)
@@ -169,8 +248,7 @@ class MapBuilder(Builder):
         vpks = [map_vpk(self.pak, m.slug), self.pak]
         self.run([self.s2v, '-i', vpks[0], '-f', f'maps/{m.slug}/lightmaps/directional_irradiance_sh2_',
                   '-o', m.lighting, '-d'], m, show=False)
-        world = self.dump(m, f'maps/{m.slug}/world.vwrld', vpks[:1])
-        ents = [e for lump in env.resources(world, 'vents') for e in env.entities(self.dump(m, lump, vpks[:1]))]
+        ents = self.entities(m, vpks)
         settings = {'sun': env.sun(ents), 'lights': env.lights(ents), 'gradient_fog': env.gradient_fog(ents)}
         cube = env.cubemap_fog(ents)
         settings['cubemap_fog'] = cube
@@ -209,7 +287,8 @@ class MapBuilder(Builder):
             settings['volumetric_fog'] = fog
         settings['glass_masks'] = self.glass_masks(m, vpks)
         settings['layer_textures'] = self.layer_textures(m, vpks)
-        os.remove(os.path.join(m.lighting, 'dump.txt'))
+        settings['anim_textures'] = self.anim_textures(m, vpks)
+        os.remove(os.path.join(m.dir, 'dump.txt'))
         json.dump(settings, open(os.path.join(m.lighting, 'settings.json'), 'w', encoding='utf-8'), indent=1)
         log(f'  lighting: sun {"baked" if settings["sun"] and settings["sun"]["baked"] else "live"}, '
             f'{len(settings["lights"])} runtime lights, {len(settings.get("probe_volumes") or [])} light probe volumes, '
@@ -241,7 +320,29 @@ class MapBuilder(Builder):
             if vmat.get('ShaderName') == 'environment_blend.vfx':
                 textures = vmat.get('TextureParams') or {}
                 paths.update(textures[k] for k in env.BLEND_TEXTURES if textures.get(k))
-        dest = os.path.join(m.lighting, 'layers')
+        return self.decompile_textures(m, vpks, paths, 'layers')
+
+    def anim_textures(self, m, vpks):
+        """The jitter masks and second translucency textures of materials that move (map_anim.py), of the world and
+        the animated props. Texture path -> file under the lighting folder."""
+        gltfs = [m.world]
+        if os.path.exists(m.props_file):
+            gltfs += [os.path.join(m.props, p['gltf'])
+                      for p in json.load(open(m.props_file, encoding='utf-8'))['props']]
+        paths = set()
+        for gltf in gltfs:
+            for mat in json.load(open(gltf, encoding='utf-8')).get('materials', []):
+                vmat = (mat.get('extras') or {}).get('vmat') or {}
+                ints, textures = vmat.get('IntParams') or {}, vmat.get('TextureParams') or {}
+                if ints.get('F_JITTER_VERTICES'):
+                    paths.add(textures.get('g_tJitterMask'))
+                if ints.get('F_ADVANCED_TRANSLUCENCY'):
+                    paths.add(textures.get('g_tAltTranslucency'))
+        paths.discard(None)
+        return self.decompile_textures(m, vpks, paths, 'anim')
+
+    def decompile_textures(self, m, vpks, paths, folder):
+        dest = os.path.join(m.lighting, folder)
         wanted = sorted(paths)
         for vpk in vpks:
             missing = [p for p in wanted if not os.path.exists(os.path.join(dest, os.path.splitext(p)[0] + '.png'))]
@@ -257,14 +358,15 @@ class MapBuilder(Builder):
         return {p: f for p, f in found.items() if os.path.exists(os.path.join(m.lighting, f))}
 
     def rebatch(self, m):
-        self.run([self.python, os.path.join(TOOLS, 'map_rebatch.py'), m.world, m.rebatched], m)
+        self.run([self.python, os.path.join(TOOLS, 'map_rebatch.py'), m.world, m.rebatched,
+                  '--exclude', m.props_file], m)
 
     def import_(self, m):
         os.makedirs(m.out, exist_ok=True)
         tmp = m.blend[:-len('.blend')] + '.new.blend'
         self.run([self.blender, '-b', '--factory-startup', '--python-exit-code', '1',
                   '-P', os.path.join(TOOLS, 'map_import.py'), '--', m.rebatched, tmp, m.slug, m.title,
-                  game_version(self.pak), m.lighting], m, env=self.blender_env(m))
+                  game_version(self.pak), m.lighting, m.props_file], m, env=self.blender_env(m))
         if not os.path.exists(tmp):
             raise BuildError('map_import.py wrote no ' + tmp)
         os.replace(tmp, m.blend)
@@ -287,8 +389,8 @@ class MapBuilder(Builder):
             + ('' if self.mods else ', without mods'))
         # a game update can leave an older export behind
         shutil.rmtree(m.export, ignore_errors=True)
-        steps = [('export', self.export), ('rebatch', self.rebatch), ('lighting', self.lighting),
-                 ('import', self.import_)]
+        steps = [('export', self.export), ('props', self.props), ('rebatch', self.rebatch),
+                 ('lighting', self.lighting), ('import', self.import_)]
         for i, (name, step) in enumerate(steps):
             log(f'STEP {i + 1}/{len(steps)} map_{name}')
             step(m)
@@ -296,6 +398,7 @@ class MapBuilder(Builder):
         if not self.keep:
             shutil.rmtree(os.path.join(m.dir, 'export'), ignore_errors=True)
             shutil.rmtree(m.lighting, ignore_errors=True)
+            shutil.rmtree(m.props, ignore_errors=True)
             shutil.rmtree(os.path.dirname(m.rebatched), ignore_errors=True)
         log(f'DONE {slug} {m.blend}')
 

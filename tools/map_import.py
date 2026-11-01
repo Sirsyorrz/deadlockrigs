@@ -1,10 +1,11 @@
 """Imports a rebatched map into Blender and saves it with its textures next to it (run by mapbuild.py).
 
 blender -b --factory-startup -P tools/map_import.py -- <map.gltf> <out.blend> <map slug> <title> <game version>
-    [<lighting folder>]
+    [<lighting folder> [<props.json>]]
 
 The lighting folder (from mapbuild.py's lighting step) has the lightmaps, the light probe atlas, the sky and
-settings.json with what map_environment.py read from the map's entities.
+settings.json with what map_environment.py read from the map's entities. props.json (from the props step) lists
+the animated props, each exported on its own.
 """
 import glob
 import json
@@ -15,6 +16,7 @@ import sys
 import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import map_anim  # noqa: E402
 import map_blend  # noqa: E402
 import map_fog  # noqa: E402
 import map_lighting  # noqa: E402
@@ -24,6 +26,7 @@ import map_reflections  # noqa: E402
 args = sys.argv[sys.argv.index('--') + 1:]
 gltf, out_blend, slug, title, version = args[:5]
 lighting_dir = args[5] if len(args) > 5 else ''
+props_file = args[6] if len(args) > 6 else ''
 out_dir = os.path.dirname(os.path.abspath(out_blend))
 tex_dir = os.path.join(out_dir, 'textures')
 light_dir = os.path.join(out_dir, 'lightmaps')
@@ -72,6 +75,9 @@ for ob in list(bpy.context.scene.collection.objects):
     bpy.context.scene.collection.objects.unlink(ob)
 coll['dlr_map'] = slug
 coll['dlr_map_version'] = version
+if props_file and os.path.exists(props_file):
+    props = map_anim.import_props(props_file, coll)
+    print(f'animated props: {sum(ob.type == "ARMATURE" for ob in props)}')
 if settings.get('tonemap'):
     coll['dlr_tonemap'] = dict(settings['tonemap'], exposure_bias=settings['tonemap']['exposure_bias'] +
                                settings.get('exposure', 0.0), exposure=settings.get('exposure', 0.0))
@@ -152,6 +158,11 @@ if (cube and sky_mips) or gradient:
     fog = map_lighting.fog_group(cube, gradient, sky_mips, sky.get('strength', 1.0), face)
     done = sum(map_lighting.add_fog(m, fog) for m in mats)
     print(f'fog: {"cubemap " if cube and sky_mips else ""}{"gradient " if gradient else ""}on {done} materials')
+
+print(f'additive: {sum(map_lighting.make_additive(m) for m in mats)} lit materials')
+anim_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.get('anim_textures') or {}).items()}
+moving, moved = map_anim.animate(meshes, anim_textures)
+print(f'motion: {moving} scrolling or jittering materials, {moved} jittering meshes')
 
 fog_volume = settings.get('volumetric_fog')
 if fog_volume:

@@ -180,7 +180,8 @@ class Job:
     STEP_TEXT = {'extract': 'Extracting from the game', 'data': 'Reading cloth and face data',
                  'base': 'Importing the model', 'rig': 'Building the rig', 'export_anims': 'Exporting animations',
                  'anims': 'Importing animations into Blender', 'clean': 'Cleaning up',
-                 'map_export': 'Exporting the map from the game', 'map_rebatch': 'Merging the map objects',
+                 'map_export': 'Exporting the map from the game', 'map_props': 'Exporting the animated props',
+                 'map_rebatch': 'Merging the map objects',
                  'map_lighting': 'Exporting the lighting, sky and fog', 'map_import': 'Importing the map into Blender'}
 
     def poll(self):

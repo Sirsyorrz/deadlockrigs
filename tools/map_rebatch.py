@@ -1,6 +1,6 @@
 """Merges a Source2Viewer map export into one mesh per (grid cell, material).
 
-python tools/map_rebatch.py <world.gltf> <out.gltf> [--cell-size 100] [--max-tris 2000000]
+python tools/map_rebatch.py <world.gltf> <out.gltf> [--cell-size 100] [--max-tris 2000000] [--exclude <props.json>]
 
 The export has ~30,000 objects, which Blender imports and draws slowly. Every node transform (and the rest pose of
 the few skinned props) is baked into the vertices; triangles, the material UVs (TEXCOORD_0), vertex colours and
@@ -9,6 +9,11 @@ UV set (_UV2, v flipped). The other UV sets and custom attributes, which no mate
 lightmap UVs: those become _LIGHTMAP_UV (u, v flipped for Blender, 1), so a material can tell lightmapped surfaces
 (z = 1) from the rest (z = 0, the attribute is missing). The output's buffers go in <out>_bins/ next to it and its
 images keep the export's URIs, made relative to the output, so textures load from where Source2Viewer wrote them.
+
+Materials that jitter their vertices in object space (F_JITTER_VERTICES 2) also get the vertex's position in its
+prop's own space, in game units (_JITTER_POS), and where one game unit along each of the prop's axes ends up in
+Blender (_JITTER_X, _Y, _Z), already in Blender's axes. The nodes listed under "exclude" in --exclude (the
+animated props mapbuild.py imports on their own) are left out.
 """
 import argparse
 import json
@@ -31,7 +36,12 @@ LIGHTMAP = '_LIGHTMAP_UV'
 # second UV set (vTexCoord2) its reveal masks and overlays can use
 BLEND = '_BLEND'
 UV2 = '_UV2'
-SECONDARY_UV_FLAGS = ('g_bUseSecondaryUvForOverlay', 'g_bRevealUseSecondaryUv2', 'g_bRevealUseSecondaryUv3')
+SECONDARY_UV_FLAGS = ('g_bUseSecondaryUvForOverlay', 'g_bRevealUseSecondaryUv2', 'g_bRevealUseSecondaryUv3',
+                      'g_bUseSecondaryUvForJitterMask', 'g_bUseSecondaryUvForTranslucency',
+                      'g_bUseSecondaryUvForAltTranslucency', 'g_bUseSecondaryUvForSelfIllum1')
+JITTER_POS = '_JITTER_POS'
+JITTER_AXES = ('_JITTER_X', '_JITTER_Y', '_JITTER_Z')
+GAME_UNIT = 0.0254
 
 
 class Source:
@@ -174,13 +184,13 @@ def place(src, prim, world, skin, skin_mats):
     return pos @ world[:3, :3].T + world[:3, 3], None, used, remap
 
 
-def scan(src, cell_size, worlds, skin_mats):
+def scan(src, cell_size, worlds, skin_mats, exclude=frozenset()):
     groups = defaultdict(list)
     lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
     skipped = 0
     for i, world in worlds.items():
         node = src.j['nodes'][i]
-        if 'mesh' not in node:
+        if 'mesh' not in node or i in exclude:
             continue
         for prim in src.j['meshes'][node['mesh']]['primitives']:
             if prim.get('mode', TRIANGLES) != TRIANGLES or 'POSITION' not in prim['attributes']:
@@ -205,6 +215,8 @@ def scan(src, cell_size, worlds, skin_mats):
             uv2 = next((n for n in sorted(at) if n.startswith('TEXCOORD_') and n not in ('TEXCOORD_0', lm)), None)
             if uv2 and wants_secondary_uv(src, prim.get('material', -1)):
                 attrs[UV2] = at[uv2]
+            if jitter_mode(src, prim.get('material', -1)) == 2:
+                attrs[JITTER_POS] = at['POSITION']
             groups[cell, prim.get('material', -1), bool(lm)].append(
                 Piece(prim, world, skin, len(remap) // 3, len(used), attrs))
     return groups, lo, hi, skipped
@@ -218,6 +230,26 @@ def wants_secondary_uv(src, material):
     # the UV overlay defaults to the second UV set
     return any(ints.get(k) for k in SECONDARY_UV_FLAGS) or \
         bool(ints.get('F_UV_OVERLAY') and ints.get('g_bUseSecondaryUvForOverlay', 1))
+
+
+def jitter_mode(src, material):
+    if material < 0:
+        return 0
+    vmat = (src.j['materials'][material].get('extras') or {}).get('vmat') or {}
+    return int((vmat.get('IntParams') or {}).get('F_JITTER_VERTICES', 0))
+
+
+def jitter_frame(raw, lin):
+    """The game-space position of mesh vertices and the Blender vectors of one game unit along the prop's axes.
+    Source2Viewer's glTF has the game's x, y, z as z, x, y in metres; Blender's importer turns glTF (x, y, z) into
+    (x, -z, y)."""
+    game = raw[:, [2, 0, 1]] / GAME_UNIT
+    lin = np.broadcast_to(lin, (len(raw), 3, 3))
+    axes = []
+    for column in (2, 0, 1):
+        v = lin[:, :, column] * GAME_UNIT
+        axes.append(np.column_stack([v[:, 0], -v[:, 2], v[:, 1]]))
+    return game, axes
 
 
 def split(pieces, max_tris):
@@ -244,7 +276,10 @@ def merge(src, part, skin_mats):
     widths = {}
     for p in part:
         for name, acc in p.attrs.items():
-            widths[name] = 3 if name in (LIGHTMAP, BLEND, UV2) else max(widths.get(name, 0), WIDTH[src.j['accessors'][acc]['type']])
+            widths[name] = 3 if name in (LIGHTMAP, BLEND, UV2, JITTER_POS) else \
+                max(widths.get(name, 0), WIDTH[src.j['accessors'][acc]['type']])
+    if JITTER_POS in widths:
+        widths.update((name, 3) for name in JITTER_AXES)
     nverts = sum(p.verts for p in part)
     pos = np.empty((nverts, 3), np.float32)
     idx = np.empty(sum(p.tris for p in part) * 3, np.uint32)
@@ -270,8 +305,15 @@ def merge(src, part, skin_mats):
 
             def xform(vec, m):
                 return np.einsum('nij,nj->ni', m, vec)
+        if JITTER_POS in p.attrs:
+            game, axes = jitter_frame(src.read(p.attrs[JITTER_POS], used).astype(float), lin)
+            attrs[JITTER_POS][v:v + n] = game
+            for name, axis in zip(JITTER_AXES, axes):
+                attrs[name][v:v + n] = axis
         for name, w in widths.items():
             dest = attrs[name][v:v + n]
+            if name in (JITTER_POS, *JITTER_AXES) and JITTER_POS in p.attrs:
+                continue
             if name not in p.attrs:
                 dest[:] = default(name, w)
                 continue
@@ -389,11 +431,15 @@ def main(argv=None):
     ap.add_argument('output')
     ap.add_argument('--cell-size', type=float, default=100.0, help='grid cell width in metres (default 100)')
     ap.add_argument('--max-tris', type=int, default=2_000_000, help='split a merged mesh above this many triangles')
+    ap.add_argument('--exclude', help='a json file whose "exclude" lists node indices to leave out')
     args = ap.parse_args(argv)
     src = Source(args.input)
     worlds = world_matrices(src.j)
     skin_mats = rest_skins(src, worlds)
-    groups, lo, hi, skipped = scan(src, args.cell_size, worlds, skin_mats)
+    exclude = frozenset()
+    if args.exclude:
+        exclude = frozenset(json.load(open(args.exclude, encoding='utf-8')).get('exclude', ()))
+    groups, lo, hi, skipped = scan(src, args.cell_size, worlds, skin_mats, exclude)
     pieces = sum(len(g) for g in groups.values())
     print(f'{pieces} primitives ({skipped} skipped) into {len(groups)} meshes, '
           f'bounds {np.round(lo, 1).tolist()} to {np.round(hi, 1).tolist()}', flush=True)

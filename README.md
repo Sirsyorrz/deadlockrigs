@@ -82,6 +82,14 @@ on top of each material, so lights you add still light the map; its strength is 
 none (Midtown), a Sun light from the game's sun direction lights only the rigs. The map's distance and height fog
 are in the `Deadlock fog` node group (Fog strength), and the sky is the scene's world, seen by the camera only.
 
+**Motion.** What moves in the game moves in the map, at the game's speed in seconds whatever the scene's frame
+rate: textures that scroll (screens, smoke, film, string lights), surfaces whose vertices sway or wobble (smoke
+cards, curtains, leaves, flags, ghosts) and props that loop an idle animation (the Hideout's ghosts, projector,
+reel-to-reel, gramophone, the computer's spinning pentagram). It plays, scrubs and renders with no baking. Swaying
+meshes have a `Deadlock motion` geometry nodes modifier; the props are in the map's `animated props` collection,
+each an armature with its idle clip on repeat. Particle effects (candle flames, the
+fireplace, fireworks) aren't brought over.
+
 **Rig light.** Rigs are lit from the map's light probes per pixel, as the game lights heroes, so they pick up the
 room they stand in and follow it as they move. Linking or appending a map does this for the rigs in the scene, and so
 does appending a rig to a scene with a map; Light Rigs (Map section) does it by hand, next to its Strength. It is
