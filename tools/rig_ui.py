@@ -1525,11 +1525,11 @@ def tail_row(layout, ob, t, label=None):
 
 
 class DLRIG_PT_riders(bpy.types.Panel):
-    """Small creatures with their own skeleton inside the hero's (Rat King's rats)"""
+    """Skeletons inside the hero's (Rat King's rats, Baba on her bench, Mo on Krill)"""
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = CATEGORY
-    bl_label = 'Creatures'
+    bl_label = 'Riders'
     bl_parent_id = 'DLRIG_PT_main'
     bl_options = {'DEFAULT_CLOSED'}
 
@@ -1544,7 +1544,8 @@ class DLRIG_PT_riders(bpy.types.Panel):
             box = self.layout.box()
             col = box.column(align=True)
             base = r.rstrip('0123456789')
-            col.label(text=f"{base.replace('_', ' ').capitalize()} {int(r[len(base):] or 0) + 1}")
+            num = f' {int(r[len(base):]) + 1}' if r[len(base):] else ''
+            col.label(text=base.replace('_', ' ').capitalize() + num)
             limb_rows(col, ob, [lb for lb in limb_list(ob) if rider_of(lb, ob) == r], strip=r + '_')
             for t in ob.get('tails', []):
                 if rider_of(t, ob) == r:

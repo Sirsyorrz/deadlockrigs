@@ -13,6 +13,7 @@ Each hero gets a rig with:
 - the game's twist bones and cloth/hair physics, including coats
 - tail controls for heroes with tails
 - hand poses
+- controls for the skeletons riding the hero: Baba on her bench, Mo on Krill, Rat King's rats (IK/FK limbs, own root)
 - weapons held in hand by default (the `weapon_hold` property; loading a game clip switches it off); Solomon's board
   floats with his body instead
 - an FK jaw (and eyes) for heroes without a face rig whose jaw is skinned (Deadman Danny)
@@ -141,7 +142,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 ## Known gaps
 
 - Sinclair's arm twist doesn't fully match his game animations.
-- Baba only gets leg IK, and Mo & Krill get no hand poses (their skeletons lack the bones).
+- Mo & Krill get no hand poses (the skeleton lacks the finger bones).
 
 ## Build from source
 

@@ -113,7 +113,7 @@ SKINNED = skinned_bones()
 # with its size relative to Violet
 RIDERS = {}
 for b in B:
-    m = re.match(r'^([a-z]+\d+)_pelvis$', b.name)
+    m = re.match(r'^([a-z]+\d*)_pelvis$', b.name)
     if m and f'{m.group(1)}_head' in B:
         p = m.group(1)
         floor = min(x.head_local.z for x in B if x.name.startswith(p + '_'))
@@ -122,7 +122,7 @@ for b in B:
 
 def rider_of(name):
     """The rider a bone or control belongs to (minion0 for minion0_head, IK_minion0_foot_L, pole_minion0_knee_L)."""
-    m = re.match(r'^(?:IK_tweak_|IK_|pole_)?([a-z]+\d+)_', name)
+    m = re.match(r'^(?:IK_tweak_|IK_|pole_)?([a-z]+\d*)_', name)
     return m.group(1) if m and m.group(1) in RIDERS else None
 
 
