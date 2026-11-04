@@ -19,7 +19,8 @@ Each hero gets a rig with:
 - an FK jaw (and eyes) for heroes without a face rig whose jaw is skinned (Deadman Danny)
 - a Parts panel with the game's mesh switches (Rat King's banner, ammo and guard rats, Bebop's arm as hand, gun or
   forearm), sliders for animated parts (Bebop's gun folding open and its hyperbeam mode) and extra models the hero
-  uses (Bebop's fired hook hand and sticky bomb), each with its own control
+  uses (Bebop's fired hook hand and sticky bomb), each with its own control, and a Glow slider for self-lit parts
+  (Bebop's eyes, Rat King's eyes, Infernus' arm)
 - jointed hard-surface parts where the game has them fused to one bone (Bebop's jaw, monocle and head switches)
 - face shape keys, controls and expressions for the heroes listed under [Faces](#faces)
 
@@ -130,7 +131,9 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Ivy, Rat King, Vyper | yes (hand-made, with a bone face) |
 | Viscous | yes (hand-made: his painted eyes blink, squint, widen, look and tilt; the goo squashes and stretches) |
 | Haze, Lash, Shiv, Warden, Wraith, Yamato | yes (painted eyes: the lids squash the paint, no eye look) |
-| everyone else | not yet |
+| Bebop, Paradox | parts instead (Bebop's jaw, monocle and switches; Paradox's hourglass) |
+| Deadman Danny | jaw only (his skull is behind goggles) |
+| Dynamo, Seven, Sinclair | no (a cylinder head with glasses; a helmet; a blank mask) |
 
 ![Violet's expressions](docs/faces_violet.png)
 ![Abrams' expressions](docs/faces_abrams.png)
