@@ -1759,7 +1759,7 @@ class DLRIG_PT_parts(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         ob = rig(context)
-        return ob is not None and bool(ob.get('body_groups') or ob.get('sliders'))
+        return ob is not None and bool(ob.get('body_groups') or ob.get('sliders') or ob.get('extra_models'))
 
     def draw(self, context):
         ob = rig(context)
@@ -1776,6 +1776,16 @@ class DLRIG_PT_parts(bpy.types.Panel):
             key = 'slider_' + ''.join(c if c.isalnum() else '_' for c in sname.lower()).strip('_')
             if key in ob:
                 self.layout.prop(ob, f'["{key}"]', text=sname, slider=True)
+        for key, name in ob.get('extra_models', {}).items():
+            box = self.layout.box().column(align=True)
+            row = box.split(factor=0.4, align=True)
+            row.label(text=name)
+            row = row.row(align=True)
+            for i, lbl in enumerate(('Hide', 'Show')):
+                op = row.operator('dlrig.show_extra', text=lbl, depress=ob.get(f'show_{key}', 0) == i)
+                op.key, op.show = key, bool(i)
+            if ob.get(f'show_{key}', 0):
+                parent_row(box, ob, f'{key}__root', 'Follows')
         # the sets cover the groups they name; the rest stay as switches
         covered = {g for options in sets.values() for o in options.values() for g in o}
         col = self.layout.column(align=True)
@@ -1810,6 +1820,23 @@ class DLRIG_OT_part_set(bpy.types.Operator):
             if autokey(context):
                 ob.keyframe_insert(f'["bodygroup_{g}"]', group='Parts')
         ob.update_tag()
+        return {'FINISHED'}
+
+
+class DLRIG_OT_show_extra(bpy.types.Operator):
+    """Show or hide this extra model (and its controls)"""
+    bl_idname = 'dlrig.show_extra'
+    bl_label = 'Show Model'
+    bl_options = {'REGISTER', 'UNDO'}
+    key: bpy.props.StringProperty()
+    show: bpy.props.BoolProperty()
+
+    def execute(self, context):
+        ob = rig(context)
+        ob[f'show_{self.key}'] = int(self.show)
+        ob.update_tag()
+        if autokey(context):
+            ob.keyframe_insert(f'["show_{self.key}"]', group='Parts')
         return {'FINISHED'}
 
 
@@ -1886,7 +1913,7 @@ def make_group_panel(title):
 classes = [DLRIG_OT_expression, DLRIG_OT_reset_face, DLRIG_OT_key_face, DLRIG_OT_hand, DLRIG_OT_reset_pose,
            DLRIG_OT_snap, DLRIG_OT_mech_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
            DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
-           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_OT_body_group, DLRIG_OT_part_set,
+           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_OT_body_group, DLRIG_OT_part_set, DLRIG_OT_show_extra,
            DLRIG_PT_main, DLRIG_PT_layers, DLRIG_PT_body, DLRIG_PT_ik, DLRIG_PT_follow, DLRIG_PT_riders,
            DLRIG_PT_expressions, DLRIG_PT_hands, DLRIG_PT_weapon, DLRIG_PT_parts, DLRIG_PT_game, DLRIG_PT_physics]
 # a panel per slider group of any rig in the file; the add-on runs this again after appending another rig

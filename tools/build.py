@@ -11,7 +11,7 @@ import sys
 import bmesh
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 sys.path.insert(0, os.path.dirname(__file__))
 from bodygroups import mesh_parts, split_meshes  # noqa: E402
@@ -224,6 +224,71 @@ if hero.face and os.path.exists(bag_path):
             continue
         if all(bag[v] for v in poly.vertices) and any(bag[v] == 2 for v in poly.vertices):
             poly.material_index = mi
+
+# extra models (heroes.json "extra_models": Bebop's fired hook hand, his sticky bomb): each one's bones join the
+# hero's armature as <key>__<bone> under a <key>__root bone (a static model gets just that), hidden until shown.
+# "at": a bone of the hero; the model sits there at rest, or with "align" its own bone of that name lands on it
+for key, cfg, glb in hero.extra_models:
+    if not os.path.exists(glb):
+        print('WARNING: no', glb, '(run extract)')
+        continue
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.gltf(filepath=glb)
+    new = [o for o in bpy.data.objects if o not in before]
+    src_arm = next((o for o in new if o.type == 'ARMATURE'), None)
+    meshes = [o for o in new if o.type == 'MESH' and o.parent is not None or o.type == 'MESH' and src_arm is None]
+    for o in new:
+        if o not in meshes and o != src_arm:
+            bpy.data.objects.remove(o, do_unlink=True)
+    at = arm.data.bones[cfg['at']].matrix_local if cfg.get('at') in arm.data.bones else Matrix()
+    if src_arm and cfg.get('align') and cfg['at'] in src_arm.data.bones:
+        place = at @ (src_arm.matrix_world @ src_arm.data.bones[cfg['at']].matrix_local).inverted()
+    else:
+        place = Matrix.Translation(at.translation)
+    for o in meshes:
+        mw = o.matrix_world.copy()
+        o.parent = None
+        o.data.transform(mw)
+        o.matrix_world = Matrix()
+        o.data.transform(place)
+        o.name = o.data.name = f'{key}__{o.name.rsplit(".", 1)[-1]}'
+        o['dlrig_extra'] = key
+        for m in [m for m in o.modifiers if m.type == 'ARMATURE']:
+            o.modifiers.remove(m)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode='EDIT')
+    eb = arm.data.edit_bones
+    root = eb.new(f'{key}__root')
+    root.head = place.translation
+    root.tail = place.translation + Vector((0, 0, 0.1 * arm.data.bones['head'].head_local.z / 2.094))
+    if src_arm:
+        sw = place @ src_arm.matrix_world
+        made = {}
+        for b in src_arm.data.bones:
+            nb = eb.new(f'{key}__{b.name}')
+            m = sw @ b.matrix_local
+            nb.head = sw @ b.head_local
+            nb.tail = sw @ b.tail_local
+            nb.align_roll(m.to_3x3() @ Vector((0, 0, 1)))
+            made[b.name] = nb
+        for b in src_arm.data.bones:
+            made[b.name].parent = made[b.parent.name] if b.parent else root
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for o in meshes:
+        if src_arm:
+            for g in o.vertex_groups:
+                g.name = f'{key}__{g.name}'
+        else:
+            g = o.vertex_groups.new(name=f'{key}__root')
+            g.add(list(range(len(o.data.vertices))), 1.0, 'REPLACE')
+        o.parent = arm
+        mod = o.modifiers.new('Armature', 'ARMATURE')
+        mod.object = arm
+        o.hide_set(True)
+        o.hide_viewport = o.hide_render = True
+    if src_arm:
+        bpy.data.objects.remove(src_arm, do_unlink=True)
+    print('extra model', key, [o.name for o in meshes])
 
 bpy.ops.wm.save_as_mainfile(filepath=hero.base_blend)
 print('wrote', hero.base_blend)

@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import bodygroups  # noqa: E402
 from expressions import ARKIT, EXPRESSIONS, GROUPS, VISEMES  # noqa: E402
 import facerig  # noqa: E402
+import mechparts  # noqa: E402
 import hands  # noqa: E402
 import mirror  # noqa: E402
 from hero import from_argv  # noqa: E402
@@ -49,6 +50,13 @@ FACERIG = facerig.load(hero.data) if HAS_FACE else None
 bpy.context.view_layer.objects.active = arm
 arm.select_set(True)
 B = arm.data.bones
+MECH = mechparts.load(hero.cfg, arm)
+# extra models build.py merged in (Bebop's hook hand): key -> cfg
+EXTRA = {key: cfg for key, cfg, _glb in hero.extra_models if f'{key}__root' in B}
+
+
+def extra_of(name):
+    return next((k for k in EXTRA if name.startswith(k + '__')), None)
 TURNS = mirror.turns({b.name: b.matrix_local for b in B})
 bpy.ops.object.mode_set(mode='EDIT')
 mirror.turn_rest(arm.data.edit_bones, TURNS)
@@ -119,6 +127,10 @@ def rider_of(name):
 
 
 def category(name):
+    if name in MECH:
+        return 'Face'
+    if extra_of(name):
+        return 'Props'
     if FACERIG and facerig.category(FACERIG, name):
         return facerig.category(FACERIG, name)
     if rider_of(name) and not re.search(CATS[0][1], name):
@@ -434,6 +446,7 @@ if HAS_FACE:
     new_bone(FACE, FACE_BONE, FACE_BONE + UP * 0.03 * FS, 'head', roll_to=FWD)
 if FACERIG:
     facerig.edit(FACERIG, eb, new_bone, head_ob, arm)
+mechparts.edit(MECH, new_bone)
 ROOT = 'root_motion' if 'root_motion' in eb else None
 # widget sizes and pole distances were tuned on Violet, whose head bone sits 2.094 m up. Without a head bone (the
 # Walker) the top bone stands in, as Violet's head_end is ~2.3 m up
@@ -650,6 +663,11 @@ for s, (lname, limb, a, b_, c, ik_name, _dist) in LIMBS:
     else:
         PARENTS[ctrl] = [('Root', ROOT), ('Torso', BODY)]
         PARENTS[pole] = [('Foot', ctrl), ('Root', ROOT), ('Torso', BODY)]
+for key, cfg in EXTRA.items():
+    at = cfg.get('at')
+    PARENTS[f'{key}__root'] = [({'hand_R': 'Hand R', 'hand_L': 'Hand L'}.get(at, 'Bone'), at if at in eb else None),
+                              ('Hand R', 'hand_R' if 'hand_R' in eb else None),
+                              ('Hand L', 'hand_L' if 'hand_L' in eb else None), ('Root', ROOT)]
 PARENTS = {k: [(lbl, b) for lbl, b in v if b] for k, v in PARENTS.items()}
 PARENTS = {k: [o for i, o in enumerate(v) if o[1] not in [b for _, b in v[:i]]] for k, v in PARENTS.items()}
 PARENTS = {k: v for k, v in PARENTS.items() if len(v) > 1}
@@ -935,7 +953,7 @@ def seg_end(b):
 for b in B:
     n = b.name
     if n.startswith(('CTRL_', 'FACE', 'face_', 'IK_', 'pole_') + HELPER_PREFIXES) or n in TORSO_CTRLS or \
-            (FACERIG and n in FACERIG['by_name']):
+            (FACERIG and n in FACERIG['by_name']) or n in MECH or n in [f'{k}__root' for k in EXTRA]:
         continue
     cat = category(n)
     if cat in HIDDEN:
@@ -962,6 +980,16 @@ for b in B:
         widget(n, circle(hpos[n] + UP * 0.1, UP, r), 2)
     else:
         widget(n, circle(hpos[n] + d * 0.5, d, r), 2 if cat != 'Secondary' else 1.2)
+mechparts.pose(MECH, widget, circle, arm)
+print('mech parts', mechparts.weights(MECH, arm))
+arm['mech_parts'] = list(MECH)
+for key in EXTRA:
+    pts = [o.matrix_world @ v.co for o in bpy.data.objects if o.get('dlrig_extra') == key for v in o.data.vertices]
+    if pts:
+        lo = Vector([min(p[i] for p in pts) for i in range(3)])
+        hi = Vector([max(p[i] for p in pts) for i in range(3)])
+        widget(f'{key}__root', box((lo + hi) / 2, (hi - lo) / 2 + Vector((0.01, 0.01, 0.01))), 2.5)
+
 
 def foot_widgets(s):
     ft = FEET[s]
@@ -1997,6 +2025,34 @@ for sname, deltas in SLIDERS.items():
         pbone.constraints.move(len(pbone.constraints) - 1, 0)
         expr_driver(con, 'eval_time', None, 'v', props=[('v', f'["{key}"]')])
     print('slider', sname, key, len(deltas), 'bones')
+
+# extra models: show_<key> shows the model (hidden by default); with "follow" its bones named like the hero's (the
+# hook hand's fingers) copy those bones' rotation, so hand poses carry over, and can still be posed on top
+arm['extra_models'] = {key: cfg['name'] for key, cfg in EXTRA.items()}
+for key, cfg in EXTRA.items():
+    arm[f'show_{key}'] = 0
+    arm.id_properties_ui(f'show_{key}').update(min=0, max=1, description=f"Show {cfg['name']}")
+    for o in bpy.data.objects:
+        if o.get('dlrig_extra') == key:
+            o.hide_set(False)
+            for path in ('hide_viewport', 'hide_render'):
+                expr_driver(o, path, None, '1 - v', props=[('v', f'["show_{key}"]')])
+    for pbone in arm.pose.bones:
+        if pbone.name.startswith(key + '__'):
+            # its controls show with it
+            d = (arm.driver_add(f'pose.bones["{pbone.name}"].hide') if POSE_HIDE else
+                 arm.data.driver_add(f'bones["{pbone.name}"].hide')).driver
+            d.type = 'SCRIPTED'
+            prop_var(d, 'v', f'["show_{key}"]')
+            d.expression = 'v < 0.5'
+        own = pbone.name[len(key) + 2:]
+        if not pbone.name.startswith(key + '__') or own == 'root' or own not in arm.pose.bones or not cfg.get('follow'):
+            continue
+        c = pbone.constraints.new('COPY_ROTATION')
+        c.name = 'Follow hero'
+        c.target, c.subtarget = arm, own
+        c.owner_space = c.target_space = 'LOCAL'
+        c.mix_mode = 'BEFORE'
 
 # collections this hero has no bones in (Violet's Minions) only clutter the lists
 for c in list(arm.data.collections):

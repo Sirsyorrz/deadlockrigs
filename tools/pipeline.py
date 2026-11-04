@@ -320,6 +320,11 @@ class Builder:
         for f in (h.raw_glb, h.vmdl):
             if not os.path.exists(f):
                 raise BuildError(f'Source2Viewer wrote no {f}')
+        for _key, cfg, glb in h.extra_models:
+            if not os.path.exists(glb):
+                cmd = [self.s2v, '-i', self.pak, '-f', cfg['model'] + '_c', '-o', h.path('raw'),
+                       '--gltf_export_format', 'glb', '--gltf_export_materials', '--gltf_textures_adapt']
+                self.run(cmd, h, show=False)
 
     def data(self, h):
         os.makedirs(h.data, exist_ok=True)

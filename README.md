@@ -16,6 +16,10 @@ Each hero gets a rig with:
 - weapons held in hand by default (the `weapon_hold` property; loading a game clip switches it off); Solomon's board
   floats with his body instead
 - an FK jaw (and eyes) for heroes without a face rig whose jaw is skinned (Deadman Danny, Vyper)
+- a Parts panel with the game's mesh switches (Rat King's banner, ammo and guard rats, Bebop's arm as hand, gun or
+  forearm), sliders for animated parts (Bebop's gun folding open and its hyperbeam mode) and extra models the hero
+  uses (Bebop's fired hook hand and sticky bomb), each with its own control
+- jointed hard-surface parts where the game has them fused to one bone (Bebop's jaw, monocle and head switches)
 - face shape keys, controls and expressions for the heroes listed under [Faces](#faces)
 
 NPCs are in the list too, under NPCs: the Guardian, Walker, Base Guardian, Mid-boss, Hidden King, Archmother and the
@@ -137,7 +141,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 ## Known gaps
 
 - Sinclair's arm twist doesn't fully match his game animations.
-- Baba only gets leg IK, and Bebop and Mo & Krill get no hand poses (their skeletons lack the bones).
+- Baba only gets leg IK, and Mo & Krill get no hand poses (their skeletons lack the bones).
 
 ## Build from source
 

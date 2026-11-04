@@ -81,6 +81,163 @@
      "hand": 1
     }
    }
+  },
+  "mech_parts": {
+   "jaw": {
+    "bone": "head",
+    "boxes": [
+     [
+      -60,
+      -250,
+      -100,
+      60,
+      -20,
+      -40
+     ],
+     [
+      -60,
+      -250,
+      -40,
+      60,
+      -20,
+      -15
+     ]
+    ],
+    "head": [
+     0,
+     -40,
+     -30
+    ],
+    "tail": [
+     0,
+     -190,
+     -50
+    ],
+    "limits": {
+     "rot_x": [
+      -45,
+      3
+     ]
+    }
+   },
+   "monocle": {
+    "bone": "head",
+    "boxes": [
+     [
+      40,
+      -200,
+      -20,
+      140,
+      -60,
+      90
+     ]
+    ],
+    "head": [
+     85,
+     -75,
+     35
+    ],
+    "tail": [
+     85,
+     -165,
+     35
+    ],
+    "limits": {
+     "loc_y": [
+      -5,
+      60
+     ],
+     "loc_x": [
+      0,
+      0
+     ],
+     "loc_z": [
+      0,
+      0
+     ]
+    }
+   },
+   "switch_R": {
+    "bone": "head",
+    "boxes": [
+     [
+      -100,
+      -120,
+      140,
+      -50,
+      -50,
+      250
+     ]
+    ],
+    "head": [
+     -77,
+     -91,
+     147
+    ],
+    "tail": [
+     -90,
+     -100,
+     180
+    ]
+   },
+   "switch_L": {
+    "bone": "head",
+    "boxes": [
+     [
+      50,
+      -120,
+      140,
+      100,
+      -50,
+      250
+     ]
+    ],
+    "head": [
+     77,
+     -91,
+     147
+    ],
+    "tail": [
+     90,
+     -100,
+     180
+    ]
+   },
+   "switch_top": {
+    "bone": "head",
+    "boxes": [
+     [
+      -100,
+      -50,
+      140,
+      -20,
+      20,
+      250
+     ]
+    ],
+    "head": [
+     -63,
+     -20,
+     173
+    ],
+    "tail": [
+     -63,
+     -20,
+     205
+    ]
+   }
+  },
+  "extra_models": {
+   "Hook Hand": {
+    "model": "models/heroes_staging/bebop/bebop_hand_projectile.vmdl",
+    "at": "hand_R",
+    "align": true,
+    "follow": true
+   },
+   "Sticky Bomb": {
+    "model": "models/heroes_staging/bebop/bebop_sticky_bomb.vmdl",
+    "at": "hand_R"
+   }
   }
  },
  {

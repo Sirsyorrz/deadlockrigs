@@ -41,6 +41,16 @@ class Hero:
         return os.path.join(self.dir, *parts)
 
     @property
+    def extra_models(self):
+        """heroes.json "extra_models": separate game models the hero uses (Bebop's fired hook hand) ->
+        [(key, cfg, glb path)]; key prefixes the model's bones and names its control."""
+        out = []
+        for name, cfg in self.cfg.get('extra_models', {}).items():
+            key = ''.join(c if c.isalnum() else '_' for c in name.lower()).strip('_')
+            out.append((key, dict(cfg, name=name), os.path.join(self.dir, 'raw', cfg['model'][:-len('.vmdl')] + '.glb')))
+        return out
+
+    @property
     def base_blend(self):
         return os.path.join(self.dir, 'build', f'{self.slug}.blend')
 

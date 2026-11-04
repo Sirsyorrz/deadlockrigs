@@ -921,6 +921,56 @@ if arm.get('body_groups'):
     check('bodygroups switch meshes', not same and shown() == default,
           f'{len(arm["body_groups"])} groups, {len(default)} meshes shown, no effect {same}')
 
+# pose sliders: each moves its bones at 1 and none at 0
+for sname in arm.get('sliders', []):
+    key = 'slider_' + ''.join(c if c.isalnum() else '_' for c in sname.lower()).strip('_')
+    bones = [b.name for b in pb if any(c.type == 'ACTION' and c.name == sname for c in b.constraints)]
+    reset()
+    rest = {b: pb[b].matrix.copy() for b in bones}
+    arm[key] = 1.0
+    update()
+    moved = max(((pb[b].matrix.translation - rest[b].translation).length +
+                 (pb[b].matrix.to_quaternion().rotation_difference(rest[b].to_quaternion()).angle * 0.1)
+                 for b in bones), default=0)
+    arm[key] = 0.0
+    update()
+    back = max(((pb[b].matrix.translation - rest[b].translation).length for b in bones), default=0)
+    check(f'slider {sname} poses its bones', bones and moved > 0.005 and back < 1e-5,
+          f'{len(bones)} bones, moved {moved * 1000:.1f}, back {back * 1000:.3f} mm')
+
+# rigid parts (mechparts.py): each turns its own pieces of the mesh and nothing else
+if arm.get('mech_parts'):
+    meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewport and not o.name.startswith('WGT-')]
+    reset()
+    base = [verts(o) for o in meshes]
+    bad = {}
+    for n in arm['mech_parts']:
+        pb[n].rotation_quaternion = Quaternion((1, 0, 0), math.radians(20))
+        update()
+        moved = sum(int((np.linalg.norm(verts(o) - v, axis=1) > 1e-4).sum()) for o, v in zip(meshes, base))
+        pb[n].rotation_quaternion = (1, 0, 0, 0)
+        update()
+        if moved < 20:
+            bad[n] = moved
+    check('mech parts move their pieces', not bad, f'{len(arm["mech_parts"])} parts, idle {bad}')
+
+# extra models: hidden at first, shown they follow their control
+for key, name in arm.get('extra_models', {}).items():
+    reset()
+    obs = [o for o in bpy.data.objects if o.get('dlrig_extra') == key]
+    hidden = all(o.hide_viewport for o in obs)
+    arm[f'show_{key}'] = 1
+    update()
+    before = [verts(o) for o in obs]
+    pb[f'{key}__root'].location = (0, 0, 0.2)
+    update()
+    moved = min((np.linalg.norm(verts(o) - v, axis=1).min() for o, v in zip(obs, before)), default=0)
+    shown = all(not o.hide_viewport for o in obs)
+    arm[f'show_{key}'] = 0
+    reset()
+    check(f'extra model {name} shows and follows its control', obs and hidden and shown and moved > 0.1,
+          f'{len(obs)} meshes, hidden at first {hidden}, moved {moved * 1000:.0f} mm')
+
 # the bone face (facerig.py): the skin is where it was at rest, every face bone moves it, and the tweak controls ride
 # the skin through the shape keys
 if arm.get('face_bones'):
