@@ -124,7 +124,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Abrams, McGinnis | yes (from the game's face bones) |
 | Apollo, Calico, Celeste, Drifter, Graves, Grey Talon, Holliday, Infernus, Kelvin, Lady Geist, Mina, Mirage, Nurse Harrow, Paige, Pocket, Silver, Solomon, The Doorman, Venator, Vindicta, Violet | yes |
 | Billy, Rem, Victor | yes (from the game's face morphs) |
-| Rat King, Vyper | yes (hand-made, with a bone face) |
+| Ivy, Rat King, Vyper | yes (hand-made, with a bone face) |
 | everyone else | not yet |
 
 ![Violet's expressions](docs/faces_violet.png)

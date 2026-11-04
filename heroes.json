@@ -417,7 +417,24 @@
   "slug": "ivy",
   "name": "Ivy",
   "codename": "tengu",
-  "model": "models/heroes_wip/ivy/ivy.vmdl"
+  "model": "models/heroes_wip/ivy/ivy.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "ivy_bodyv3",
+     "vertcolor_pbr_basic"
+    ],
+    "bones": [
+     "head"
+    ]
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": "vertcolor_pbr_basic",
+   "builder": "handkeys.py"
+  }
  },
  {
   "slug": "kelvin",

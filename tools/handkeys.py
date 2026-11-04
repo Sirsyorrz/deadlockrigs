@@ -240,6 +240,11 @@ class Face:
             return 1 - self.region(r['not'], side, mirror)
         if 'times' in r:
             return self.region(r['of'], side, mirror) * r['times']
+        if 'whole' in r:
+            w = self.region(r['whole'], side, mirror)
+            mean = np.bincount(self.comp, w) / np.maximum(np.bincount(self.comp), 1)
+            # the skin stays per vertex; only the separate pieces (teeth) take one weight each
+            return np.where(self.skin, w, mean[self.comp])
         if 'ramp' in r:
             lo, hi = r['ramp']
             return smoothstep(lo, hi, self.region(r['of'], side, mirror))
