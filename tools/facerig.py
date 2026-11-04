@@ -159,6 +159,12 @@ def pose(rig, arm, head_ob, widget, scale):
             continue
         r = b['size'] * s * (0.5 if b['main'] else 0.4)
         widget(n, sphere(h, r), 2.5 if b['main'] else 1.6)
+        if b.get('reach'):
+            # a tweak pushed further sinks the skin into what lies under it (Rat King's brows into his eyes)
+            lim = pb[n].constraints.new('LIMIT_DISTANCE')
+            lim.name = 'Reach'
+            lim.target, lim.subtarget = arm, pb[n].parent.name
+            lim.distance, lim.limit_mode = b['reach'], 'LIMITDIST_INSIDE'
         c = pb[f'DEF-{n}'].constraints.new('COPY_TRANSFORMS')
         c.name = 'Tweak'
         c.target, c.subtarget = arm, n

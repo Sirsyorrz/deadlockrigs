@@ -69,7 +69,7 @@ the rest pose is unchanged.
 |---|---|
 | `"chains": {"snout_{i}": {"points": [p, ...], "parent": bone, "mask": region, "blend": mm, "size": mm}}` | FK bones joint to joint, each weighted along its stretch of the line, blending over `blend` at each joint |
 | `"chains": {"whisker_{n}_{i}_{s}": {"pieces": region, "root": p, "bones": 3, "parent": [bones]}}` | a chain along each separate piece in the region (whiskers, antennae), from the end nearest `root`; hangs off the nearest of `parent` |
-| `"tweaks": {name: {"at": p, "parent": bone, "r": mm, "soft": mm, "mask": region, "field": region, "main": true, "size": mm}}` | a control on the skin at `at` (snapped into `mask`), weighted `r` along the skin fading over `soft`, or by `field`; `main` ones carry the tweaks under them |
+| `"tweaks": {name: {"at": p, "parent": bone, "r": mm, "soft": mm, "mask": region, "field": region, "main": true, "size": mm, "reach": mm}}` | a control on the skin at `at` (snapped into `mask`), weighted `r` along the skin fading over `soft`, or by `field`; `main` ones carry the tweaks under them; `reach` keeps it within that distance of where the keys put it |
 | `"reparent": {"nose_0": "snout_1"}` | game bones that ride a chain |
 | `"show": ["ear_0_{s}"]` | game bones shown with the face bones |
 | `"rigid": region` | separate pieces in it (teeth) move whole, on their mean weights |
