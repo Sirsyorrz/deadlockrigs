@@ -1760,7 +1760,8 @@ class DLRIG_PT_parts(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         ob = rig(context)
-        return ob is not None and bool(ob.get('body_groups') or ob.get('sliders') or ob.get('extra_models'))
+        return ob is not None and bool(ob.get('body_groups') or ob.get('sliders') or ob.get('extra_models')
+                                       or 'glow' in ob)
 
     def draw(self, context):
         ob = rig(context)
@@ -1773,6 +1774,8 @@ class DLRIG_PT_parts(bpy.types.Panel):
                 on = all(ob.get(f'bodygroup_{g}', 0) == chosen.get(g, 0) for g in groups)
                 op = row.operator('dlrig.part_set', text=oname, depress=on)
                 op.set_name, op.option = sname, oname
+        if 'glow' in ob:
+            self.layout.prop(ob, '["glow"]', text='Glow', slider=True)
         for sname in ob.get('sliders', []):
             key = 'slider_' + ''.join(c if c.isalnum() else '_' for c in sname.lower()).strip('_')
             if key in ob:

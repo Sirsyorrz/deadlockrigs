@@ -2055,6 +2055,37 @@ for key, cfg in EXTRA.items():
         c.owner_space = c.target_space = 'LOCAL'
         c.mix_mode = 'BEFORE'
 
+# glow: the game lights a material by its self-illum mask in the albedo's colour (Bebop's green eyes); the import
+# plugs the bare mask into Emission Color at strength 0. Masked albedo instead, its strength on the rig's glow
+GLOWING = []
+for m in {s.material for o in bpy.data.objects if o.type == 'MESH' and o.find_armature() == arm
+          for s in o.material_slots if s.material and s.material.use_nodes}:
+    bsdf = next((n for n in m.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    if bsdf is None or not bsdf.inputs['Emission Color'].is_linked or not bsdf.inputs['Base Color'].is_linked:
+        continue
+    mask = bsdf.inputs['Emission Color'].links[0].from_node
+    img = getattr(mask, 'image', None)
+    if img is None or 'selfillum' not in img.name.lower():
+        continue
+    # a 1x1 placeholder mask lights the whole material: only on a piece meant to (Bebop's sticky bomb glow, Rat King's
+    # eyes, Seven's blue illum; not Bebop's arm)
+    if tuple(img.size) == (1, 1) and not re.search('glow|illum|eye', m.name.lower()):
+        continue
+    mul = m.node_tree.nodes.new('ShaderNodeMix')
+    mul.data_type, mul.blend_type = 'RGBA', 'MULTIPLY'
+    mul.inputs['Factor'].default_value = 1.0
+    mul.location = bsdf.location.x - 200, bsdf.location.y - 300
+    m.node_tree.links.new(bsdf.inputs['Base Color'].links[0].from_socket, mul.inputs['A'])
+    m.node_tree.links.new(mask.outputs['Color'], mul.inputs['B'])
+    m.node_tree.links.new(mul.outputs['Result'], bsdf.inputs['Emission Color'])
+    expr_driver(bsdf.inputs['Emission Strength'], 'default_value', None, 'v * 2', props=[('v', '["glow"]')])
+    GLOWING.append(m.name)
+if GLOWING:
+    arm['glow'] = 1.0
+    arm.id_properties_ui('glow').update(min=0.0, max=5.0, soft_min=0.0, soft_max=2.0,
+                                        description='How brightly the self-lit parts glow (eyes, screens)')
+    print('glow', GLOWING)
+
 # collections this hero has no bones in (Violet's Minions) only clutter the lists
 for c in list(arm.data.collections):
     if not c.bones:
