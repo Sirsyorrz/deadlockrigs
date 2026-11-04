@@ -686,7 +686,24 @@
   "slug": "shiv",
   "name": "Shiv",
   "codename": "shiv",
-  "model": "models/heroes_staging/shiv/shiv.vmdl"
+  "model": "models/heroes_staging/shiv/shiv.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "shiv_head"
+    ],
+    "mesh": "body"
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.04,
+    -0.1,
+    2.1
+   ]
+  }
  },
  {
   "slug": "silver",
@@ -953,7 +970,28 @@
   "slug": "wraith",
   "name": "Wraith",
   "codename": "wraith",
-  "model": "models/heroes_wip/wraith/wraith.vmdl"
+  "model": "models/heroes_wip/wraith/wraith.vmdl",
+  "split": {
+   "Head": [
+    "wraith_head"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.046,
+    -0.08,
+    2.242
+   ],
+   "painted_eye": [
+    0.018,
+    0.0085,
+    0.046,
+    2.242,
+    10
+   ]
+  }
  },
  {
   "slug": "yamato",

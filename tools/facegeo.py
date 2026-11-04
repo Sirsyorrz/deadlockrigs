@@ -22,6 +22,7 @@ class Head:
     matnames: np.ndarray = None
     other: np.ndarray = None   # vertices of the other shown meshes near the head
     lip_loop: np.ndarray = None   # unwelded vertices around the lips keys.cut_lips opened, if it did
+    lip_lower: np.ndarray = None  # the lower lip's side of that cut (the copies), unwelded
 
     def islands_of(self, ids):
         return np.isin(self.island, ids)
@@ -57,7 +58,7 @@ def from_arrays(d: dict) -> Head:
     wnrm /= np.maximum(np.linalg.norm(wnrm, axis=1, keepdims=True), 1e-9)
     ball = {s: d['ball_' + s] for s in 'LR'} if 'ball_L' in d else None
     return Head(co, tris, vmat, weld, wco, island, wg, bones, wnrm, ball, d['matnames'], d['other'] if 'other' in d else np.zeros((0, 3)),
-                d.get('lip_loop'))
+                d.get('lip_loop'), d.get('lip_lower'))
 
 
 def geodesic(h: Head, sources_welded, limit=np.inf) -> np.ndarray:

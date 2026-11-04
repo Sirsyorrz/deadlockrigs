@@ -320,6 +320,7 @@ class Rig:
             & (p[:, 1] < self.jaw_pivot[1] + 0.05 * s)
         self.fused = None
         self.lip_cut = None
+        self.cut_sides = False
         self.hole = self.mouth_hole(win)
         if self.hole is not None:
             return
@@ -372,6 +373,14 @@ class Rig:
                 mid_lip = np.abs(q[:, 0]) < 0.7 * min(abs(cl[0]), abs(cr[0]))
                 if (skin != down)[mid_lip].mean() > 0.3:
                     down = skin
+        if h.lip_lower is not None:
+            # lips cut_lips opened: it knows which side each rim vertex is on, where the tests above guess wrong on a
+            # zigzag lip line (Wraith's: half the middle). Only then: where the tests hold (Grey Talon's) they close
+            # the corners more gently
+            cut = ~np.isin(rim, h.weld[h.lip_lower])
+            mid_lip = np.abs(q[:, 0]) < 0.7 * min(abs(cl[0]), abs(cr[0]))
+            if (cut != down)[mid_lip].mean() > 0.2:
+                down, self.cut_sides = cut, True
         self.rim_u, self.rim_l = rim[down], rim[~down]
         if not down.any() or down.all():
             sys.exit('no mouth bag behind the lips (open hole or fused lips?): this head needs another jaw setup')
@@ -791,10 +800,16 @@ class Rig:
         # under the jaw stretches smoothly into the neck instead of folding.
         one = np.zeros(self.nw, bool)
         zero = ~self.soft_w
-        one[self.bag_l] = True
-        zero[self.bag_u] = True
         corners = np.array([self.corner['L'], self.corner['R']])
         near_corner = np.min(np.linalg.norm(p[:, None] - p[corners][None], axis=2), axis=1) < 0.007 * s
+        one[self.bag_l] = True
+        zero[self.bag_u] = True
+        if self.cut_sides:
+            # lips cut_lips opened: the cut runs right into the corners, where pinning its lower side to the jaw tore
+            # them open into spikes; there the weights blend
+            one[self.rim_l[near_corner[self.rim_l]]] = False
+            zero[self.rim_u[near_corner[self.rim_u]]] = False
+            zero[self.corner['L']] = zero[self.corner['R']] = True
         one |= (lab > 0.6) & (dl < 0.012 * s) & self.soft_w & ~near_corner
         zero |= (lab < 0.4) & (du < 0.012 * s) & ~near_corner
         one |= (p[:, 1] < ly + 0.018 * s) & (p[:, 2] < lz - 0.010 * s) & (lab > 0.5) & self.soft_w
@@ -1473,6 +1488,7 @@ def cut_lips(d, h, rig):
     rep = {int(w): u for u, w in enumerate(h.weld)}
     copy = {int(h.weld[u]): v for u, v in new_of.items()}
     out['lip_loop'] = np.array([rep[int(v)] for v in path] + [copy.get(int(v), rep[int(v)]) for v in path[-2:0:-1]])
+    out['lip_lower'] = np.arange(n0, n0 + len(src))
     for k in ('ball_L', 'ball_R'):
         out[k] = np.concatenate([d[k], np.zeros(len(src), bool)])
     return out, {'src': src, 'off': off, 'rewire': np.array(rewire)}

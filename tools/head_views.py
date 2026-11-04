@@ -41,6 +41,11 @@ if size is None or off is None:
     print(f'head skin bbox (mm from head bone): {tuple(round(v * 1000) for v in lo - head)} '
           f'{tuple(round(v * 1000) for v in hi - head)}')
 centre = head + off
+if os.environ.get('ONLY'):
+    # ONLY=Head: just that mesh, for faces under hats and hair (Wraith)
+    for o in scene.objects:
+        if o.type == 'MESH':
+            o.hide_render = o.name != os.environ['ONLY']
 for o in scene.objects:
     if o.type == 'MESH' and o.data.shape_keys:
         for kb in o.data.shape_keys.key_blocks[1:]:
