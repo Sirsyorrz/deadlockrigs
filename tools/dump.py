@@ -66,6 +66,9 @@ if eye_mat:
         c = np.linalg.lstsq(a, (q ** 2).sum(1), rcond=None)[0][:3]
         bones[f'eye_0_{s}'] = c
         print('eye', s, 'from', eye_mat, np.round(c, 4))
+if hero.face.get('estimate_jaw'):
+    # the skeleton's jaw bone is stale, centimetres off the sculpt (Lash's): estimate it like a missing one
+    bones.pop('jaw_0', None)
 if 'jaw_0' not in bones:
     # no jaw bone (Silver): where the others' sits from their eyes, behind and below them by eye spacing
     eyes = (bones['eye_0_L'] + bones['eye_0_R']) / 2

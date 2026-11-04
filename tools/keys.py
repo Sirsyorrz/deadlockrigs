@@ -335,8 +335,14 @@ class Rig:
             ids = np.where(closed)[0]
             _, lab = connected_components(h.wgraph[closed][:, closed], directed=False)
             mid = np.abs(p[ids, 0]) < 0.01 * s
+            if mid.any() and np.bincount(lab[mid]).max() < 10:
+                # only a nostril's few vertices (Lash's lips are closed under his moustache)
+                mid[:] = False
             if not mid.any():
                 self.fused = self.lip_strip()
+                if self.fused is not None and not len(self.fused):
+                    # a strip with no faces to drop (Lash's): try the lip line instead
+                    self.fused = None
                 if self.fused is not None:
                     return
                 self.lip_cut = self.lip_line()

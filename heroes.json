@@ -493,7 +493,35 @@
   "slug": "lash",
   "name": "Lash",
   "codename": "lash",
-  "model": "models/heroes_wip/lash/lash.vmdl"
+  "model": "models/heroes_wip/lash/lash.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "lash_body"
+    ],
+    "bones": [
+     "head"
+    ],
+    "mesh": "lash_body"
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.04,
+    -0.16,
+    2.453
+   ],
+   "painted_eye": [
+    0.02,
+    0.004,
+    0.04,
+    2.453,
+    0
+   ],
+   "estimate_jaw": true
+  }
  },
  {
   "slug": "mcginnis",
