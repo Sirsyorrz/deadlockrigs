@@ -126,6 +126,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Apollo, Calico, Celeste, Drifter, Graves, Grey Talon, Holliday, Infernus, Kelvin, Lady Geist, Mina, Mirage, Nurse Harrow, Paige, Pocket, Silver, Solomon, The Doorman, Venator, Vindicta, Violet | yes |
 | Billy, Rem, Victor | yes (from the game's face morphs) |
 | Mo & Krill | Mo yes; Krill's eyes are under his cap, not yet |
+| Baba | the rider yes (her eyes sit behind opaque lenses); the pigeon no |
 | Ivy, Rat King, Vyper | yes (hand-made, with a bone face) |
 | Viscous | yes (hand-made: his painted eyes blink, squint, widen, look and tilt; the goo squashes and stretches) |
 | Haze, Lash, Shiv, Warden, Wraith, Yamato | yes (painted eyes: the lids squash the paint, no eye look) |

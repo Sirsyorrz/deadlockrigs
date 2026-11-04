@@ -44,7 +44,29 @@
   "slug": "baba",
   "name": "Baba",
   "codename": "baba",
-  "model": "models/heroes_wip/baba/baba.vmdl"
+  "model": "models/heroes_wip/baba/baba.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "baba_head"
+    ],
+    "bones": [
+     "baba_head"
+    ],
+    "mesh": "base_model"
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "bone": "baba_head",
+   "eyes": [
+    0.0388,
+    0.012,
+    2.39
+   ],
+   "mirror_keys": true
+  }
  },
  {
   "slug": "bebop",
