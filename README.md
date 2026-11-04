@@ -127,7 +127,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Billy, Rem, Victor | yes (from the game's face morphs) |
 | Mo & Krill | Mo yes; Krill's eyes are under his cap, not yet |
 | Ivy, Rat King, Vyper | yes (hand-made, with a bone face) |
-| Haze, Lash, Shiv, Wraith, Yamato | yes (painted eyes: the lids squash the paint, no eye look) |
+| Haze, Lash, Shiv, Warden, Wraith, Yamato | yes (painted eyes: the lids squash the paint, no eye look) |
 | everyone else | not yet |
 
 ![Violet's expressions](docs/faces_violet.png)

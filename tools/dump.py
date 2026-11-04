@@ -158,6 +158,8 @@ for v in me.vertices:
         if e.group in group_names and e.weight > 0:
             weights.setdefault('w_' + group_names[e.group], np.zeros(n, np.float32))[v.index] = e.weight
 extra = {'painted_eye': np.array(hero.face['painted_eye'], float)} if 'painted_eye' in hero.face else {}
+if hero.face.get('mirror_keys'):
+    extra['mirror_keys'] = np.array(True)
 np.savez(os.path.join(hero.data, 'head.npz'), **extra, co=co, nrm=nrm.reshape(-1, 3), tris=tris, mats=mats, matnames=np.array([m.name for m in me.materials]),
          other=other, **{'bone_' + k: v for k, v in bones.items()}, **balls, **weights)
 print('dumped', n, len(tris), 'other', len(other))

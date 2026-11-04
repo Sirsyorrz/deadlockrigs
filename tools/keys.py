@@ -39,6 +39,8 @@ BLINK_UPPER, BLINK_LOWER = 0.8, 0.2
 # patch's half width and half height, centre x and z (metres) and tilt (degrees, outer corner up), from heroes.json
 # face "painted_eye" through head.npz; None for real eyes
 PAINTED = None
+# heroes.json face "mirror_keys": right keys mirrored from the left ones
+MIRROR = False
 
 
 def smoothstep(a, b, x):
@@ -1574,6 +1576,7 @@ if __name__ == '__main__':
     arrays = dict(np.load(sys.argv[1]))
     if 'painted_eye' in arrays:
         PAINTED = tuple(float(v) for v in arrays.pop('painted_eye'))
+    MIRROR = bool(arrays.pop('mirror_keys', False))
     h = fg.from_arrays(arrays)
     n_head = len(h.co)
     bag_mesh = None
@@ -1624,6 +1627,12 @@ if __name__ == '__main__':
     if np.linalg.norm(lips[TONGUE_JAW], axis=1).max() < 0.0005:
         del lips[TONGUE_JAW]
     keys.update(lips)
+    if MIRROR:
+        # a coarse, slightly lopsided head (Warden's) picks different handles each side: the right keys are the left
+        # ones mirrored, vertex by nearest mirrored vertex
+        _, near = cKDTree(h.co * [-1, 1, 1]).query(h.co)
+        for k in [k for k in keys if 'Left' in k and k.replace('Left', 'Right') in keys]:
+            keys[k.replace('Left', 'Right')] = keys[k][near] * [-1, 1, 1]
     tk = tongue_keys(rig, tco, tw, tu, keys)
     print('tongue', len(tco), 'verts, jaw weight %.2f..%.2f' % (tw.min(), tw.max()))
     np.savez_compressed(base + '_tongue.npz', co=tco, tris=ttris, **{'key_' + k: v for k, v in tk.items()})
