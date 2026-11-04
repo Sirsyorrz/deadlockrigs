@@ -64,7 +64,7 @@ hpos = {b.name: b.head_local.copy() for b in B}
 
 # tails (Abrams, Calico's cat_tail, Baba's pidge_tail), not coat tails, ponytails or cloaks. The patrons' legless
 # lower body (leg_0..leg_2, leg_end) is rigged as a tail too
-TAIL_RX = r'^(?!coat|pony|cloak)(?:[a-z]+_)?(?:tail|leg)_\d+$'
+TAIL_RX = r'^(?!coat|pony|cloak)(?:[a-z0-9]+_)?(?:tail|leg)_\d+$'
 CATS = [
     ('Helpers', r'^\$cloth|_TWIST|^attach|IKTARGET|AimIntent|_target_|^eye_0|^jaw_0|^weaponHand|_aim|_up(_|$)|_offset$'),
     ('Root', r'^root_motion$'),
@@ -76,8 +76,8 @@ CATS = [
     ('Tail', TAIL_RX),
     ('Secondary', r'.'),
 ]
-COLL_ORDER = ['Root', 'Torso', 'Arms FK', 'Legs FK', 'IK', 'Fingers', 'Props', 'Tail', 'Face', 'Secondary', 'Weapon',
-              'Helpers']
+COLL_ORDER = ['Root', 'Torso', 'Arms FK', 'Legs FK', 'IK', 'Fingers', 'Props', 'Tail', 'Face', 'Minions', 'Secondary',
+              'Weapon', 'Helpers']
 HIDDEN = {'Helpers'}
 HIDDEN_BY_DEFAULT = {'Helpers', 'Secondary'}
 
@@ -97,7 +97,26 @@ def skinned_bones():
 SKINNED = skinned_bones()
 
 
+# riders: small creatures with their own skeleton inside the hero's (Rat King's three rats, minion0_pelvis ...), each
+# with its size relative to Violet
+RIDERS = {}
+for b in B:
+    m = re.match(r'^([a-z]+\d+)_pelvis$', b.name)
+    if m and f'{m.group(1)}_head' in B:
+        p = m.group(1)
+        floor = min(x.head_local.z for x in B if x.name.startswith(p + '_'))
+        RIDERS[p] = {'scale': (B[f'{p}_head'].head_local.z - floor) / 2.094, 'floor': floor}
+
+
+def rider_of(name):
+    """The rider a bone or control belongs to (minion0 for minion0_head, IK_minion0_foot_L, pole_minion0_knee_L)."""
+    m = re.match(r'^(?:IK_tweak_|IK_|pole_)?([a-z]+\d+)_', name)
+    return m.group(1) if m and m.group(1) in RIDERS else None
+
+
 def category(name):
+    if rider_of(name) and not re.search(CATS[0][1], name):
+        return 'Minions'
     cat = next(c for c, rx in CATS if re.search(rx, name))
     # without a face rig (Deadman Danny, Rat King, Vyper) a skinned jaw and eyes are posed directly
     if cat == 'Helpers' and not HAS_FACE and name in SKINNED and re.match(r'^(jaw_0|eye_0_[LR])$', name):
@@ -351,15 +370,45 @@ ROOT = 'root_motion' if 'root_motion' in eb else None
 SCALE = eb['head'].head.z / 2.094 if 'head' in eb else max(b.head.z for b in eb) / 2.3
 # extra limbs carry a prefix: the Mid-boss' up_/mid_/lo_ arms, the Walker's front_/back_ legs
 LIMB_PREFIXES = {'leg': ('', 'front_', 'back_'), 'arm': ('', 'up_', 'mid_', 'lo_')}
-LIMB_DEFS = tuple((p + 'leg', p + 'knee', p + 'leg_upper', p + 'leg_lower', p + 'ankle', 'IK_' + p + 'foot', 0.55 * SCALE)
-                  for p in LIMB_PREFIXES['leg']) + \
-    tuple((p + 'arm', p + 'elbow', p + 'arm_upper', p + 'arm_lower', p + 'hand', 'IK_' + p + 'hand', 0.45 * SCALE)
-          for p in LIMB_PREFIXES['arm'])
+LIMB_SCALE = {p: SCALE for k in LIMB_PREFIXES for p in LIMB_PREFIXES[k]}
+for _r, _v in RIDERS.items():
+    LIMB_PREFIXES = {k: v + (_r + '_',) for k, v in LIMB_PREFIXES.items()}
+    LIMB_SCALE[_r + '_'] = _v['scale']
+LIMB_DEFS = tuple((p + 'leg', p + 'knee', p + 'leg_upper', p + 'leg_lower', p + 'ankle', 'IK_' + p + 'foot',
+                   0.55 * LIMB_SCALE[p]) for p in LIMB_PREFIXES['leg']) + \
+    tuple((p + 'arm', p + 'elbow', p + 'arm_upper', p + 'arm_lower', p + 'hand', 'IK_' + p + 'hand',
+           0.45 * LIMB_SCALE[p]) for p in LIMB_PREFIXES['arm'])
 LIMBS = [(s, d) for s in 'LR' for d in LIMB_DEFS if all(f'{n}_{s}' in eb for n in d[2:5])]
 
 
 def unprefixed(name):
+    r = rider_of(name)
+    if r and name.startswith(r + '_'):
+        return name[len(r) + 1:]
     return next((name[len(p):] for p in ('up_', 'mid_', 'lo_', 'front_', 'back_') if name.startswith(p)), name)
+
+
+def limb_scale(lname):
+    """Widget and pole sizes for a limb: the rig's, or its rider's."""
+    r = rider_of(lname)
+    return RIDERS[r]['scale'] if r else SCALE
+
+
+def limb_root(lname):
+    r = rider_of(lname)
+    return f'{r}_root' if r else ROOT
+
+
+# each rider stands on its own root control, under whatever its pelvis hangs from (Rat King's spine), so its IK feet
+# and hands ride along with the hero
+for r, rv in RIDERS.items():
+    pel = eb[f'{r}_pelvis']
+    at = Vector((pel.head.x, pel.head.y, rv['floor']))
+    new_bone(f'{r}_root', at, at + UP * 0.2 * rv['scale'], pel.parent.name if pel.parent else ROOT, roll_to=FWD)
+    pel.parent = eb[f'{r}_root']
+    hpos[f'{r}_root'] = at.copy()
+if RIDERS:
+    print('riders', {r: round(v['scale'], 3) for r, v in RIDERS.items()})
 print('IK limbs', [f'{d[0]}_{s}' for s, d in LIMBS])
 
 
@@ -432,7 +481,7 @@ for s, (_lname, limb, a, b_, c, ik_name, dist) in LIMBS:
     if s in FEET and limb == 'knee':
         target_parent = build_foot(s)
     else:
-        new_bone(f'{ik_name}_{s}', None, None, ROOT, copy=f'{c}_{s}')
+        new_bone(f'{ik_name}_{s}', None, None, limb_root(_lname), copy=f'{c}_{s}')
         target_parent = f'{ik_name}_{s}'
     pa, pb_, pc = (eb[f'{n}_{s}'].head.copy() for n in (a, b_, c))
     t = (pb_ - pa).dot(pc - pa) / (pc - pa).length_squared
@@ -441,8 +490,8 @@ for s, (_lname, limb, a, b_, c, ik_name, dist) in LIMBS:
         off = FWD if limb.endswith('knee') else -FWD
     pole = pb_ + off.normalized() * dist
     POLES[f'pole_{limb}_{s}'] = pole
-    parent = f'{ik_name}_{s}' if limb.endswith('knee') else ROOT
-    new_bone(f'pole_{limb}_{s}', pole, pole + UP * 0.05, parent, roll_to=FWD)
+    parent = f'{ik_name}_{s}' if limb.endswith('knee') else limb_root(_lname)
+    new_bone(f'pole_{limb}_{s}', pole, pole + UP * 0.05 * limb_scale(_lname) / SCALE, parent, roll_to=FWD)
     # The imported bones' tails point anywhere, and Blender's IK solves along head-to-tail, so it
     # runs on a clean chain (IKC-*); MCH-* copies of the deform bones ride that chain and the deform
     # bones copy their transforms (same rest pose, so the skinning is unchanged).
@@ -511,7 +560,17 @@ CHEST_BONE = SPINE[-1] if SPINE else None
 PARENTS = {}
 for s, (lname, limb, a, b_, c, ik_name, _dist) in LIMBS:
     ctrl, pole = f'{ik_name}_{s}', f'pole_{limb}_{s}'
-    if lname.endswith('arm'):
+    r = rider_of(lname)
+    if r:
+        rr = f'{r}_root'
+        if lname.endswith('arm'):
+            chest = next((f'{r}_{n}' for n in ('spine_3', 'spine_2', 'spine_1') if f'{r}_{n}' in eb), None)
+            PARENTS[ctrl] = [('Rider', rr), ('Chest', chest), ('Head', f'{r}_head'), ('Root', ROOT)]
+            PARENTS[pole] = [('Rider', rr), ('Chest', chest), ('Root', ROOT)]
+        else:
+            PARENTS[ctrl] = [('Rider', rr), ('Root', ROOT)]
+            PARENTS[pole] = [('Foot', ctrl), ('Rider', rr), ('Root', ROOT)]
+    elif lname.endswith('arm'):
         head = 'head' if 'head' in eb else None
         PARENTS[ctrl] = [('Root', ROOT), ('Torso', BODY), ('Chest', CHEST_BONE), ('Head', head)]
         PARENTS[pole] = [('Root', ROOT), ('Torso', BODY), ('Chest', CHEST_BONE)]
@@ -665,6 +724,8 @@ for b in B:
     n = b.name
     if n.startswith(('CTRL_', FACE)):
         cat = 'Face'
+    elif rider_of(n) and not n.startswith(HELPER_PREFIXES):
+        cat = 'Minions'
     elif n in {'IK_' + t[0] for t in TAILS}:
         cat = 'Tail'
     elif n.startswith(('IK_', 'pole_')):
@@ -679,6 +740,8 @@ for b in B:
         cat = category(n)
     colls[cat].assign(b)
     pal = {'Face': 'THEME03', 'Secondary': 'THEME06', 'Props': 'THEME07', 'Tail': 'THEME10'}.get(cat, COLOURS[side(n)])
+    if cat == 'Minions' and re.search(TAIL_RX, n):
+        pal = 'THEME10'
     if n in TORSO_CTRLS:
         pal = 'THEME11'
     b.color.palette = pal
@@ -795,10 +858,18 @@ for b in B:
     if n == 'root_motion':
         widget(n, circle(Vector((0, 0, 0.002)), UP, 0.55), 2.5)
         continue
+    rider = rider_of(n)
+    if rider and n == f'{rider}_root':
+        widget(n, circle(hpos[n] + UP * 0.002, UP, 0.55 * RIDERS[rider]['scale']), 2.5)
+        continue
     end = seg_end(b)
     d = end - hpos[n]
     r = next((v for k, v in RADIUS.items() if unprefixed(n).startswith(k)), 0.018 * SCALE)
-    if cat == 'Tail':
+    if rider:
+        r *= RIDERS[rider]['scale'] / SCALE
+    if rider and unprefixed(n) in ('pelvis', 'head'):
+        widget(n, circle(hpos[n] + UP * (0.1 * RIDERS[rider]['scale'] if n.endswith('head') else 0), UP, r), 2)
+    elif cat == 'Tail' or (rider and re.search(TAIL_RX, n)):
         widget(n, circle(hpos[n] + d * 0.5, d, skin_radius(n, r)), 2)
     elif n == 'pelvis':
         widget(n, circle(hpos[n], UP, r), 2.5)
@@ -833,19 +904,23 @@ for s, (lname, limb, a_, b_, c_, ik_name, _dist) in LIMBS:
     if lname == 'leg' and s in FEET:
         foot_widgets(s)
     elif lname.endswith('leg'):
+        ls = limb_scale(lname)
         a = hpos[f'{c_}_{s}']
-        ball = hpos.get(f'{lname[:-3]}ball_{s}', a + FWD * 0.12 * SCALE)
-        toe_y, heel_y = ball.y - 0.09 * SCALE, a.y + 0.07 * SCALE
-        widget(f'{ik_name}_{s}', box(Vector((ball.x, (toe_y + heel_y) / 2, 0.012 * SCALE)),
-                                     Vector((0.055 * SCALE, (heel_y - toe_y) / 2, 0.012 * SCALE))), 2.5)
+        ball = hpos.get(f'{lname[:-3]}ball_{s}', a + FWD * 0.12 * ls)
+        toe_y, heel_y = ball.y - 0.09 * ls, a.y + 0.07 * ls
+        ground = RIDERS[rider_of(lname)]['floor'] if rider_of(lname) else 0
+        widget(f'{ik_name}_{s}', box(Vector((ball.x, (toe_y + heel_y) / 2, ground + 0.012 * ls)),
+                                     Vector((0.055 * ls, (heel_y - toe_y) / 2, 0.012 * ls))), 2.5)
     else:
+        ls = limb_scale(lname)
         h = hpos[f'{c_}_{s}']
-        knuckle = hpos.get(f'{lname[:-3]}finger_middle_0_{s}', h + (h - hpos[f'{b_}_{s}']).normalized() * 0.09 * SCALE)
-        widget(f'{ik_name}_{s}', box(h + (knuckle - h) * 0.4, Vector((0.05, 0.05, 0.05)) * SCALE), 2.5)
-    widget(f'pole_{limb}_{s}', diamond(POLES[f'pole_{limb}_{s}'], 0.03 * SCALE), 2)
+        knuckle = hpos.get(f'{lname[:-3]}finger_middle_0_{s}', h + (h - hpos[f'{b_}_{s}']).normalized() * 0.09 * ls)
+        widget(f'{ik_name}_{s}', box(h + (knuckle - h) * 0.4, Vector((0.05, 0.05, 0.05)) * ls), 2.5)
+    ls = limb_scale(lname)
+    widget(f'pole_{limb}_{s}', diamond(POLES[f'pole_{limb}_{s}'], 0.03 * ls), 2)
     for a, b2 in ((a_, b_), (b_, c_)):
         p0, p1 = hpos[f'{a}_{s}'], hpos[f'{b2}_{s}']
-        widget(f'IK_tweak_{a}_{s}', circle(p0.lerp(p1, 0.5), p1 - p0, RADIUS[unprefixed(a)] * 1.15), 2)
+        widget(f'IK_tweak_{a}_{s}', circle(p0.lerp(p1, 0.5), p1 - p0, RADIUS[unprefixed(a)] * 1.15 * ls / SCALE), 2)
 if HAS_TORSO:
     widget('torso', circle(hpos['pelvis'], UP, RADIUS['pelvis'] * 1.7), 3)
     widget('hips', circle(hpos['pelvis'] - UP * 0.06 * SCALE, UP, RADIUS['pelvis'] * 1.25), 2.5)
@@ -1334,6 +1409,8 @@ for ctrl, opts in PARENTS.items():
         expr_driver(t, 'weight', None, f'p == {i}', props=[('p', f'["{prop}"]')])
 arm['limb_length'] = IK_LEN
 arm['limbs'] = list(dict.fromkeys(d[0] for _s, d in LIMBS))
+arm['limb_scale'] = {d[0]: limb_scale(d[0]) for _s, d in LIMBS if rider_of(d[0])}
+arm['riders'] = {r: v['scale'] for r, v in RIDERS.items()}
 arm['parent_options'] = {ctrl: [lbl for lbl, _ in opts] for ctrl, opts in PARENTS.items()}
 arm['isolate'] = ISOLATE
 
@@ -1717,7 +1794,8 @@ for cap in GAMERIG['capsules']:
 txt = bpy.data.texts.new('dlrig_physics.json')
 txt.write(json.dumps(phys_cfg))
 
-HAND_POSES, reports = hands.hand_poses(arm, [o for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewport])
+HAND_POSES, reports = hands.hand_poses(arm, [o for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewport],
+                                      hero.cfg.get('hands'))
 for r in reports:
     print('hand', *r)
 

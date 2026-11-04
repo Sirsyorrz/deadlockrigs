@@ -62,9 +62,15 @@ def signed_angle(u, v, axis):
 
 
 class Hand:
-    def __init__(self, rest, parent, tips, side):
-        """rest: bone -> armature-space rest Matrix; parent: bone -> parent name; tips: finger -> rest tip point."""
+    def __init__(self, rest, parent, tips, side, cfg=None):
+        """rest: bone -> armature-space rest Matrix; parent: bone -> parent name; tips: finger -> rest tip point.
+        cfg: heroes.json "hands": "scale" multiplies the finger and thumb thickness the thumb avoids (Rat King's hands
+        are twice a human's), "clear" keeps curled fingertips that fraction of the palm's length off the palm (long
+        clawed fingers would curl through it)."""
+        cfg = cfg or {}
         self.rest, self.parent, self.s = rest, parent, side
+        self.k = cfg.get('scale', 1.0)
+        self.clear = cfg.get('clear')
         s = side
         self.bones = [f'finger_{f}_{suffix}_{s}' for f in FINGERS for suffix in ('meta', '0', '1', '2')] + \
                      [f'finger_thumb_{i}_{s}' for i in range(3)]
@@ -98,12 +104,14 @@ class Hand:
         r = self.rest[bone].to_3x3()
         return (r.inverted() @ world_rot.to_matrix() @ r).to_quaternion()
 
-    def finger_rots(self, fg, curl, spread):
-        """World-frame (rest) rotations for meta, 0, 1, 2 of a finger."""
+    def finger_rots(self, fg, curl, spread, outer=1.0):
+        """World-frame (rest) rotations for meta, 0, 1, 2 of a finger; outer scales the two outer joints' flexion."""
         pts = self.chain(fg)
         axis = (pts[4] - pts[1]).normalized().cross(self.n).normalized()
         rots = {}
         for j, target in enumerate(CURL[curl]):
+            if j:
+                target *= outer
             u = pts[j + 1] - pts[j]
             v = pts[j + 2] - pts[j + 1]
             rest_flex = math.degrees(signed_angle(u, v, axis))
@@ -138,10 +146,19 @@ class Hand:
     def solve(self, spec):
         s = self.s
         basis = {}
+        palm = (self.P(f'finger_middle_0_{s}') - self.wrist).length
         for fg in FINGERS:
-            for j, q in self.finger_rots(fg, spec['fingers'][fg], spec['spread']).items():
-                name = f'finger_{fg}_{("meta", "0", "1", "2")[j]}_{s}'
-                basis[name] = self.local_quat(name, q)
+            outer = 1.0
+            while True:
+                for j, q in self.finger_rots(fg, spec['fingers'][fg], spec['spread'], outer).items():
+                    name = f'finger_{fg}_{("meta", "0", "1", "2")[j]}_{s}'
+                    basis[name] = self.local_quat(name, q)
+                if self.clear is None or outer <= 0.3:
+                    break
+                tip = self.posed_chain(self.fk(basis), fg)[-1]
+                if (tip - self.wrist).dot(self.n) >= self.clear * palm:
+                    break
+                outer -= 0.05
         mats = self.fk(basis)
         fingers = {fg: self.posed_chain(mats, fg) for fg in FINGERS}
         basis.update(self.solve_thumb(spec['thumb'], fingers, basis))
@@ -152,20 +169,21 @@ class Hand:
         n, r, f = self.n, self.r, self.f
         mid = lambda fg: (fingers[fg][2] + fingers[fg][3]) * 0.5  # noqa: E731
         reach = (t[3] - t[1]).length
+        k = self.k
         if mode == 'fist':
-            return (mid('index') * 0.45 + mid('middle') * 0.55) + n * (FINGER_R + THUMB_R), True
+            return (mid('index') * 0.45 + mid('middle') * 0.55) + n * (FINGER_R + THUMB_R) * k, True
         if mode == 'over_middle':
-            return (mid('middle') * 0.6 + mid('ring') * 0.4) + n * (FINGER_R + THUMB_R), True
+            return (mid('middle') * 0.6 + mid('ring') * 0.4) + n * (FINGER_R + THUMB_R) * k, True
         if mode == 'over_ring':
-            return (mid('ring') * 0.6 + mid('pinky') * 0.4) + n * (FINGER_R + THUMB_R), True
+            return (mid('ring') * 0.6 + mid('pinky') * 0.4) + n * (FINGER_R + THUMB_R) * k, True
         if mode == 'grip':
-            return (mid('index') + fingers['index'][2]) * 0.5 + n * (FINGER_R + THUMB_R + 0.004), True
+            return (mid('index') + fingers['index'][2]) * 0.5 + n * (FINGER_R + THUMB_R + 0.004) * k, True
         if mode == 'up':
             rest_dir = (t[3] - t[1]).normalized()
             return t[1] + rest_dir.slerp(r, 0.6) * reach, False
         if mode == 'open':
             return t[1] + (r * 0.75 + f * 0.6 - n * 0.15).normalized() * reach, False
-        return t[3] + n * 0.012 + f * 0.004, False  # relaxed
+        return t[3] + (n * 0.012 + f * 0.004) * k, False  # relaxed
 
     def solve_thumb(self, mode, fingers, finger_basis):
         s = self.s
@@ -178,8 +196,8 @@ class Hand:
         obstacles = []
         for fg in FINGERS:
             c = fingers[fg]
-            obstacles.append((c[0], c[1], PALM_R))
-            obstacles += [(c[i], c[i + 1], FINGER_R) for i in range(1, 4)]
+            obstacles.append((c[0], c[1], PALM_R * self.k))
+            obstacles += [(c[i], c[i + 1], FINGER_R * self.k) for i in range(1, 4)]
 
         def build(x):
             rv = frame[0] * x[0] + frame[1] * x[1] + frame[2] * x[2]
@@ -193,12 +211,12 @@ class Hand:
             b = build(x)
             mats = self.fk(b)
             c = self.posed_chain(mats, 'thumb')
-            e = (c[3] - target).length_squared * 1e4
+            e = (c[3] - target).length_squared / self.k ** 2 * 1e4
             for p, q, rad in obstacles:
                 for a_, b_ in ((c[1], c[2]), (c[2], c[3])):
-                    d = seg_dist(a_, b_, p, q) - (rad + THUMB_R)
+                    d = seg_dist(a_, b_, p, q) - (rad + THUMB_R * self.k)
                     if d < 0:
-                        e += (d * 1e3) ** 2
+                        e += (d / self.k * 1e3) ** 2
             if not wrap:
                 e += (x[3] ** 2 + x[4] ** 2) * 0.5
             e += (x[0] ** 2 + x[1] ** 2 + x[2] ** 2) * 0.02
@@ -272,13 +290,13 @@ def has_hand(arm, side):
     return all(n in names for n in need)
 
 
-def hand_poses(arm, meshes):
+def hand_poses(arm, meshes, cfg=None):
     """pose -> side -> bone -> quaternion, for the sides that have the full set of finger bones."""
     rest = {b.name: b.matrix_local.copy() for b in arm.data.bones}
     parent = {b.name: b.parent.name for b in arm.data.bones if b.parent}
     out, reports = {name: {} for name in POSES}, []
     for s in [s for s in 'LR' if has_hand(arm, s)]:
-        h = Hand(rest, parent, tip_points(arm, meshes, s), s)
+        h = Hand(rest, parent, tip_points(arm, meshes, s), s, cfg)
         for name, spec in POSES.items():
             basis = h.solve(spec)
             out[name][s] = {b: tuple(round(v, 6) for v in q) for b, q in basis.items()}

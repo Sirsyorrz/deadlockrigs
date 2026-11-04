@@ -441,7 +441,8 @@ def ik_from_fk(context, ob, limb, s, key=False):
         pb[ik].matrix = m
         update(context)
     m = pb[pole].matrix.copy()
-    m.translation = b + off.normalized() * dist * ob.get('rig_scale', 1.0)
+    # riders (Rat King's rats) have their own size
+    m.translation = b + off.normalized() * dist * ob.get('limb_scale', {}).get(limb, ob.get('rig_scale', 1.0))
     pb[pole].matrix = m
     update(context)
     if feet:

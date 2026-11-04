@@ -85,8 +85,12 @@ for t in arm.get('tails', []):
     pb[chain[1]].rotation_quaternion = Quaternion((1, 0, 0), math.radians(30))
     update()
     skin = max((np.linalg.norm(verts(o) - v, axis=1).max() for o, v in zip(meshes, before)), default=0)
-    shown = any(c.is_visible and c.name == 'Tail' for c in arm.data.bones[chain[0]].collections)
-    check(f'{t} FK bends the skin', skin > 0.01 and shown and pb[chain[1]].custom_shape is not None,
+    # a rider's (Rat King's rats) tail is with the rest of its controls, and as small as it is
+    rider = next((r for r in arm.get('riders', {}) if t.startswith(r + '_')), None)
+    coll = 'Minions' if rider else 'Tail'
+    shown = any(c.is_visible and c.name == coll for c in arm.data.bones[chain[0]].collections)
+    bends = skin > 0.01 * (arm['riders'][rider] if rider else 1)
+    check(f'{t} FK bends the skin', bends and shown and pb[chain[1]].custom_shape is not None,
           f'{len(chain)} bones, {skin * 1000:.0f} mm, collection shown {shown}')
     for o in hidden:
         o.hide_viewport = True
@@ -310,7 +314,8 @@ for limb, s in limbs:
     reset()
     m = pb[ctrl].matrix.copy()
     # a third of the way towards the shoulder/hip and a little forward: always within reach
-    goal = m.translation.lerp(pb[up].head, 0.33) + Vector((0, -0.05, 0)) * arm.get('rig_scale', 1.0)
+    goal = m.translation.lerp(pb[up].head, 0.33) + Vector((0, -0.05, 0)) * arm.get('limb_scale', {}).get(
+        limb, arm.get('rig_scale', 1.0))
     m.translation = goal
     pb[ctrl].matrix = m
     update()

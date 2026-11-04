@@ -386,6 +386,10 @@
    "mesh": "Head",
    "eyes": "ratking_eyes",
    "builder": "handkeys.py"
+  },
+  "hands": {
+   "scale": 2.1,
+   "clear": 0.18
   }
  },
  {

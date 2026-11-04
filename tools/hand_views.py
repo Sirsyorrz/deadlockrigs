@@ -1,39 +1,41 @@
 """blender -b <hero>_rig.blend -P hand_views.py -- out_prefix side pose [pose...]
 Renders one hand isolated (Mask modifier on hand/finger weights) from palm, back, thumb and pinky side."""
-import math
+import os
 import sys
 
 import bpy
 from mathutils import Vector
 
+sys.path.insert(0, os.path.dirname(__file__))
+import hands  # noqa: E402
+from hero import Hero  # noqa: E402
+
 args = sys.argv[sys.argv.index('--') + 1:]
 prefix, side, poses = args[0], args[1], args[2:]
-import os
-sys.path.insert(0, os.path.dirname(__file__))
-import importlib
-import hands
 arm = next(o for o in bpy.data.objects if 'dlrig' in o)
-body0 = bpy.data.objects['Body']
-POSES, REPORTS = hands.hand_poses(arm, body0)
+meshes = [o for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewport]
+slug = os.path.basename(bpy.data.filepath)[:-len('_rig.blend')]
+POSES, REPORTS = hands.hand_poses(arm, meshes, Hero(slug).cfg.get('hands'))
 for r in REPORTS:
     print('THUMB', r)
 bpy.context.view_layer.objects.active = arm
-body = bpy.data.objects['Body']
-bpy.data.objects['Head'].hide_render = True
-
-groups = [g for g in body.vertex_groups if g.name == f'hand_{side}' or (g.name.startswith('finger_') and g.name.endswith('_' + side))]
-gi = {g.index for g in groups}
-vg = body.vertex_groups.new(name='HANDMASK')
-for v in body.data.vertices:
-    w = sum(g.weight for g in v.groups if g.group in gi)
-    if w > 0.3:
-        vg.add([v.index], 1.0, 'REPLACE')
-m = body.modifiers.new('mask', 'MASK')
-m.vertex_group = 'HANDMASK'
+# only the hand shows: every mesh masked to the skin the hand and fingers carry
+for body in meshes:
+    gi = {g.index for g in body.vertex_groups
+          if g.name == f'hand_{side}' or (g.name.startswith('finger_') and g.name.endswith('_' + side))}
+    if not gi:
+        body.hide_render = True
+        continue
+    vg = body.vertex_groups.new(name='HANDMASK')
+    for v in body.data.vertices:
+        if sum(g.weight for g in v.groups if g.group in gi) > 0.3:
+            vg.add([v.index], 1.0, 'REPLACE')
+    m = body.modifiers.new('mask', 'MASK')
+    m.vertex_group = 'HANDMASK'
 
 sc = bpy.context.scene
 sc.render.engine = 'BLENDER_EEVEE'
-sc.render.resolution_x = sc.render.resolution_y = 360
+sc.render.resolution_x = sc.render.resolution_y = int(os.environ.get("RES", 360))
 w = bpy.data.worlds.new('w')
 sc.world = w
 w.use_nodes = True
@@ -45,10 +47,13 @@ cam = bpy.data.objects.new('c', bpy.data.cameras.new('c'))
 sc.collection.objects.link(cam)
 sc.camera = cam
 cam.data.type = 'ORTHO'
-cam.data.ortho_scale = 0.24
 pb = arm.pose.bones
 sx = 1 if side == 'L' else -1
-views = {'palm': Vector((-sx, 0, 0)), 'back': Vector((sx, 0, 0)), 'thumb': Vector((0, -1, 0)), 'pinky': Vector((0, 1, 0))}
+# Violet's hand fits 0.24 m
+hand_len = (arm.data.bones['finger_middle_2_' + side].head_local - arm.data.bones['hand_' + side].head_local).length
+cam.data.ortho_scale = 0.24 * hand_len / 0.11
+views = {'palm': Vector((-sx, 0, 0)), 'back': Vector((sx, 0, 0)), 'thumb': Vector((0, -1, 0)),
+         'pinky': Vector((0, 1, 0))}
 for pose in poses:
     for b in pb:
         if b.name.startswith('finger_') and b.name.endswith('_' + side):
@@ -60,7 +65,8 @@ for pose in poses:
     bpy.context.view_layer.update()
     c = pb['hand_' + side].head + (pb['finger_middle_1_' + side].head - pb['hand_' + side].head) * 0.6
     for vn, d in views.items():
-        cam.location = c + d * 0.5
+        cam.location = c + d * 5
+        cam.data.clip_end = 20
         cam.rotation_euler = (c - cam.location).to_track_quat('-Z', 'Y').to_euler()
         sun.rotation_euler = cam.rotation_euler
         sc.render.filepath = f'{prefix}_{pose.replace(" ", "_")}_{vn}.png'
