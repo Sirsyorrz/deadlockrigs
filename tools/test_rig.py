@@ -78,6 +78,10 @@ for t in arm.get('tails', []):
     # Mirage's tail is on the djinn hand, hidden until his ability
     hidden = [o for o in meshes if o.hide_viewport or o.hide_get()]
     for o in hidden:
+        # its bodygroup / extra model driver would hide it again
+        for fc in (o.animation_data.drivers if o.animation_data else []):
+            if fc.data_path in ('hide_viewport', 'hide_render'):
+                fc.mute = True
         o.hide_viewport = False
         o.hide_set(False)
     update()
@@ -95,6 +99,8 @@ for t in arm.get('tails', []):
     for o in hidden:
         o.hide_viewport = True
         o.hide_set(True)
+        for fc in (o.animation_data.drivers if o.animation_data else []):
+            fc.mute = False
     # the tip of an FK curl is in reach: the control put there pulls the straight tail onto it
     reset()
     arm['ik_' + t] = 0.0
@@ -205,7 +211,8 @@ if 'weapon_hold' in arm:
     moved = (pb[hand].matrix.inverted() @ pb['weapon'].matrix).translation - rel.translation
     check(f'weapon follows {hand}', moved.length < 0.0005, f'{moved.length * 1000:.3f} mm')
     opts = arm.get('parent_options', {}).get('weaponPivot', [])
-    if 'Chest' in opts:
+    # (not when it rides the pelvis, Solomon's board: turning the pelvis' parent turns the chest too)
+    if 'Chest' in opts and 'hand' in hand:
         # on the chest it stays put when the hand moves, and switching there doesn't move it
         was = pb['weapon'].matrix.copy()
         bpy.ops.dlrig.switch_parent(bone='weaponPivot', index=opts.index('Chest'))
