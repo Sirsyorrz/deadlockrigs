@@ -290,6 +290,43 @@ for prop in PROPS:
         PROP_CHAINS.append((prop, idle))
 PROP_CHAIN_BONES = {b for prop, _ in PROP_CHAINS for b in prop['chain'] + [prop['chain_end']]}
 
+# pose sliders (heroes.json "sliders"): a stretch of a game clip on a few bones (Bebop's gun folding) as one 0..1
+# property. Each bone's keys between the two frames, relative to the first, are sampled here (and kept in rigdata/)
+SLIDER_SAMPLES = 9
+SLIDERS = {}
+for sname, sl in hero.cfg.get('sliders', {}).items():
+    pat = re.compile(sl['bones'])
+    bones = [b.name for b in B if pat.fullmatch(b.name)]
+    if HAVE_CLIPS:
+        with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
+            dst.actions = [sl['clip']]
+        a = dst.actions[0]
+        arm.animation_data_create()
+        arm.animation_data.action = a
+        arm.animation_data.action_slot = a.slots[0]
+        f0, f1 = sl['frames']
+        frames = []
+        if f0 == 'rest':
+            # from the rest pose straight to one frame (Bebop's hyperbeam: its clip opens from folded)
+            bpy.context.scene.frame_set(f1)
+            end = {b: arm.pose.bones[b].matrix_basis.copy() for b in bones}
+            for i in range(SLIDER_SAMPLES):
+                frames.append({b: Matrix.Identity(4).lerp(m, i / (SLIDER_SAMPLES - 1)) for b, m in end.items()})
+        for i in range(SLIDER_SAMPLES if f0 != 'rest' else 0):
+            bpy.context.scene.frame_set(round(f0 + (f1 - f0) * i / (SLIDER_SAMPLES - 1)))
+            frames.append({b: arm.pose.bones[b].matrix_basis.copy() for b in bones})
+        arm.animation_data.action = None
+        bpy.data.actions.remove(a)
+        for b in arm.pose.bones:
+            b.location, b.rotation_quaternion, b.scale = (0, 0, 0), (1, 0, 0, 0), (1, 1, 1)
+        bpy.context.view_layer.update()
+        deltas = {b: [[list(r) for r in frames[0][b].inverted() @ f[b]] for f in frames] for b in bones}
+        # bones the stretch leaves alone are dropped
+        deltas = {b: v for b, v in deltas.items()
+                  if any(abs(m[i][j] - (i == j)) > 1e-4 for m in v for i in range(4) for j in range(4))}
+        RIGDATA.setdefault('sliders', {})[sname] = deltas
+    SLIDERS[sname] = {b: [Matrix(m) for m in v] for b, v in RIGDATA.get('sliders', {}).get(sname, {}).items()}
+
 
 def weighted_points(bones):
     pts = []
@@ -1870,6 +1907,9 @@ HAVE_MESHES = {o.name for o in bpy.data.objects if o.type == 'MESH'}
 BODY_GROUPS = [(g, ch) for g, ch in BODY_GROUPS
                if len({frozenset(hero.rename.get(m, m) for m in ms) & HAVE_MESHES for _c, ms in ch}) > 1]
 arm['body_groups'] = {g: [c for c, _ in choices] for g, choices in BODY_GROUPS}
+# named combinations of groups (heroes.json "part_sets": Bebop's arm as hand, gun or bare forearm)
+arm['part_sets'] = {k: v for k, v in hero.cfg.get('part_sets', {}).items()
+                    if all(g in arm['body_groups'] for o in v.values() for g in o)}
 for gi, (g, choices) in enumerate(BODY_GROUPS):
     arm[f'bodygroup_{g}'] = 0
     arm.id_properties_ui(f'bodygroup_{g}').update(min=0, max=len(choices) - 1,
@@ -1918,6 +1958,50 @@ for o in bpy.data.objects:
     for path in ('hide_viewport', 'hide_render'):
         expr_driver(o, path, None, '1 - ' + ' * '.join(terms), props=props)
     print('bodygroup', o.name, ' * '.join(terms))
+
+# pose sliders: an action holding the sampled stretch, played by an Action constraint on each bone (before its own
+# keys, so clips and posing still work on top) with slider_<name> as the constraint's evaluation time
+arm['sliders'] = list(SLIDERS)
+for sname, deltas in SLIDERS.items():
+    if not deltas:
+        continue
+    key = 'slider_' + re.sub(r'\W+', '_', sname.lower()).strip('_')
+    arm[key] = 0.0
+    arm.id_properties_ui(key).update(min=0.0, max=1.0, soft_min=0.0, soft_max=1.0, description=sname)
+    act = bpy.data.actions.new(f'{hero.name} {sname}')
+    act.use_fake_user = True
+    slot = act.slots.new('OBJECT', arm.name)
+    bag = act.layers.new('Layer').strips.new(type='KEYFRAME').channelbag(slot, ensure=True)
+    for b, mats in deltas.items():
+        pbone = arm.pose.bones[b]
+        for path, n, get in (('location', 3, lambda m: m.to_translation()),
+                             ('rotation_quaternion', 4, lambda m: m.to_quaternion()),
+                             ('scale', 3, lambda m: m.to_scale())):
+            curves = [bag.fcurves.new(f'pose.bones["{b}"].{path}', index=i) for i in range(n)]
+            prev = None
+            for fi, m in enumerate(mats):
+                v = get(m)
+                if path == 'rotation_quaternion' and prev is not None and prev.dot(v) < 0:
+                    v = -v
+                prev = v if path == 'rotation_quaternion' else None
+                for i, fc in enumerate(curves):
+                    fc.keyframe_points.insert(fi, v[i], options={'FAST'})
+        con = pbone.constraints.new('ACTION')
+        con.name = sname
+        con.action = act
+        con.action_slot = slot
+        con.use_eval_time = True
+        con.frame_start, con.frame_end = 0, len(mats) - 1
+        con.mix_mode = 'BEFORE_SPLIT'
+        con.use_bone_object_action = False
+        pbone.constraints.move(len(pbone.constraints) - 1, 0)
+        expr_driver(con, 'eval_time', None, 'v', props=[('v', f'["{key}"]')])
+    print('slider', sname, key, len(deltas), 'bones')
+
+# collections this hero has no bones in (Violet's Minions) only clutter the lists
+for c in list(arm.data.collections):
+    if not c.bones:
+        arm.data.collections.remove(c)
 
 # pose assets
 

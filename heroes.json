@@ -50,7 +50,38 @@
   "slug": "bebop",
   "name": "Bebop",
   "codename": "bebop",
-  "model": "models/heroes_staging/bebop/bebop.vmdl"
+  "model": "models/heroes_staging/bebop/bebop.vmdl",
+  "sliders": {
+   "Gun Fold": {
+    "clip": "game_primary_gun_open",
+    "frames": [
+     18,
+     0
+    ],
+    "bones": "gun.*"
+   },
+   "Hyperbeam": {
+    "clip": "game_hyperbeam_gun_open",
+    "frames": [
+     "rest",
+     28
+    ],
+    "bones": "gun.*"
+   }
+  },
+  "part_sets": {
+   "Arm": {
+    "Hand": {},
+    "Gun": {
+     "hand": 1,
+     "weapon_front": 1,
+     "weapon_base": 1
+    },
+    "Forearm": {
+     "hand": 1
+    }
+   }
+  }
  },
  {
   "slug": "billy",
