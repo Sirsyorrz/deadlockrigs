@@ -85,7 +85,8 @@ if regions:
     nt.links.new(bsdf.outputs[0], out.inputs[0])
     head.data.materials.clear()
     head.data.materials.append(heat)
-    regs = np.load(os.path.join(hero.data, 'regions.npz'))
+    # REGIONS=facerig shows the bone face's weights (data/facerig.npz) instead
+    regs = np.load(os.path.join(hero.data, os.environ.get('REGIONS', 'regions') + '.npz'))
     col = me.color_attributes.new('heat', 'FLOAT_COLOR', 'POINT')
 
 os.makedirs(out_dir, exist_ok=True)

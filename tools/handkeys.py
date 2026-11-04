@@ -14,6 +14,7 @@ from scipy.sparse.csgraph import connected_components
 
 sys.path.insert(0, os.path.dirname(__file__))
 import facegeo as fg  # noqa: E402
+from facebones import FaceBones  # noqa: E402
 from hero import ROOT, Hero  # noqa: E402
 from keys import fib_sphere, harmonic, ray_cast, rot_axis, smoothstep, sphere_fit  # noqa: E402
 
@@ -115,6 +116,18 @@ class Face:
         self.lids[s] = (g, m, u, prof)
         return self.lids[s]
 
+    def lid_point(self, s, t, part, out=1.0):
+        """A point on a lid's margin: t 0 at the inner corner, 1 at the outer; out scales the eye's radius."""
+        g, m, u, (mids, hi, lo) = self.lid_frame(s)
+        c, r = self.eye_c[s]
+        # t runs from the corner nearer the middle of the face
+        e0, e1 = (mids.min(), mids.max()) if abs((c + m * r)[0]) > abs((c - m * r)[0]) else (mids.max(), mids.min())
+        e = e0 + t * (e1 - e0)
+        phi = np.interp(e, mids, hi if part == 'upper' else lo)
+        er, pr = np.radians(e), np.radians(phi)
+        d = m * np.sin(er) + (g * np.cos(pr) + u * np.sin(pr)) * np.cos(er)
+        return c + d * r * out
+
     def lid_angles(self, s, pts):
         """Per point: (angle along the lid axis, elevation over the opening's middle line, gap there), degrees."""
         g, m, u, (mids, hi, lo) = self.lid_frame(s)
@@ -132,6 +145,8 @@ class Face:
     # positions: mm from the head bone in Blender axes, or a name
 
     def point(self, v, side, mirror):
+        if isinstance(v, dict) and 'lid' in v:
+            return self.lid_point(sub(v['lid'], side), v.get('t', 0.5), v.get('part', 'upper'), v.get('out', 1.0))
         if isinstance(v, str):
             name = sub(v, side)
             if name.startswith('eye_') and name[4:] in self.eye_c:
@@ -406,6 +421,15 @@ def main():
     np.savez(os.path.join(hero.data, 'keys.npz'), **keys)
     json.dump(face.controls(), open(os.path.join(hero.data, 'face.json'), 'w'), indent=1)
     print('hand-made keys', len(keys))
+    rig_files = [os.path.join(hero.data, f) for f in ('facerig.json', 'facerig.npz')]
+    if 'rig' in spec:
+        rig, weights = FaceBones(face, spec, arrays).build()
+        json.dump(rig, open(rig_files[0], 'w'), indent=1)
+        np.savez_compressed(rig_files[1], **weights)
+    else:
+        for f in rig_files:
+            if os.path.exists(f):
+                os.remove(f)
     if '--regions' in sys.argv:
         regs = {}
         for name in spec.get('regions', {}):

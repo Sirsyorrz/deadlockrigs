@@ -56,6 +56,26 @@ come from these.
 panel bone), `scale` (control size and travel, 1 = Violet's face). With `snap` (default) each point moves onto the
 skin under it and `lift` mm (default 6) out along its normal.
 
+## rig
+
+`"rig"`: the bone face on top of the keys (`tools/facebones.py`, built into the rig by `tools/facerig.py`). Deform bones
+on the skin for free posing past the presets; the shape keys stay for lip sync and expressions. Each bone takes its
+share of the skin from the game bone it hangs under (`head`, `jaw_0`) and the face bones already under that bone, so
+the rest pose is unchanged.
+
+| entry | |
+|---|---|
+| `"chains": {"snout_{i}": {"points": [p, ...], "parent": bone, "mask": region, "blend": mm, "size": mm}}` | FK bones joint to joint, each weighted along its stretch of the line, blending over `blend` at each joint |
+| `"chains": {"whisker_{n}_{i}_{s}": {"pieces": region, "root": p, "bones": 3, "parent": [bones]}}` | a chain along each separate piece in the region (whiskers, antennae), from the end nearest `root`; hangs off the nearest of `parent` |
+| `"tweaks": {name: {"at": p, "parent": bone, "r": mm, "soft": mm, "mask": region, "field": region, "main": true, "size": mm}}` | a control on the skin at `at` (snapped into `mask`), weighted `r` along the skin fading over `soft`, or by `field`; `main` ones carry the tweaks under them |
+| `"reparent": {"nose_0": "snout_1"}` | game bones that ride a chain |
+| `"show": ["ear_0_{s}"]` | game bones shown with the face bones |
+| `"scale"` | widget size, 1 = Violet's face |
+
+`at` can also be `{"lid": "{s}", "t": 0..1, "part": "upper"|"lower"}`, a point on a lid's margin from the inner
+corner (0) to the outer (1). A tweak's control rides the skin through the shape keys (drivers on `MCH-follow_*`), and
+`DEF-<name>` does the deforming.
+
 ## checking
 
     python tools/handkeys.py <hero> --regions
@@ -63,6 +83,9 @@ skin under it and `lift` mm (default 6) out along its normal.
     blender -b -P tools/face_preview.py -- <hero> out_dir eyeBlinkLeft,jawOpen=0.5 34 0,-300,0 500
     blender -b -P tools/head_views.py -- heroes/<hero>/build/<hero>.blend out_dir                 # mm grid views
     blender -b -P tools/control_views.py -- <hero> out.png 34,side                                # control spots
+
+    python tools/handkeys.py <hero>; REGIONS=facerig blender -b -P tools/face_preview.py -- <hero> out_dir "" side 0,-300,0 500 lip_up_L   # bone weights
+    blender -b -P tools/rig_views.py -- <hero> out.png side,34 0,-300,0 500 "Face Bones,Face Detail" pose.py              # widgets, posed
 
 `face_preview.py` reads `data/keys.npz` straight onto the base build, so after the first `pipeline.py <hero> data
 base` only `handkeys.py` needs rerunning between tries.

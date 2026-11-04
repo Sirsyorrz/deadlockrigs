@@ -874,4 +874,54 @@ if 'FACE' in pb:
               f'look {kbs["eyeLookUpLeft"].value:.2f}/{kbs["eyeLookUpRight"].value:.2f} iris {iris:.2f}')
         reset()
 
+# the bone face (facerig.py): the skin is where it was at rest, every face bone moves it, and the tweak controls ride
+# the skin through the shape keys
+if arm.get('face_bones'):
+    # the idle layer test above leaves its NLA sway on
+    nla = arm.animation_data.use_nla if arm.animation_data else None
+    if arm.animation_data:
+        arm.animation_data.use_nla = False
+    reset()
+    fb_ = arm['face_bones'].to_dict()
+    head = bpy.data.objects[arm['face_mesh']]
+    kbs = head.data.shape_keys.key_blocks
+    base = np.array([v.co for v in kbs[0].data])
+    rest = verts(head)
+    off = np.abs(rest - base).max() * 1000
+    check('face bones keep the rest skin', off < 0.05, f'{off:.3f} mm')
+    fs = arm.get('face_scale', 1.0)
+    weak = {}
+    for n, info in fb_.items():
+        b = pb[n]
+        if info['kind'] == 'chain':
+            b.rotation_mode = 'XYZ'
+            b.rotation_euler = (0.3, 0, 0)
+        else:
+            b.location = (0, 0.01 * fs, 0)
+        update()
+        moved = np.linalg.norm(verts(head) - rest, axis=1).max() * 1000
+        b.rotation_euler = (0, 0, 0)
+        b.location = (0, 0, 0)
+        if moved < 2 * fs:
+            weak[n] = round(moved, 2)
+    update()
+    check('every face bone moves the skin', not weak, f'{len(fb_)} bones {weak}')
+    for k in ('jawOpen', 'eyeBlinkLeft', 'mouthSmileLeft', 'browInnerUp', 'noseSneerRight', 'cheekPuff'):
+        if k in pb['FACE'].keys():
+            pb['FACE'][k] = 1.0
+    update()
+    posed = verts(head)
+    mw = head.matrix_world
+    gaps = {}
+    for n, info in fb_.items():
+        if info['kind'] != 'tweak' or info['anchor'] < 0:
+            continue
+        on_skin = mw @ Vector(posed[info['anchor']])
+        gaps[n] = (arm.matrix_world @ pb[n].head - on_skin).length * 1000
+    worst = max(gaps, key=gaps.get)
+    check('face tweaks ride the shape keys', gaps[worst] < 1, f'{len(gaps)} tweaks, worst {worst} {gaps[worst]:.2f} mm')
+    if nla is not None:
+        arm.animation_data.use_nla = nla
+    reset()
+
 print('FAILS', fails)

@@ -29,6 +29,7 @@ from mathutils import Matrix, Quaternion, Vector
 
 sys.path.insert(0, os.path.dirname(__file__))
 from expressions import ARKIT, EXPRESSIONS, GROUPS, VISEMES  # noqa: E402
+import facerig  # noqa: E402
 import hands  # noqa: E402
 import mirror  # noqa: E402
 from hero import from_argv  # noqa: E402
@@ -42,6 +43,8 @@ bpy.context.scene.render.fps = 30
 arm = bpy.data.objects[hero.name]
 HAS_FACE = bool(hero.face)
 head_ob = bpy.data.objects[hero.face['mesh']] if HAS_FACE else None
+# the bone face on top of the shape keys (handkeys.py faces with a "rig")
+FACERIG = facerig.load(hero.data) if HAS_FACE else None
 bpy.context.view_layer.objects.active = arm
 arm.select_set(True)
 B = arm.data.bones
@@ -76,8 +79,8 @@ CATS = [
     ('Tail', TAIL_RX),
     ('Secondary', r'.'),
 ]
-COLL_ORDER = ['Root', 'Torso', 'Arms FK', 'Legs FK', 'IK', 'Fingers', 'Props', 'Tail', 'Face', 'Minions', 'Secondary',
-              'Weapon', 'Helpers']
+COLL_ORDER = ['Root', 'Torso', 'Arms FK', 'Legs FK', 'IK', 'Fingers', 'Props', 'Tail', 'Face', facerig.COLL_MAIN,
+              facerig.COLL_FINE, 'Minions', 'Secondary', 'Weapon', 'Helpers']
 HIDDEN = {'Helpers'}
 HIDDEN_BY_DEFAULT = {'Helpers', 'Secondary'}
 
@@ -115,6 +118,8 @@ def rider_of(name):
 
 
 def category(name):
+    if FACERIG and facerig.category(FACERIG, name):
+        return facerig.category(FACERIG, name)
     if rider_of(name) and not re.search(CATS[0][1], name):
         return 'Minions'
     cat = next(c for c, rx in CATS if re.search(rx, name))
@@ -364,6 +369,8 @@ if HAS_EYES:
         new_bone(f'CTRL_eye_{s}', e, e + UP * 0.02, 'CTRL_eyes', roll_to=FWD)
 if HAS_FACE:
     new_bone(FACE, FACE_BONE, FACE_BONE + UP * 0.03 * FS, 'head', roll_to=FWD)
+if FACERIG:
+    facerig.edit(FACERIG, eb, new_bone, head_ob, arm)
 ROOT = 'root_motion' if 'root_motion' in eb else None
 # widget sizes and pole distances were tuned on Violet, whose head bone sits 2.094 m up. Without a head bone (the
 # Walker) the top bone stands in, as Violet's head_end is ~2.3 m up
@@ -742,6 +749,8 @@ for b in B:
     pal = {'Face': 'THEME03', 'Secondary': 'THEME06', 'Props': 'THEME07', 'Tail': 'THEME10'}.get(cat, COLOURS[side(n)])
     if cat == 'Minions' and re.search(TAIL_RX, n):
         pal = 'THEME10'
+    if cat in (facerig.COLL_MAIN, facerig.COLL_FINE):
+        pal = facerig.palette(FACERIG, n)
     if n in TORSO_CTRLS:
         pal = 'THEME11'
     b.color.palette = pal
@@ -850,7 +859,8 @@ def seg_end(b):
 
 for b in B:
     n = b.name
-    if n.startswith(('CTRL_', 'FACE', 'face_', 'IK_', 'pole_') + HELPER_PREFIXES) or n in TORSO_CTRLS:
+    if n.startswith(('CTRL_', 'FACE', 'face_', 'IK_', 'pole_') + HELPER_PREFIXES) or n in TORSO_CTRLS or \
+            (FACERIG and n in FACERIG['by_name']):
         continue
     cat = category(n)
     if cat in HIDDEN:
@@ -1110,6 +1120,8 @@ def transform_var(d, name, bone, channel):
 
 if HAS_FACE:
     build_face()
+    if FACERIG:
+        facerig.pose(FACERIG, arm, head_ob, widget, SCALE)
     arm['face_scale'] = FS
     arm['face_mesh'] = head_ob.name
     arm['face_morphs'] = hero.face.get('builder') == 'morphs.py'
