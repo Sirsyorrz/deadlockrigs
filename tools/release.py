@@ -22,8 +22,8 @@ import pipeline  # noqa: E402
 DIST = os.path.join(ROOT, 'dist')
 # what the build runs; the rest of tools/ is for developing and checking rigs
 ADDON_TOOLS = ['pipeline.py', 'hero.py', 'vmdl_extract.py', 'gamerig.py', 'fe_extract.py', 'dump.py', 'keys.py',
-               'facegeo.py', 'morphs.py', 'bonekeys.py', 'build.py', 'bodygroups.py', 'collar.py', 'tongue_mesh.py',
-               'rig.py', 'rig_ui.py', 'expressions.py', 'hands.py', 'mirror.py', 'anims.py', 'mapbuild.py',
+               'facegeo.py', 'handkeys.py', 'morphs.py', 'bonekeys.py', 'build.py', 'bodygroups.py', 'collar.py',
+               'tongue_mesh.py', 'rig.py', 'rig_ui.py', 'expressions.py', 'hands.py', 'mirror.py', 'anims.py', 'mapbuild.py',
                'map_rebatch.py', 'map_import.py', 'map_lighting.py', 'map_environment.py', 'map_blend.py', 'map_fog.py',
                'map_probes.py', 'map_reflections.py', 'map_anim.py']
 SCIPY = 'scipy>=1.16,<1.17'
@@ -91,6 +91,7 @@ def addon():
     shutil.copy(os.path.join(ROOT, 'heroes.json'), stage)
     shutil.copy(os.path.join(ROOT, 'LICENSE'), stage)
     shutil.copytree(os.path.join(ROOT, 'rigdata'), os.path.join(stage, 'rigdata'))
+    shutil.copytree(os.path.join(ROOT, 'faces'), os.path.join(stage, 'faces'))
     wheels = download_wheels(os.path.join(stage, 'wheels'))
     manifest = open(MANIFEST, encoding='utf-8').read()
     # top-level keys have to come before the first [table]

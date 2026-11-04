@@ -47,7 +47,7 @@ DEV_STEPS = ['extract', 'data', 'base', 'anims', 'rig', 'test']
 ALL_STEPS = DEV_STEPS + ['export_anims', 'clean']
 # Blender output worth showing; the rest goes to the build log
 SHOW = re.compile(r'^(meshes|baked light|reflections:|fog:|materials:|shape keys|wrote|mesh without|collar|IK |skipping|WARNING|twist|mirror|clips|'
-                  r'(morph|bone) keys|dumped|tails|PASS|FAIL)|Error|Traceback')
+                  r'(morph|bone|hand-made) keys|dumped|tails|PASS|FAIL)|Error|Traceback')
 
 
 class BuildError(Exception):
@@ -335,6 +335,9 @@ class Builder:
             if builder == 'keys.py':
                 self.blender_script(h, 'dump.py')
                 self.python_script(h, 'keys.py', os.path.join(h.data, 'head.npz'), os.path.join(h.data, 'keys.npz'))
+            elif builder == 'handkeys.py':
+                self.blender_script(h, 'dump.py')
+                self.python_script(h, 'handkeys.py', h.slug)
             else:
                 self.blender_script(h, builder)
 

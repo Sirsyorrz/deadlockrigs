@@ -137,6 +137,16 @@ for m in bpy.context.scene.objects:
     q = q.reshape(-1, 3) @ w[:3, :3].T + w[:3, 3]
     others.append(q[np.linalg.norm(q - bones['head'], axis=1) < 0.3])
 other = np.concatenate(others) if others else np.zeros((0, 3), np.float32)
+# skin weights of the head bone and the bones under it, for hand-made faces (handkeys.py) to select by
+under_head = {b.name for b in arm.data.bones['head'].children_recursive} | {'head'}
+for b in under_head:
+    bones.setdefault(b, np.array(arm.matrix_world @ arm.pose.bones[b].head))
+group_names = {g.index: g.name for g in o.vertex_groups if g.name in under_head}
+weights = {}
+for v in me.vertices:
+    for e in v.groups:
+        if e.group in group_names and e.weight > 0:
+            weights.setdefault('w_' + group_names[e.group], np.zeros(n, np.float32))[v.index] = e.weight
 np.savez(os.path.join(hero.data, 'head.npz'), co=co, nrm=nrm.reshape(-1, 3), tris=tris, mats=mats, matnames=np.array([m.name for m in me.materials]),
-         other=other, **{'bone_' + k: v for k, v in bones.items()}, **balls)
+         other=other, **{'bone_' + k: v for k, v in bones.items()}, **balls, **weights)
 print('dumped', n, len(tris), 'other', len(other))
