@@ -138,8 +138,14 @@ class Face:
         phi = np.degrees(np.arctan2(d @ u, d @ g))
         mid_line = np.interp(e, mids, (hi + lo) / 2)
         # past the corners the gap closes over a few degrees
-        fade = np.interp(e, np.r_[mids[0] - 6, mids, mids[-1] + 6], np.r_[0, np.ones(len(mids)), 0])
-        gap = np.interp(e, mids, hi - lo) * fade
+        fade = np.interp(e, np.r_[mids[0] - 12, mids, mids[-1] + 12], np.r_[0, np.ones(len(mids)), 0])
+        # the 3 degree bins undersample the opening's narrow ends, so each takes the wider of its neighbours there
+        # (a blink otherwise leaves a sliver of eye at the corners)
+        width = hi - lo
+        wide = np.maximum(width, np.maximum(np.r_[width[1:], 0], np.r_[0, width[:-1]]))
+        ends = np.minimum(np.arange(len(width)), np.arange(len(width))[::-1]) < 2
+        width = np.where(ends, wide, width)
+        gap = np.interp(e, mids, width) * fade
         return e, phi - mid_line, gap
 
     # positions: mm from the head bone in Blender axes, or a name

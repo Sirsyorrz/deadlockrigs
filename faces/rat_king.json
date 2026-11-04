@@ -281,6 +281,42 @@
     },
     "jaw"
    ]
+  },
+  "mouth_back_up_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "not": "jaw"
+    },
+    {
+     "geo": [
+      100,
+      -170,
+      -20
+     ],
+     "r": 45,
+     "soft": 90
+    }
+   ]
+  },
+  "mouth_back_lo_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    "jaw",
+    {
+     "geo": [
+      95,
+      -175,
+      -30
+     ],
+     "r": 40,
+     "soft": 80
+    }
+   ]
   }
  },
  "keys": {
@@ -346,12 +382,12 @@
    {
     "lid": "lid_up_{s}",
     "eye": "{s}",
-    "close": 1.0
+    "close": 1.15
    },
    {
     "lid": "lid_lo_{s}",
     "eye": "{s}",
-    "close": 0.25,
+    "close": 0.55,
     "part": "lower"
    }
   ],
@@ -492,17 +528,33 @@
    {
     "move": "corner_{s}",
     "by": [
+     10,
+     34,
+     30
+    ]
+   },
+   {
+    "move": "mouth_back_up_{s}",
+    "by": [
+     4,
+     10,
+     16
+    ]
+   },
+   {
+    "move": "mouth_back_lo_{s}",
+    "by": [
+     3,
      8,
-     26,
-     22
+     12
     ]
    },
    {
     "move": "cheek_{s}",
     "by": [
-     3,
      4,
-     6
+     6,
+     12
     ]
    }
   ],
@@ -510,9 +562,25 @@
    {
     "move": "corner_{s}",
     "by": [
+     2,
+     -4,
+     -26
+    ]
+   },
+   {
+    "move": "mouth_back_up_{s}",
+    "by": [
      0,
-     5,
-     -20
+     0,
+     -14
+    ]
+   },
+   {
+    "move": "mouth_back_lo_{s}",
+    "by": [
+     1,
+     0,
+     -6
     ]
    }
   ],
@@ -1001,8 +1069,7 @@
     "mask": "lid_up_{s}",
     "main": true,
     "size": 5,
-    "r": 12,
-    "soft": 20
+    "field": "lid_up_{s}"
    },
    "lid_up_0_{s}": {
     "at": {
@@ -1013,8 +1080,8 @@
     "parent": "lid_up_{s}",
     "mask": "lid_up_{s}",
     "size": 3,
-    "r": 5,
-    "soft": 10
+    "r": 9,
+    "soft": 16
    },
    "lid_up_1_{s}": {
     "at": {
@@ -1025,8 +1092,8 @@
     "parent": "lid_up_{s}",
     "mask": "lid_up_{s}",
     "size": 3,
-    "r": 5,
-    "soft": 10
+    "r": 9,
+    "soft": 16
    },
    "lid_up_2_{s}": {
     "at": {
@@ -1037,8 +1104,8 @@
     "parent": "lid_up_{s}",
     "mask": "lid_up_{s}",
     "size": 3,
-    "r": 5,
-    "soft": 10
+    "r": 9,
+    "soft": 16
    },
    "lid_lo_{s}": {
     "at": {
@@ -1050,8 +1117,7 @@
     "mask": "lid_lo_{s}",
     "main": true,
     "size": 5,
-    "r": 12,
-    "soft": 20
+    "field": "lid_lo_{s}"
    },
    "lid_lo_0_{s}": {
     "at": {
@@ -1062,8 +1128,8 @@
     "parent": "lid_lo_{s}",
     "mask": "lid_lo_{s}",
     "size": 3,
-    "r": 5,
-    "soft": 10
+    "r": 9,
+    "soft": 16
    },
    "lid_lo_1_{s}": {
     "at": {
@@ -1074,8 +1140,8 @@
     "parent": "lid_lo_{s}",
     "mask": "lid_lo_{s}",
     "size": 3,
-    "r": 5,
-    "soft": 10
+    "r": 9,
+    "soft": 16
    }
   },
   "reparent": {
