@@ -1437,23 +1437,59 @@ class DLRIG_PT_main(bpy.types.Panel):
     def draw(self, context):
         ob = rig(context)
         col = self.layout.column(align=True)
-        col.prop(context.scene.tool_settings, 'use_keyframe_insert_auto', text='Auto-Key (buttons set keys)',
-                 toggle=True, icon='RECORD_OFF')
-        col.separator()
-        col.label(text='Show bones')
-        grid = col.grid_flow(columns=2, align=True)
-        for c in ob.data.collections_all:
-            grid.prop(c, 'is_visible', text=c.name, toggle=True)
-        col.separator()
-        col.prop(context.scene, 'dlrig_strength', slider=True)
+        row = col.row(align=True)
+        row.prop(context.scene.tool_settings, 'use_keyframe_insert_auto', text='Auto-Key', toggle=True,
+                 icon='RECORD_OFF')
+        row.operator('dlrig.reset_pose', text='Reset Pose', icon='ARMATURE_DATA')
         if FACE in ob.pose.bones:
             row = col.row(align=True)
-            row.operator('dlrig.reset_face', icon='LOOP_BACK')
-            row.operator('dlrig.key_face', icon='KEY_HLT')
-        col.operator('dlrig.reset_pose', icon='ARMATURE_DATA')
+            row.operator('dlrig.reset_face', text='Reset Face', icon='LOOP_BACK')
+            row.operator('dlrig.key_face', text='Key Face', icon='KEY_HLT')
+        col.prop(context.scene, 'dlrig_strength', text='Button strength', slider=True)
+
+
+class DLRIG_PT_layers(bpy.types.Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = CATEGORY
+    bl_label = 'Bone Layers'
+    bl_parent_id = 'DLRIG_PT_main'
+
+    def draw(self, context):
+        grid = self.layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+        for c in rig(context).data.collections_all:
+            if c.bones:
+                grid.prop(c, 'is_visible', text=c.name, toggle=True)
+
+
+def rider_of(limb, ob):
+    return next((r for r in ob.get('riders', {}) if limb.startswith(r + '_')), None)
+
+
+def limb_rows(layout, ob, limbs, strip=''):
+    """One row per limb: its name, then a left and a right button that switch FK/IK (showing the current mode)."""
+    grid = layout.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
+    grid.label(text='')
+    grid.label(text='Left')
+    grid.label(text='Right')
+    for limb in limbs:
+        if not any(f'ik_{limb}_{s}' in ob for s in 'LR'):
+            continue
+        grid.label(text=limb[len(strip):].replace('_', ' ').capitalize())
+        for s in 'LR':
+            p = f'ik_{limb}_{s}'
+            if p not in ob:
+                grid.label(text='')
+                continue
+            is_ik = ob[p] >= 0.5
+            op = grid.operator('dlrig.snap', text='IK' if is_ik else 'FK', depress=is_ik,
+                               icon='CON_KINEMATIC' if is_ik else 'BONE_DATA')
+            op.limb, op.side, op.to_ik = limb, s, not is_ik
 
 
 class DLRIG_PT_body(bpy.types.Panel):
+    """Click a limb's button to switch it between FK and IK; switching keeps the pose. In IK the rings still
+    rotate the bones"""
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = CATEGORY
@@ -1463,36 +1499,16 @@ class DLRIG_PT_body(bpy.types.Panel):
     def draw(self, context):
         ob = rig(context)
         col = self.layout.column(align=True)
-        for limb in limb_list(ob):
-            for s, side in (('L', 'Left'), ('R', 'Right')):
-                p = f'ik_{limb}_{s}'
-                if p not in ob:
-                    continue
-                is_ik = ob[p] >= 0.5
-                row = col.row(align=True)
-                row.label(text=f'{side} {limb.replace("_", " ")}: {"IK" if is_ik else "FK"}',
-                          icon='CON_KINEMATIC' if is_ik else 'BONE_DATA')
-                op = row.operator('dlrig.snap', text='Switch to FK' if is_ik else 'Switch to IK')
-                op.limb, op.side, op.to_ik = limb, s, not is_ik
-        col.label(text='Switching keeps the pose', icon='INFO')
-        col.label(text='IK: rings rotate bones too', icon='INFO')
+        limb_rows(col, ob, [lb for lb in limb_list(ob) if not rider_of(lb, ob)])
+        col.separator()
         row = col.row(align=True)
         row.operator('dlrig.bake_ik', text='Animation to IK', icon='CON_KINEMATIC').limbs = 'ALL'
         row.operator('dlrig.bake_fk', text='Animation to FK', icon='BONE_DATA').limbs = 'ALL'
-        for t in ob.get('tails', []):
-            row = col.row(align=True)
-            row.prop(ob, f'["ik_{t}"]', text=f'{t.replace("_", " ").capitalize()} IK', slider=True)
-            if f'stretch_{t}' in ob:
-                row.prop(ob, f'["stretch_{t}"]', text='Stretch', slider=True)
-        if 'prop_chain' in ob:
+        tails = [t for t in ob.get('tails', []) if not rider_of(t, ob)]
+        if tails:
             col.separator()
-            col.label(text='Held prop: move its box', icon='INFO')
-            col.prop(ob, '["prop_chain"]', text='Chain follows prop', slider=True)
-        if 'weapon_hold' in ob:
-            col.separator()
-            floats = not ob.get('weapon_anchor', 'hand_').startswith('hand_')
-            col.prop(ob, '["weapon_hold"]', text='Weapon follows body' if floats else 'Weapon in hand', slider=True)
-            parent_row(col, ob, 'weaponPivot', 'Weapon')
+            for t in tails:
+                tail_row(col, ob, t)
         if 'mech_ik' in ob:
             col.separator()
             col.prop(ob, '["mech_ik"]', text='Leg controls', slider=True)
@@ -1501,12 +1517,82 @@ class DLRIG_PT_body(bpy.types.Panel):
             col.operator('dlrig.mech_snap', icon='SNAP_ON')
 
 
+def tail_row(layout, ob, t, label=None):
+    row = layout.row(align=True)
+    row.prop(ob, f'["ik_{t}"]', text=f'{label or t.replace("_", " ").capitalize()} IK', slider=True)
+    if f'stretch_{t}' in ob:
+        row.prop(ob, f'["stretch_{t}"]', text='Stretch', slider=True)
+
+
+class DLRIG_PT_riders(bpy.types.Panel):
+    """Small creatures with their own skeleton inside the hero's (Rat King's rats)"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = CATEGORY
+    bl_label = 'Creatures'
+    bl_parent_id = 'DLRIG_PT_main'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = rig(context)
+        return ob is not None and bool(ob.get('riders'))
+
+    def draw(self, context):
+        ob = rig(context)
+        for r in ob['riders']:
+            box = self.layout.box()
+            col = box.column(align=True)
+            base = r.rstrip('0123456789')
+            col.label(text=f"{base.replace('_', ' ').capitalize()} {int(r[len(base):] or 0) + 1}")
+            limb_rows(col, ob, [lb for lb in limb_list(ob) if rider_of(lb, ob) == r], strip=r + '_')
+            for t in ob.get('tails', []):
+                if rider_of(t, ob) == r:
+                    tail_row(col, ob, t, label='Tail')
+            parent_row(col, ob, r + '_root', 'Rides')
+            for limb in limb_list(ob):
+                if rider_of(limb, ob) == r:
+                    ik_options(col, ob, limb, label=limb[len(r) + 1:], sliders=False)
+
+
+class DLRIG_PT_weapon(bpy.types.Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = CATEGORY
+    bl_label = 'Weapon & Props'
+    bl_parent_id = 'DLRIG_PT_main'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = rig(context)
+        return ob is not None and ('weapon_hold' in ob or 'prop_chain' in ob)
+
+    def draw(self, context):
+        ob = rig(context)
+        col = self.layout.column(align=True)
+        if 'weapon_hold' in ob:
+            floats = not ob.get('weapon_anchor', 'hand_').startswith('hand_')
+            col.prop(ob, '["weapon_hold"]', text='Weapon follows body' if floats else 'Weapon in hand', slider=True)
+            parent_row(col, ob, 'weaponPivot', 'Follows')
+        if 'prop_chain' in ob:
+            col.separator()
+            col.prop(ob, '["prop_chain"]', text='Chain follows prop', slider=True)
+            col.label(text='Move the prop by its box', icon='INFO')
+
+
 def parent_row(layout, ob, bone, label):
     opts = ob.get('parent_options', {}).get(bone)
     if not opts:
         return
-    row = layout.row(align=True)
-    row.label(text=label)
+    if len(opts) > 3:
+        # five choices don't fit beside a label in the sidebar's width
+        layout.label(text=label)
+        row = layout.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
+    else:
+        row = layout.split(factor=0.3, align=True)
+        row.label(text=label)
+        row = row.row(align=True)
     for i, lbl in enumerate(opts):
         op = row.operator('dlrig.switch_parent', text=lbl, depress=ob[bone + '_parent'] == i)
         op.bone, op.index = bone, i
@@ -1528,23 +1614,28 @@ class DLRIG_PT_ik(bpy.types.Panel):
         ob = rig(context)
         layout = self.layout
         for limb in limb_list(ob):
-            for s, side in (('L', 'Left'), ('R', 'Right')):
-                if f'ik_{limb}_{s}' not in ob:
-                    continue
-                box = layout.box()
-                col = box.column(align=True)
-                col.label(text=f'{side} {limb.replace("_", " ")}')
-                row = col.row(align=True)
-                row.prop(ob, f'["soft_{limb}_{s}"]', text='Soft', slider=True)
-                row.prop(ob, f'["stretch_{limb}_{s}"]', text='Stretch', slider=True)
-                _up, _lo, _end, ik, pole, _dist = limb_names(limb, s)
-                parent_row(col, ob, ik, 'Follows')
-                parent_row(col, ob, pole, 'Pole')
+            if not rider_of(limb, ob):
+                ik_options(layout, ob, limb)
         if any(foot_names(ob, 'leg', s) for s in 'LR'):
             col = layout.column(align=True)
             col.prop(ob, '["foot_roll_break"]', text='Foot roll break')
             col.label(text='Heel arc: X rolls, Y banks, Z swivels', icon='INFO')
             col.label(text='Ankle ring turns the foot alone', icon='INFO')
+
+
+def ik_options(layout, ob, limb, label=None, sliders=True):
+    for s, side in (('L', 'Left'), ('R', 'Right')):
+        if f'ik_{limb}_{s}' not in ob:
+            continue
+        col = layout.box().column(align=True) if sliders else layout.column(align=True)
+        col.label(text=f'{side} {(label or limb).replace("_", " ")}')
+        if sliders:
+            row = col.row(align=True)
+            row.prop(ob, f'["soft_{limb}_{s}"]', text='Soft', slider=True)
+            row.prop(ob, f'["stretch_{limb}_{s}"]', text='Stretch', slider=True)
+        _up, _lo, _end, ik, pole, _dist = limb_names(limb, s)
+        parent_row(col, ob, ik, 'Follows')
+        parent_row(col, ob, pole, 'Pole')
 
 
 class DLRIG_PT_follow(bpy.types.Panel):
@@ -1565,9 +1656,10 @@ class DLRIG_PT_follow(bpy.types.Panel):
         for prop, bone in ob['isolate'].items():
             follows = ob[prop] >= 0.5
             name = {'head': 'Head'}.get(bone, f'{"Left" if bone.endswith("_L") else "Right"} FK arm')
-            row = col.row(align=True)
-            row.label(text=f'{name}: {"follows body" if follows else "keeps its angle"}')
-            row.operator('dlrig.switch_follow', text='Keep Angle' if follows else 'Follow').prop = prop
+            row = col.split(factor=0.4, align=True)
+            row.label(text=name)
+            row.operator('dlrig.switch_follow', text='Follows body' if follows else 'Keeps its angle',
+                         depress=not follows).prop = prop
 
 
 class DLRIG_PT_game(bpy.types.Panel):
@@ -1576,6 +1668,7 @@ class DLRIG_PT_game(bpy.types.Panel):
     bl_category = CATEGORY
     bl_label = 'Game Animations'
     bl_parent_id = 'DLRIG_PT_main'
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -1605,6 +1698,7 @@ class DLRIG_PT_physics(bpy.types.Panel):
     bl_category = CATEGORY
     bl_label = 'Physics (hair, cloth)'
     bl_parent_id = 'DLRIG_PT_main'
+    bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
@@ -1665,12 +1759,29 @@ class DLRIG_PT_parts(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         ob = rig(context)
-        return ob is not None and bool(ob.get('body_groups'))
+        return ob is not None and bool(ob.get('body_groups') or ob.get('sliders'))
 
     def draw(self, context):
         ob = rig(context)
+        sets = ob.get('part_sets', {})
+        for sname, options in sets.items():
+            row = self.layout.row(align=True)
+            row.label(text=sname)
+            groups = {g for o in options.values() for g in o}
+            for oname, chosen in options.items():
+                on = all(ob.get(f'bodygroup_{g}', 0) == chosen.get(g, 0) for g in groups)
+                op = row.operator('dlrig.part_set', text=oname, depress=on)
+                op.set_name, op.option = sname, oname
+        for sname in ob.get('sliders', []):
+            key = 'slider_' + ''.join(c if c.isalnum() else '_' for c in sname.lower()).strip('_')
+            if key in ob:
+                self.layout.prop(ob, f'["{key}"]', text=sname, slider=True)
+        # the sets cover the groups they name; the rest stay as switches
+        covered = {g for options in sets.values() for o in options.values() for g in o}
         col = self.layout.column(align=True)
-        for g, choices in ob['body_groups'].items():
+        for g, choices in ob.get('body_groups', {}).items():
+            if g in covered:
+                continue
             prop = f'bodygroup_{g}'
             row = col.row(align=True)
             label = g.replace('_', ' ').capitalize()
@@ -1681,6 +1792,25 @@ class DLRIG_PT_parts(bpy.types.Panel):
                     op.group, op.index = g, i
             else:
                 row.prop(ob, f'["{prop}"]', text=f'{label}: {choices[ob[prop]].replace("_", " ")}')
+
+
+class DLRIG_OT_part_set(bpy.types.Operator):
+    """Show this combination of parts"""
+    bl_idname = 'dlrig.part_set'
+    bl_label = 'Parts'
+    bl_options = {'REGISTER', 'UNDO'}
+    set_name: bpy.props.StringProperty()
+    option: bpy.props.StringProperty()
+
+    def execute(self, context):
+        ob = rig(context)
+        options = ob['part_sets'][self.set_name]
+        for g in {g for o in options.values() for g in o}:
+            ob[f'bodygroup_{g}'] = options[self.option].get(g, 0)
+            if autokey(context):
+                ob.keyframe_insert(f'["bodygroup_{g}"]', group='Parts')
+        ob.update_tag()
+        return {'FINISHED'}
 
 
 class DLRIG_OT_body_group(bpy.types.Operator):
@@ -1717,8 +1847,9 @@ class DLRIG_PT_hands(bpy.types.Panel):
         for name in poses:
             if not poses[name]:
                 continue
-            row = self.layout.row(align=True)
+            row = self.layout.split(factor=0.35, align=True)
             row.label(text=name)
+            row = row.row(align=True)
             sides = poses[name]
             for side, label in (('L', 'Left'), ('R', 'Right'), ('B', 'Both')):
                 if side != 'B' and side not in sides or side == 'B' and len(sides) < 2:
@@ -1755,9 +1886,9 @@ def make_group_panel(title):
 classes = [DLRIG_OT_expression, DLRIG_OT_reset_face, DLRIG_OT_key_face, DLRIG_OT_hand, DLRIG_OT_reset_pose,
            DLRIG_OT_snap, DLRIG_OT_mech_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
            DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
-           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_OT_body_group, DLRIG_PT_main, DLRIG_PT_body,
-           DLRIG_PT_ik, DLRIG_PT_follow, DLRIG_PT_game, DLRIG_PT_physics, DLRIG_PT_expressions, DLRIG_PT_hands,
-           DLRIG_PT_parts]
+           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_OT_body_group, DLRIG_OT_part_set,
+           DLRIG_PT_main, DLRIG_PT_layers, DLRIG_PT_body, DLRIG_PT_ik, DLRIG_PT_follow, DLRIG_PT_riders,
+           DLRIG_PT_expressions, DLRIG_PT_hands, DLRIG_PT_weapon, DLRIG_PT_parts, DLRIG_PT_game, DLRIG_PT_physics]
 # a panel per slider group of any rig in the file; the add-on runs this again after appending another rig
 classes += [make_group_panel(t) for t in dict.fromkeys(g for ob in rigs() for g in rig_data(ob).get('GROUPS', {}))]
 
