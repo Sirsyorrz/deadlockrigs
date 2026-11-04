@@ -113,7 +113,7 @@ if hero.face:
     # game morphs and face bones come with the game's own skinning; only keys.py heads get the collar fix
     if hero.face.get('builder', 'keys.py') == 'keys.py':
         others = [o for o in bpy.data.objects if o.type == 'MESH' and o != head and not o.hide_viewport and o.vertex_groups]
-        scale = arm.data.bones['head'].head_local.z / 2.094
+        scale = arm.data.bones[hero.face.get('bone', 'head')].head_local.z / 2.094
         print('collar: head vertices covered', fix_collar(head, others, scale, n_head))
     base = np.empty(n * 3, np.float32)
     me.vertices.foreach_get('co', base)
@@ -157,7 +157,7 @@ if hero.face:
         for i, c in enumerate(head_world):
             tree.insert(c, i)
         tree.balance()
-        scale = arm.data.bones['head'].head_local.z / 2.094
+        scale = arm.data.bones[hero.face.get('bone', 'head')].head_local.z / 2.094
         near_d, far_d = 0.006 * scale, 0.015 * scale
     for part, bones in hero.face.get('follow', {}).items():
         ob = bpy.data.objects.get(hero.rename.get(part, part))

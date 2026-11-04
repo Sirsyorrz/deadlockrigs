@@ -435,15 +435,16 @@ def new_bone(name, head, tail, parent, roll_to=None, copy=None):
 
 FWD = Vector((0, -1, 0))
 UP = Vector((0, 0, 1))
+FACE_HEAD = hero.face.get('bone', 'head') if HAS_FACE else 'head'
 for name, (pos, *_rest) in CTRLS.items():
-    new_bone(name, pos, pos + UP * 0.006, 'head', roll_to=FWD)
+    new_bone(name, pos, pos + UP * 0.006, FACE_HEAD, roll_to=FWD)
 if HAS_EYES:
-    new_bone('CTRL_eyes', EYE_TARGET, EYE_TARGET + UP * 0.03, 'head', roll_to=FWD)
+    new_bone('CTRL_eyes', EYE_TARGET, EYE_TARGET + UP * 0.03, FACE_HEAD, roll_to=FWD)
     for s, sx in (('L', 1), ('R', -1)):
         e = EYE_TARGET + Vector((sx * EYE_SPACING, 0, 0))
         new_bone(f'CTRL_eye_{s}', e, e + UP * 0.02, 'CTRL_eyes', roll_to=FWD)
 if HAS_FACE:
-    new_bone(FACE, FACE_BONE, FACE_BONE + UP * 0.03 * FS, 'head', roll_to=FWD)
+    new_bone(FACE, FACE_BONE, FACE_BONE + UP * 0.03 * FS, FACE_HEAD, roll_to=FWD)
 if FACERIG:
     facerig.edit(FACERIG, eb, new_bone, head_ob, arm)
 mechparts.edit(MECH, new_bone)

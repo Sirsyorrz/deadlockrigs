@@ -125,6 +125,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Abrams, McGinnis | yes (from the game's face bones) |
 | Apollo, Calico, Celeste, Drifter, Graves, Grey Talon, Holliday, Infernus, Kelvin, Lady Geist, Mina, Mirage, Nurse Harrow, Paige, Pocket, Silver, Solomon, The Doorman, Venator, Vindicta, Violet | yes |
 | Billy, Rem, Victor | yes (from the game's face morphs) |
+| Mo & Krill | Mo yes; Krill's eyes are under his cap, not yet |
 | Ivy, Rat King, Vyper | yes (hand-made, with a bone face) |
 | everyone else | not yet |
 

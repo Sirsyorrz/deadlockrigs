@@ -520,7 +520,28 @@
   "slug": "mo_krill",
   "name": "Mo & Krill",
   "codename": "krill",
-  "model": "models/heroes_staging/digger/digger.vmdl"
+  "model": "models/heroes_staging/digger/digger.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "digger_rider_shape"
+    ],
+    "bones": [
+     "rider_head"
+    ],
+    "mesh": "rider"
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "bone": "rider_head",
+   "eyes": [
+    0.036,
+    -0.7001,
+    1.0707
+   ]
+  }
  },
  {
   "slug": "nurse_harrow",

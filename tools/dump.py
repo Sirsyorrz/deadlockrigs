@@ -38,8 +38,12 @@ tris = loops.reshape(-1, 3)
 # some skeletons name the eye bones eye_L/R (Wraith); keys.py reads them as eye_0_L/R
 ALIAS = {'eye_0_L': 'eye_L', 'eye_0_R': 'eye_R'}
 bones = {}
+# a rider's face (Mo's) hangs off its own head bone: face "bone", whose prefix the jaw and eye bones share
+HEAD = hero.face.get('bone', 'head')
+PREFIX = HEAD[:-len('head')]
 for b in ('head', 'jaw_0', 'eye_0_L', 'eye_0_R', 'neck_0'):
-    name = b if b in arm.pose.bones else ALIAS.get(b)
+    name = HEAD if b == 'head' else PREFIX + b
+    name = name if name in arm.pose.bones else ALIAS.get(b)
     if name and name in arm.pose.bones:
         bones[b] = np.array(arm.matrix_world @ arm.pose.bones[name].head)
 vmat = np.zeros(len(co), int)
@@ -138,7 +142,7 @@ for m in bpy.context.scene.objects:
     others.append(q[np.linalg.norm(q - bones['head'], axis=1) < 0.3])
 other = np.concatenate(others) if others else np.zeros((0, 3), np.float32)
 # skin weights of the head bone and the bones under it, for hand-made faces (handkeys.py) to select by
-under_head = {b.name for b in arm.data.bones['head'].children_recursive} | {'head'}
+under_head = {b.name for b in arm.data.bones[HEAD].children_recursive} | {HEAD}
 for b in under_head:
     bones.setdefault(b, np.array(arm.matrix_world @ arm.pose.bones[b].head))
 group_names = {g.index: g.name for g in o.vertex_groups if g.name in under_head}

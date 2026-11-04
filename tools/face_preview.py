@@ -29,7 +29,7 @@ bpy.ops.wm.open_mainfile(filepath=hero.base_blend)
 scene = bpy.context.scene
 head = bpy.data.objects[hero.face['mesh']]
 arm = next(o for o in scene.objects if o.type == 'ARMATURE')
-origin = arm.matrix_world @ arm.data.bones['head'].head_local
+origin = arm.matrix_world @ arm.data.bones[hero.face.get('bone', 'head')].head_local
 centre = origin + Vector(centre_mm) / 1000
 me = head.data
 n = len(me.vertices)

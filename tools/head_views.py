@@ -22,7 +22,7 @@ keyvals = dict((kv.split('=') + ['1'])[:2] for kv in argv[4].split(',')) if len(
 bpy.ops.wm.open_mainfile(filepath=src)
 scene = bpy.context.scene
 arm = next(o for o in scene.objects if o.type == 'ARMATURE')
-head = arm.matrix_world @ arm.pose.bones['head'].head
+head = arm.matrix_world @ arm.pose.bones[os.environ.get('HEAD', 'head')].head
 if size is None or off is None:
     # frame the skin the head bone and its children carry
     names = {b.name for b in arm.pose.bones['head'].children_recursive
