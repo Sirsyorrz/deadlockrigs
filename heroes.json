@@ -967,7 +967,29 @@
   "slug": "viscous",
   "name": "Viscous",
   "codename": "viscous",
-  "model": "models/heroes_staging/viscous/viscous.vmdl"
+  "model": "models/heroes_staging/viscous/viscous.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "viscous_head",
+     "viscous_eyes"
+    ],
+    "bones": [
+     "head"
+    ],
+    "mesh": "body"
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.072,
+    -0.25,
+    2.199
+   ],
+   "builder": "handkeys.py"
+  }
  },
  {
   "slug": "vyper",

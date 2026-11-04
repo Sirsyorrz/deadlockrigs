@@ -1,0 +1,576 @@
+{
+ "regions": {
+  "goo": {
+   "mat": "viscous_head"
+  },
+  "eye_Left": {
+   "all": [
+    {
+     "mat": "viscous_eyes"
+    },
+    {
+     "box": [
+      72,
+      -244,
+      65
+     ],
+     "size": [
+      50,
+      60,
+      65
+     ],
+     "soft": 0.1
+    }
+   ]
+  },
+  "eye_Right": {
+   "all": [
+    {
+     "mat": "viscous_eyes"
+    },
+    {
+     "box": [
+      -49,
+      -249,
+      72
+     ],
+     "size": [
+      59,
+      60,
+      80
+     ],
+     "soft": 0.1
+    }
+   ]
+  }
+ },
+ "keys": {
+  "eyeBlinkLeft": [
+   {
+    "scale": "eye_Left",
+    "about": [
+     72,
+     -244,
+     54.15
+    ],
+    "by": [
+     1.08,
+     1,
+     0.06
+    ]
+   }
+  ],
+  "eyeSquintLeft": [
+   {
+    "scale": "eye_Left",
+    "about": [
+     72,
+     -244,
+     54.15
+    ],
+    "by": [
+     1.04,
+     1,
+     0.55
+    ]
+   }
+  ],
+  "eyeWideLeft": [
+   {
+    "scale": "eye_Left",
+    "about": [
+     72,
+     -244,
+     65
+    ],
+    "by": [
+     1.12,
+     1,
+     1.25
+    ]
+   }
+  ],
+  "irisLargeLeft": [
+   {
+    "scale": "eye_Left",
+    "about": [
+     72,
+     -244,
+     65
+    ],
+    "by": [
+     1.25,
+     1,
+     1.25
+    ]
+   }
+  ],
+  "irisSmallLeft": [
+   {
+    "scale": "eye_Left",
+    "about": [
+     72,
+     -244,
+     65
+    ],
+    "by": [
+     0.78,
+     1,
+     0.78
+    ]
+   }
+  ],
+  "eyeLookUpLeft": [
+   {
+    "move": "eye_Left",
+    "by": [
+     0,
+     0,
+     16
+    ]
+   },
+   {
+    "push": "eye_Left",
+    "by": 2.0
+   }
+  ],
+  "eyeLookDownLeft": [
+   {
+    "move": "eye_Left",
+    "by": [
+     0,
+     0,
+     -16
+    ]
+   },
+   {
+    "push": "eye_Left",
+    "by": 2.0
+   }
+  ],
+  "eyeLookOutLeft": [
+   {
+    "move": "eye_Left",
+    "by": [
+     18,
+     0,
+     0
+    ]
+   },
+   {
+    "push": "eye_Left",
+    "by": 2.0
+   }
+  ],
+  "eyeLookInLeft": [
+   {
+    "move": "eye_Left",
+    "by": [
+     -18,
+     0,
+     0
+    ]
+   },
+   {
+    "push": "eye_Left",
+    "by": 2.0
+   }
+  ],
+  "browDownLeft": [
+   {
+    "turn": "eye_Left",
+    "about": [
+     72,
+     -244,
+     65
+    ],
+    "axis": [
+     0,
+     1,
+     0
+    ],
+    "deg": -14
+   },
+   {
+    "scale": "eye_Left",
+    "about": [
+     72,
+     -244,
+     54.15
+    ],
+    "by": [
+     1,
+     1,
+     0.85
+    ]
+   }
+  ],
+  "browOuterUpLeft": [
+   {
+    "turn": "eye_Left",
+    "about": [
+     72,
+     -244,
+     65
+    ],
+    "axis": [
+     0,
+     1,
+     0
+    ],
+    "deg": 10
+   }
+  ],
+  "cheekSquintLeft": [
+   {
+    "scale": "eye_Left",
+    "about": [
+     72,
+     -244,
+     96
+    ],
+    "by": [
+     1,
+     1,
+     0.8
+    ]
+   }
+  ],
+  "eyeBlinkRight": [
+   {
+    "scale": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     58.7
+    ],
+    "by": [
+     1.08,
+     1,
+     0.06
+    ]
+   }
+  ],
+  "eyeSquintRight": [
+   {
+    "scale": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     58.7
+    ],
+    "by": [
+     1.04,
+     1,
+     0.55
+    ]
+   }
+  ],
+  "eyeWideRight": [
+   {
+    "scale": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     72
+    ],
+    "by": [
+     1.12,
+     1,
+     1.25
+    ]
+   }
+  ],
+  "irisLargeRight": [
+   {
+    "scale": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     72
+    ],
+    "by": [
+     1.25,
+     1,
+     1.25
+    ]
+   }
+  ],
+  "irisSmallRight": [
+   {
+    "scale": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     72
+    ],
+    "by": [
+     0.78,
+     1,
+     0.78
+    ]
+   }
+  ],
+  "eyeLookUpRight": [
+   {
+    "move": "eye_Right",
+    "by": [
+     0,
+     0,
+     16
+    ]
+   },
+   {
+    "push": "eye_Right",
+    "by": 2.0
+   }
+  ],
+  "eyeLookDownRight": [
+   {
+    "move": "eye_Right",
+    "by": [
+     0,
+     0,
+     -16
+    ]
+   },
+   {
+    "push": "eye_Right",
+    "by": 2.0
+   }
+  ],
+  "eyeLookOutRight": [
+   {
+    "move": "eye_Right",
+    "by": [
+     -18,
+     0,
+     0
+    ]
+   },
+   {
+    "push": "eye_Right",
+    "by": 2.0
+   }
+  ],
+  "eyeLookInRight": [
+   {
+    "move": "eye_Right",
+    "by": [
+     18,
+     0,
+     0
+    ]
+   },
+   {
+    "push": "eye_Right",
+    "by": 2.0
+   }
+  ],
+  "browDownRight": [
+   {
+    "turn": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     72
+    ],
+    "axis": [
+     0,
+     1,
+     0
+    ],
+    "deg": 14
+   },
+   {
+    "scale": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     58.7
+    ],
+    "by": [
+     1,
+     1,
+     0.85
+    ]
+   }
+  ],
+  "browOuterUpRight": [
+   {
+    "turn": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     72
+    ],
+    "axis": [
+     0,
+     1,
+     0
+    ],
+    "deg": -10
+   }
+  ],
+  "cheekSquintRight": [
+   {
+    "scale": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     110
+    ],
+    "by": [
+     1,
+     1,
+     0.8
+    ]
+   }
+  ],
+  "browInnerUp": [
+   {
+    "turn": "eye_Left",
+    "about": [
+     72,
+     -244,
+     65
+    ],
+    "axis": [
+     0,
+     1,
+     0
+    ],
+    "deg": 12
+   },
+   {
+    "turn": "eye_Right",
+    "about": [
+     -49,
+     -249,
+     72
+    ],
+    "axis": [
+     0,
+     1,
+     0
+    ],
+    "deg": -12
+   }
+  ],
+  "jawOpen": [
+   {
+    "scale": {
+     "any": [
+      "goo",
+      "eye_Left",
+      "eye_Right"
+     ]
+    },
+    "about": [
+     0,
+     0,
+     300
+    ],
+    "by": [
+     0.97,
+     0.97,
+     1.08
+    ]
+   }
+  ],
+  "mouthClose": [
+   {
+    "scale": {
+     "any": [
+      "goo",
+      "eye_Left",
+      "eye_Right"
+     ]
+    },
+    "about": [
+     0,
+     0,
+     -60
+    ],
+    "by": [
+     1.04,
+     1.04,
+     0.94
+    ]
+   }
+  ]
+ },
+ "mid": [],
+ "controls": {
+  "snap": false,
+  "scale": 2.5,
+  "landmarks": {
+   "lid": [
+    72,
+    -290,
+    110
+   ],
+   "lidlow": [
+    72,
+    -290,
+    25
+   ],
+   "brow": [
+    80,
+    -290,
+    135
+   ],
+   "cheek": [
+    120,
+    -270,
+    0
+   ],
+   "corner": [
+    70,
+    -290,
+    -30
+   ],
+   "lipup": [
+    25,
+    -295,
+    -10
+   ],
+   "liplow": [
+    25,
+    -295,
+    -35
+   ],
+   "nose": [
+    20,
+    -300,
+    30
+   ]
+  },
+  "brow_mid": [
+   0,
+   -300,
+   120
+  ],
+  "mouth": [
+   0,
+   -300,
+   -20
+  ],
+  "jaw": [
+   0,
+   -290,
+   -70
+  ],
+  "eye_target": [
+   0,
+   -900,
+   68
+  ],
+  "eye_spacing": 60,
+  "face_box": [
+   0,
+   -300,
+   300
+  ]
+ }
+}
