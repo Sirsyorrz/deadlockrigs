@@ -50,7 +50,7 @@ def split_meshes(hero):
     after their heroes.json "split" key; build.py and dump.py split the same way, so vertex order matches.
     A split is a list of materials, or {"mats": [...], "bones": [...]} for a head that shares the body's material
     (Infernus'): the faces whose every vertex is mostly weighted to those bones or below them; "mesh" picks the
-    mesh by name when several share the material."""
+    mesh by name when several share the material; "near" + "r" keeps only the faces around a point."""
     import bpy
     for name, spec in hero.cfg.get('split', {}).items():
         mats = spec if isinstance(spec, list) else spec['mats']
@@ -72,8 +72,16 @@ def split_meshes(hero):
         for c in src.users_collection:
             c.objects.link(part)
 
+        near = None
+        if isinstance(spec, dict) and 'near' in spec:
+            # one piece of a shared material (Ivy's nose ring among her gear): faces within r (m) of near (world m)
+            from mathutils import Vector
+            near, reach = Vector(spec['near']), spec['r']
+            mw = src.matrix_world
+
         def mine(f):
-            return f.material_index in idx and (inside is None or all(inside[v.index] for v in f.verts))
+            return (f.material_index in idx and (inside is None or all(inside[v.index] for v in f.verts))
+                    and (near is None or (mw @ f.calc_center_median() - near).length < reach))
         # the piece shows with its mesh's bodygroup choices (rig.py)
         part['split_from'] = src.name
         keep_faces(part, mine)

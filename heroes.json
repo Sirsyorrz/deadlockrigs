@@ -470,13 +470,31 @@
     "bones": [
      "head"
     ]
+   },
+   "NoseRing": {
+    "mats": [
+     "ivy_gearv3"
+    ],
+    "mesh": "ivy",
+    "near": [
+     0,
+     -0.4945,
+     1.9475
+    ],
+    "r": 0.045
    }
   },
   "face": {
    "part": "Head",
    "mesh": "Head",
    "eyes": "vertcolor_pbr_basic",
-   "builder": "handkeys.py"
+   "builder": "handkeys.py",
+   "ride": [
+    "NoseRing"
+   ],
+   "pin": {
+    "NoseRing": "snout_1"
+   }
   }
  },
  {

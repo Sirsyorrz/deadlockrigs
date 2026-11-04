@@ -149,6 +149,17 @@ if hero.face:
             kb = ob.data.shape_keys.key_blocks.get(name) or ob.shape_key_add(name=name, from_mix=False)
             kb.data.foreach_set('co', (ob_base + off @ oinv.T).astype(np.float32).ravel())
         print('riding the lips:', ob.name, int(touch.sum()), 'head vertices')
+    # a prop on a face bone's skin (Ivy's nose ring on her snout, heroes.json face "pin": {part: bone}) goes wholly to
+    # that bone, which facerig.py adds to the rig
+    for part, bone in hero.face.get('pin', {}).items():
+        ob = bpy.data.objects.get(hero.rename.get(part, part))
+        if ob is None:
+            print('WARNING: no mesh', part, 'to pin')
+            continue
+        for g in list(ob.vertex_groups):
+            ob.vertex_groups.remove(g)
+        ob.vertex_groups.new(name=bone).add(range(len(ob.data.vertices)), 1.0, 'REPLACE')
+        print('pinned', ob.name, 'to', bone)
     # straps on the face (The Doorman's chinstrap, heroes.json face "follow": {mesh: [bones]}) take the keys of the
     # skin under them, fading out where they lift off it
     if hero.face.get('follow'):
