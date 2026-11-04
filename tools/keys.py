@@ -35,6 +35,9 @@ REF_SPACING = 0.088
 # jawOpen's turn and eyeBlink's lid fractions; the face bones' correctives are solved at the same
 JAW_DEG = 14
 BLINK_UPPER, BLINK_LOWER = 0.8, 0.2
+# painted eyes (Haze, Yamato: no eyeball, the eye is texture on the face skin): half width and half height of the
+# painted patch in metres, from heroes.json face "painted_eye" through head.npz; None for real eyes
+PAINTED = None
 
 
 def smoothstep(a, b, x):
@@ -191,7 +194,11 @@ class Rig:
         self.soft_w = comp == sizes.argmax()
 
         self.eye_c, self.eye_r = {}, {}
+        self.painted = PAINTED is not None
         for s in 'LR':
+            if self.painted:
+                self.eye_c[s], self.eye_r[s] = h.bones['eye_0_' + s].copy(), PAINTED[1]
+                continue
             q = h.co[h.ball[s]]
             c, r = sphere_fit(q)
             # glints and cornea shells sit off the sphere; refit on the main shell
@@ -227,7 +234,7 @@ class Rig:
         self.handles = {}
         self.lid_specs = {}
         self.sock = {}
-        self.margins = {s: self._margin(s) for s in 'LR'}
+        self.margins = {s: (self._painted_margin if self.painted else self._margin)(s) for s in 'LR'}
         self.face_w &= ~(self.sock['L'] | self.sock['R'])
         self._jaw_weights()
         self._lid_weights()
@@ -641,6 +648,36 @@ class Rig:
         return {'upper': upper, 'lower': lower, 'up_chain': chain(hits[up_h]), 'lo_chain': chain(hits[~up_h]),
                 'x_in': pi[0], 'x_out': po[0], 'phi': phi}
 
+    def _painted_patch(self, side):
+        """Per welded vertex: radius in the painted eye's ellipse (front view), 1 on its edge."""
+        p, c = self.h.wco, self.eye_c[side]
+        rho = np.hypot((p[:, 0] - c[0]) / PAINTED[0], (p[:, 2] - c[2]) / PAINTED[1])
+        # only the face's front: not the back of the head behind the eye
+        return np.where(self.soft_w & (p[:, 1] < c[1] + 0.03 * self.s), rho, np.inf)
+
+    def _painted_margin(self, side):
+        """The painted eye's rim, upper and lower half, standing in for the lid margins (lash cards anchor there)."""
+        self.sock[side] = np.zeros(self.nw, bool)
+        rho = self._painted_patch(side)
+        rim = np.where((rho > 0.8) & (rho < 1.1))[0]
+        up = self.h.wco[rim, 2] >= self.eye_c[side][2]
+        return {'upper': rim[up], 'lower': rim[~up]}
+
+    def _painted_move(self, side, upper_frac=0.0, lower_frac=0.0, upper_deg=0.0, lower_deg=0.0):
+        """Painted lids: the patch squashes onto a line (closing) or stretches (opening), fading out around it."""
+        p, c = self.h.wco, self.eye_c[side]
+        rz = PAINTED[1]
+        w = 1 - smoothstep(1.0, 1.9, self._painted_patch(side))
+        off = np.zeros_like(p)
+        shut = upper_frac + lower_frac
+        if shut > 0:
+            # where the lids meet: low for a blink (the upper lid does most), higher for a squint
+            zm = c[2] + rz * np.clip((lower_frac - upper_frac) / shut, -1, 1)
+            off[:, 2] += (zm - p[:, 2]) * min(shut, 1.0) * w
+        above = p[:, 2] >= c[2]
+        off[:, 2] += np.where(above, upper_deg, lower_deg) / 36 * rz * w
+        return off
+
     def margin_phis(self, side, x):
         m = self.margins[side]
         xu, pu = m['up_chain']
@@ -655,6 +692,8 @@ class Rig:
     def _lid_weights(self):
         h, s = self.h, self.s
         self.lid = {}
+        if self.painted:
+            return
         for side in 'LR':
             m = self.margins[side]
             du = fg.geodesic(h, m['upper'], limit=0.04 * s)
@@ -688,6 +727,8 @@ class Rig:
         """Offsets (welded) for lid rotations; see lid_angles. With key, the lid cards follow too."""
         if key:
             self.lid_specs.setdefault(key, []).append((side, amounts))
+        if self.painted:
+            return self._painted_move(side, **amounts)
         p = self.h.wco
         lw = self.lid[side]
         c, r = self.eye_c[side], self.eye_r[side]
@@ -998,6 +1039,9 @@ def eye_turn(q, piv, pitch, yaw):
 
 def eye_keys(h, rig):
     out = {}
+    if rig.painted:
+        # nothing to turn: a painted eye can't look
+        return out
     for s, name, sx in (('L', 'Left', 1), ('R', 'Right', -1)):
         ball = h.ball[s]
         piv = h.bones['eye_0_' + s]
@@ -1286,7 +1330,7 @@ def attach(h, rig, keys, cards=None):
         # through)
         for side, amounts in rig.lid_specs.get(name, []):
             closing = {k: v for k, v in amounts.items() if k.endswith('_frac')}
-            if not closing:
+            if not closing or rig.painted:
                 continue
             dw -= rig.lid_move(side, **closing)
             sel = lid_card & ((h.co[:, 0] > 0) == (side == 'L'))
@@ -1328,7 +1372,7 @@ def controls(rig):
     }
     chin = rig.face_w & (np.abs(p[:, 0]) < 0.01 * s) & (p[:, 2] < lz - 0.02 * s) & (p[:, 2] > lz - 0.06 * s)
     top = p[rig.soft_w, 2].max()
-    return {
+    out = {
         'landmarks': lm,
         'brow_mid': at(0, ez + 0.033 * s, 0.011),
         'mouth': at(0, lz, 0.028),
@@ -1337,6 +1381,10 @@ def controls(rig):
         'eye_spacing': round(float(c[0]), 4),
         'face_box': [0, round(float(rig.front_y(0, ez) + 0.019), 4), round(float(top + 0.126 * s), 4)],
     }
+    if rig.painted:
+        # no eye controls: painted eyes have no look keys
+        del out['eye_target'], out['eye_spacing']
+    return out
 
 
 def cut_lips(d, h, rig):
@@ -1483,6 +1531,8 @@ def add_bag(d, h, rig, rings=10):
 
 if __name__ == '__main__':
     arrays = dict(np.load(sys.argv[1]))
+    if 'painted_eye' in arrays:
+        PAINTED = tuple(float(v) for v in arrays.pop('painted_eye'))
     h = fg.from_arrays(arrays)
     n_head = len(h.co)
     bag_mesh = None

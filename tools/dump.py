@@ -110,6 +110,9 @@ if not (balls['ball_L'].any() and balls['ball_R'].any()):
     print('eyeballs found by shape:', int(balls['ball_L'].sum()), int(balls['ball_R'].sum()))
     if isinstance(hero.face.get('eyes'), list):
         for s in 'LR':
+            if not balls['ball_' + s].any():
+                # painted eyes (Haze, Yamato): no eyeball, the given point stays the eye
+                continue
             q = co[balls['ball_' + s]]
             a = np.c_[2 * q, np.ones(len(q))]
             fit = np.linalg.lstsq(a, (q ** 2).sum(1), rcond=None)[0]
@@ -151,6 +154,7 @@ for v in me.vertices:
     for e in v.groups:
         if e.group in group_names and e.weight > 0:
             weights.setdefault('w_' + group_names[e.group], np.zeros(n, np.float32))[v.index] = e.weight
-np.savez(os.path.join(hero.data, 'head.npz'), co=co, nrm=nrm.reshape(-1, 3), tris=tris, mats=mats, matnames=np.array([m.name for m in me.materials]),
+extra = {'painted_eye': np.array(hero.face['painted_eye'], float)} if 'painted_eye' in hero.face else {}
+np.savez(os.path.join(hero.data, 'head.npz'), **extra, co=co, nrm=nrm.reshape(-1, 3), tris=tris, mats=mats, matnames=np.array([m.name for m in me.materials]),
          other=other, **{'bone_' + k: v for k, v in bones.items()}, **balls, **weights)
 print('dumped', n, len(tris), 'other', len(other))

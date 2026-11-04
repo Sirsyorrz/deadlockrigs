@@ -349,7 +349,25 @@
   "slug": "haze",
   "name": "Haze",
   "codename": "haze",
-  "model": "models/heroes_staging/haze/haze.vmdl"
+  "model": "models/heroes_staging/haze/haze.vmdl",
+  "split": {
+   "Head": [
+    "hazev2_head"
+   ]
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.04,
+    -0.129,
+    2.14
+   ],
+   "painted_eye": [
+    0.021,
+    0.0085
+   ]
+  }
  },
  {
   "slug": "holliday",
