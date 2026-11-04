@@ -652,7 +652,11 @@ class DLRIG_OT_switch_parent(bpy.types.Operator):
         m = pb.matrix.copy()
         ob[prop] = self.index
         update(context)
-        pb.matrix = m
+        if pb.constraints:
+            # pb.matrix = m ignores constraints (the weapon's hold), but they only put a matrix in front of the keys
+            pb.matrix_basis = pb.matrix_basis @ pb.matrix.inverted() @ m
+        else:
+            pb.matrix = m
         update(context)
         if key:
             ob.keyframe_insert(f'["{prop}"]', group='Parents')
@@ -1488,6 +1492,7 @@ class DLRIG_PT_body(bpy.types.Panel):
             col.separator()
             floats = not ob.get('weapon_anchor', 'hand_').startswith('hand_')
             col.prop(ob, '["weapon_hold"]', text='Weapon follows body' if floats else 'Weapon in hand', slider=True)
+            parent_row(col, ob, 'weaponPivot', 'Weapon')
         if 'mech_ik' in ob:
             col.separator()
             col.prop(ob, '["mech_ik"]', text='Leg controls', slider=True)
@@ -1648,6 +1653,53 @@ class DLRIG_PT_expressions(bpy.types.Panel):
         self.layout.label(text='Shift-click adds to the current face', icon='INFO')
 
 
+class DLRIG_PT_parts(bpy.types.Panel):
+    """The game's bodygroups: which meshes show (props, ammo, alternate arms)"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = CATEGORY
+    bl_label = 'Parts'
+    bl_parent_id = 'DLRIG_PT_main'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = rig(context)
+        return ob is not None and bool(ob.get('body_groups'))
+
+    def draw(self, context):
+        ob = rig(context)
+        col = self.layout.column(align=True)
+        for g, choices in ob['body_groups'].items():
+            prop = f'bodygroup_{g}'
+            row = col.row(align=True)
+            label = g.replace('_', ' ').capitalize()
+            if list(choices) == ['off', 'on']:
+                row.label(text=label)
+                for i, c in enumerate(choices):
+                    op = row.operator('dlrig.body_group', text=c.capitalize(), depress=ob[prop] == i)
+                    op.group, op.index = g, i
+            else:
+                row.prop(ob, f'["{prop}"]', text=f'{label}: {choices[ob[prop]].replace("_", " ")}')
+
+
+class DLRIG_OT_body_group(bpy.types.Operator):
+    """Show this bodygroup choice"""
+    bl_idname = 'dlrig.body_group'
+    bl_label = 'Body Group'
+    bl_options = {'REGISTER', 'UNDO'}
+    group: bpy.props.StringProperty()
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        ob = rig(context)
+        ob[f'bodygroup_{self.group}'] = self.index
+        ob.update_tag()
+        if autokey(context):
+            ob.keyframe_insert(f'["bodygroup_{self.group}"]', group='Parts')
+        return {'FINISHED'}
+
+
 class DLRIG_PT_hands(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -1703,8 +1755,9 @@ def make_group_panel(title):
 classes = [DLRIG_OT_expression, DLRIG_OT_reset_face, DLRIG_OT_key_face, DLRIG_OT_hand, DLRIG_OT_reset_pose,
            DLRIG_OT_snap, DLRIG_OT_mech_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
            DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
-           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_PT_main, DLRIG_PT_body, DLRIG_PT_ik, DLRIG_PT_follow,
-           DLRIG_PT_game, DLRIG_PT_physics, DLRIG_PT_expressions, DLRIG_PT_hands]
+           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_OT_body_group, DLRIG_PT_main, DLRIG_PT_body,
+           DLRIG_PT_ik, DLRIG_PT_follow, DLRIG_PT_game, DLRIG_PT_physics, DLRIG_PT_expressions, DLRIG_PT_hands,
+           DLRIG_PT_parts]
 # a panel per slider group of any rig in the file; the add-on runs this again after appending another rig
 classes += [make_group_panel(t) for t in dict.fromkeys(g for ob in rigs() for g in rig_data(ob).get('GROUPS', {}))]
 

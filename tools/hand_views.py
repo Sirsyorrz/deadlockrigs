@@ -18,6 +18,13 @@ slug = os.path.basename(bpy.data.filepath)[:-len('_rig.blend')]
 POSES, REPORTS = hands.hand_poses(arm, meshes, Hero(slug).cfg.get('hands'))
 for r in REPORTS:
     print('THUMB', r)
+# poses only the build has (the Weapon grip, sampled from the clips) come from the rig's panel data
+ui = arm.get('dlrig_ui')
+if ui is not None:
+    for line in ui.as_string().splitlines():
+        if line.startswith('HAND_POSES = '):
+            POSES = {**eval(line[len('HAND_POSES = '):]), **POSES}
+            break
 bpy.context.view_layer.objects.active = arm
 # only the hand shows: every mesh masked to the skin the hand and fingers carry
 for body in meshes:

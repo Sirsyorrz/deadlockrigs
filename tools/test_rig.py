@@ -189,7 +189,7 @@ if 'prop_chain' in arm:
 
 # a held weapon stays in the hand when the arm moves, and game clips switch the hold off
 if 'weapon_hold' in arm:
-    hand = pb['weaponPivot'].constraints['Weapon hold'].subtarget
+    hand = arm['weapon_anchor']
     reset()
     bpy.ops.dlrig.reset_pose()
     arm['weapon_hold'] = 1.0
@@ -204,6 +204,30 @@ if 'weapon_hold' in arm:
     update()
     moved = (pb[hand].matrix.inverted() @ pb['weapon'].matrix).translation - rel.translation
     check(f'weapon follows {hand}', moved.length < 0.0005, f'{moved.length * 1000:.3f} mm')
+    opts = arm.get('parent_options', {}).get('weaponPivot', [])
+    if 'Chest' in opts:
+        # on the chest it stays put when the hand moves, and switching there doesn't move it
+        was = pb['weapon'].matrix.copy()
+        bpy.ops.dlrig.switch_parent(bone='weaponPivot', index=opts.index('Chest'))
+        jump = (pb['weapon'].matrix.translation - was.translation).length
+        pb[hand].parent.rotation_quaternion = Quaternion((1, 0, 0), 0.2)
+        update()
+        drift = (pb['weapon'].matrix.translation - was.translation).length
+        check('weapon parent switch to chest', jump < 0.0005 and drift < 0.0005,
+              f'jump {jump * 1000:.3f} mm, moved with the arm {drift * 1000:.3f} mm')
+        arm['weaponPivot_parent'] = 0
+    other = f'IK_hand_{"L" if hand.endswith("R") else "R"}'
+    if 'Weapon' in arm.get('parent_options', {}).get(other, []):
+        # the free hand's IK control can ride the weapon
+        reset()
+        bpy.ops.dlrig.reset_pose()
+        bpy.ops.dlrig.switch_parent(bone=other, index=list(arm['parent_options'][other]).index('Weapon'))
+        rel = pb['weapon'].matrix.inverted() @ pb[other].matrix
+        pb[hand].parent.rotation_quaternion = Quaternion((1, 0, 0), 0.4)
+        update()
+        moved = ((pb['weapon'].matrix.inverted() @ pb[other].matrix).translation - rel.translation).length
+        check(f'{other} rides the weapon', moved < 0.0005, f'{moved * 1000:.3f} mm')
+        arm[other + '_parent'] = 0
     reset()
     if IDLE:
         bpy.ops.dlrig.game_anim(clip=IDLE, mode='NEW')
@@ -475,7 +499,8 @@ for bone, opts in arm.get('parent_options', {}).items():
     bpy.ops.dlrig.switch_parent(bone=bone, index=last)
     update()
     jump = (pb[bone].matrix.translation - before.translation).length
-    target = pb['MCH-parent_' + bone].constraints['Parent'].targets[last].subtarget
+    mch = 'MCH-weapon_space' if bone == 'weaponPivot' else 'MCH-parent_' + bone
+    target = pb[mch].constraints['Parent'].targets[last].subtarget
     pb[target].location.z += 0.05 if target not in ('torso',) else 0.0
     if target == 'torso':
         pb[target].location.y += 0.05
@@ -873,6 +898,28 @@ if 'FACE' in pb:
         check('eye control looks and sizes one iris', ok,
               f'look {kbs["eyeLookUpLeft"].value:.2f}/{kbs["eyeLookUpRight"].value:.2f} iris {iris:.2f}')
         reset()
+
+# bodygroups: every group switches meshes (two choices can show the same: Violet's reload and lift both hold the jar),
+# and going back restores the default
+if arm.get('body_groups'):
+    def shown():
+        return frozenset(o.name for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewport
+                         and not o.name.startswith('WGT-'))
+    update()
+    default = shown()
+    same = {}
+    for g, choices in arm['body_groups'].items():
+        seen = {}
+        for i in range(len(choices)):
+            arm[f'bodygroup_{g}'] = i
+            update()
+            seen.setdefault(shown(), []).append(choices[i])
+        arm[f'bodygroup_{g}'] = 0
+        if len(seen) < 2:
+            same[g] = list(choices)
+    update()
+    check('bodygroups switch meshes', not same and shown() == default,
+          f'{len(arm["body_groups"])} groups, {len(default)} meshes shown, no effect {same}')
 
 # the bone face (facerig.py): the skin is where it was at rest, every face bone moves it, and the tweak controls ride
 # the skin through the shape keys

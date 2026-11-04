@@ -2,7 +2,7 @@
 
 Renders the rig as the viewport shows it: shaded meshes with the visible bone widgets drawn over them in their bone
 colours (widgets only draw in the viewport, so they are rebuilt as tubes). For review sheets of the controls.
-views: front, side, back, 34, below, top (comma list, one image each, joined side by side)
+views: front, side, back, 34, below, top, rside, r34 (comma list, one image each, joined side by side)
 centre_mm / size_mm: frame, mm from the head bone; collections: bone collections to draw (comma list, default the
 ones shown); pose.py: a script run first with `arm` and `pb` set, to pose the rig, or defining POSES
 (label -> function) for a row per pose (COLS=n lays the rows out n wide); hide: 1 to leave the widgets out.
@@ -33,6 +33,8 @@ scene = bpy.context.scene
 arm = next(o for o in scene.objects if o.type == 'ARMATURE' and 'dlrig' in o)
 pb = arm.pose.bones
 POSES = {'': None}
+# the rig's switches (IK/FK, parents, bodygroups) as built, restored before each pose
+SWITCHES = {k: arm[k] for k in arm.keys() if isinstance(arm[k], (int, float)) and not isinstance(arm[k], bool)}
 if pose_script:
     ns = {'arm': arm, 'pb': pb, 'bpy': bpy, 'Vector': Vector, 'math': math}
     exec(open(pose_script).read(), ns)
@@ -120,7 +122,8 @@ cam.data.type = 'ORTHO'
 cam.data.ortho_scale = size
 cam.data.clip_end = 50
 DIRS = {'front': Vector((0, -1, 0)), 'side': Vector((1, 0, 0)), 'back': Vector((0, 1, 0)),
-        '34': Vector((0.7, -1, 0.25)), 'below': Vector((0.3, -1, -0.8)), 'top': Vector((0.2, -0.6, 1))}
+        '34': Vector((0.7, -1, 0.25)), 'below': Vector((0.3, -1, -0.8)), 'top': Vector((0.2, -0.6, 1)),
+        'rside': Vector((-1, 0, 0)), 'r34': Vector((-0.7, -1, 0.25))}
 
 
 def reset():
@@ -129,10 +132,17 @@ def reset():
         p.rotation_quaternion = (1, 0, 0, 0)
         p.rotation_euler = (0, 0, 0)
         p.scale = (1, 1, 1)
+    for n, v in arm.get('prop_pose', {}).items():
+        v = list(v)
+        pb[n].location, pb[n].rotation_quaternion, pb[n].scale = v[0:3], v[3:7], v[7:10]
     if 'FACE' in pb:
         for k in pb['FACE'].keys():
             if isinstance(pb['FACE'][k], float):
                 pb['FACE'][k] = 0.0
+    for k, v in SWITCHES.items():
+        arm[k] = v
+    arm.update_tag()
+    bpy.context.view_layer.update()
 
 
 rows = []

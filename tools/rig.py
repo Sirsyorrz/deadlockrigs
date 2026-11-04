@@ -28,6 +28,7 @@ import bpy
 from mathutils import Matrix, Quaternion, Vector
 
 sys.path.insert(0, os.path.dirname(__file__))
+import bodygroups  # noqa: E402
 from expressions import ARKIT, EXPRESSIONS, GROUPS, VISEMES  # noqa: E402
 import facerig  # noqa: E402
 import hands  # noqa: E402
@@ -307,12 +308,15 @@ def weighted_points(bones):
 # weapon_hold, which game clips turn off since they place the weapon themselves)
 WEAPON_CLIPS = ('game_primary_stand_idle', 'game_weapon_stand_idle') + HOLD_CLIPS
 WEAPON_HOLD = None
+# the idle's fingers on the weapon, a "Weapon" hand pose: side -> bone -> quaternion
+WEAPON_FINGERS = {}
+HAND_BONES = [b.name for b in B if re.match(r'(hand|finger_\w+)_[LR]$', b.name)]
 if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('weaponPivot') for p in PROPS):
     held = descendants('weaponPivot')
     grips = [b for b in held if re.match(r'weapon_?hand_[LR](_|$)', b, re.I)]
     gun = weighted_points(set(held))
     if grips and len(gun) > 50:
-        basis, idle = sample_hold('weapon', held + ['pelvis'] * ('pelvis' in B), WEAPON_CLIPS)
+        basis, idle = sample_hold('weapon', held + ['pelvis'] * ('pelvis' in B) + HAND_BONES, WEAPON_CLIPS)
         if basis is not None:
             gun = gun[::max(1, len(gun) // 400)]
             to_clip = idle['weapon'] @ rest['weapon'].inverted()
@@ -322,7 +326,8 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
             print(f'weapon grip {grip} is {near[grip]:.3f} m from the weapon in the idle')
             # Rem's small hand holds his tray 0.12 m from the wrist, so only giants scale the reach
             parts = {b: v for b, v in basis.items() if b in held and b not in ('weaponPivot', 'weapon')}
-            if near[grip] < 0.2 * max(1.0, B['head'].head_local.z / 2.094 if 'head' in B else 1.0):
+            giant = max(1.0, B['head'].head_local.z / 2.094 if 'head' in B else 1.0)
+            if near[grip] < 0.2 * giant:
                 # the parts (hammer, cylinder) take the idle's pose; the weapon itself only moves through the hold,
                 # so with it off the weapon is back at the origin
                 PROP_POSE.update(parts)
@@ -330,6 +335,13 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
                 if HAVE_CLIPS:
                     for v in RIGDATA['hold']['weapon'].values():
                         v.pop('pelvis', None)
+                # the grip hand's fingers as the idle has them; rigdata saved before fingers were sampled has none
+                rots = {b: tuple(round(x, 6) for x in v[3:7]) for b, v in basis.items()
+                        if b.startswith('finger_') and b.endswith('_' + hand[-1])}
+                if rots:
+                    WEAPON_FINGERS[hand[-1]] = rots
+                    # and the hand holds it by default (the reset pose keeps the grip, like the weapon's parts)
+                    PROP_POSE.update({b: v for b, v in basis.items() if b in rots})
             elif 'pelvis' in idle:
                 # no hand on it (Solomon's board hovers in front of him): it rides the pelvis, which keeps the
                 # idle's offset best across his clips
@@ -580,6 +592,9 @@ for s, (lname, limb, a, b_, c, ik_name, _dist) in LIMBS:
     elif lname.endswith('arm'):
         head = 'head' if 'head' in eb else None
         PARENTS[ctrl] = [('Root', ROOT), ('Torso', BODY), ('Chest', CHEST_BONE), ('Head', head)]
+        if WEAPON_HOLD and WEAPON_HOLD[0].startswith('hand_') and WEAPON_HOLD[0] != f'hand_{s}':
+            # the free hand can hold the weapon too (the grip hand can't: the weapon follows it)
+            PARENTS[ctrl].append(('Weapon', 'weapon'))
         PARENTS[pole] = [('Root', ROOT), ('Torso', BODY), ('Chest', CHEST_BONE)]
     else:
         PARENTS[ctrl] = [('Root', ROOT), ('Torso', BODY)]
@@ -590,6 +605,15 @@ PARENTS = {k: v for k, v in PARENTS.items() if len(v) > 1}
 for ctrl in PARENTS:
     m = new_bone('MCH-parent_' + ctrl, None, None, None, copy=ctrl)
     eb[ctrl].parent = m
+# the weapon's hold follows MCH-weapon_space, which has the hand's rest and follows the hand, chest or root (the
+# weaponPivot_parent switch); the off hand can't be a choice, it may follow the weapon
+WEAPON_PARENTS = []
+if WEAPON_HOLD:
+    WEAPON_PARENTS = [('Hand' if WEAPON_HOLD[0].startswith('hand_') else 'Body', WEAPON_HOLD[0]),
+                      ('Chest', CHEST_BONE), ('Root', ROOT)]
+    WEAPON_PARENTS = [o for i, o in enumerate(WEAPON_PARENTS)
+                      if o[1] and o[1] not in [b for _, b in WEAPON_PARENTS[:i]]]
+    new_bone('MCH-weapon_space', None, None, None, copy=WEAPON_HOLD[0])
 
 # Twist bones, as the game's AnimConstraintTiltTwist: (twist bone, weight, bone whose twist is read,
 # frame bone, limb start, limb end). TW-ref rides the frame bone along the limb, TW-src the source bone
@@ -1699,11 +1723,22 @@ if WEAPON_HOLD:
     what = 'in the hand' if hand.startswith('hand_') else 'with the body'
     arm.id_properties_ui('weapon_hold').update(min=0, max=1, soft_min=0, soft_max=1,
                                                description=f'Keep the weapon {what} (game clips place it themselves)')
+    space = arm.pose.bones['MCH-weapon_space'].constraints.new('ARMATURE')
+    space.name = 'Parent'
+    prop = 'weaponPivot_parent'
+    arm[prop] = 0
+    arm.id_properties_ui(prop).update(min=0, max=len(WEAPON_PARENTS) - 1,
+                                      description=' / '.join(lbl for lbl, _ in WEAPON_PARENTS))
+    for i, (_lbl, b) in enumerate(WEAPON_PARENTS):
+        t = space.targets.new()
+        t.target, t.subtarget = arm, b
+        expr_driver(t, 'weight', None, f'p == {i}', props=[('p', f'["{prop}"]')])
+    arm['parent_options'] = {**arm['parent_options'].to_dict(), 'weaponPivot': [lbl for lbl, _ in WEAPON_PARENTS]}
     c = pivot.constraints.new('CHILD_OF')
     c.name = 'Weapon hold'
     c.target = arm
-    c.subtarget = hand
-    # the hand takes the grip bone's place
+    # MCH-weapon_space is the hand at rest, and the hand takes the grip bone's place
+    c.subtarget = 'MCH-weapon_space'
     weapon_in_pivot = rest['weaponPivot'].inverted() @ rest['weapon']
     c.inverse_matrix = grip_idle.inverted() @ weapon_idle @ weapon_in_pivot.inverted() @ pivot.matrix.inverted()
     influence_driver(c, 'weapon_hold')
@@ -1810,6 +1845,65 @@ HAND_POSES, reports = hands.hand_poses(arm, [o for o in bpy.data.objects if o.ty
                                       hero.cfg.get('hands'))
 for r in reports:
     print('hand', *r)
+if WEAPON_FINGERS:
+    HAND_POSES['Weapon'] = WEAPON_FINGERS
+
+# bodygroups: the game's mesh switches (Rat King's banner and sewer lid, his gun's ammo, his guard rats) as
+# bodygroup_<group> properties, 0 the game's default. A mesh shows when each group that lists it has it in its choice.
+BODY_GROUPS = bodygroups.body_groups(open(hero.vmdl).read()) if os.path.exists(hero.vmdl) else []
+# a group whose choices differ only in meshes the build drops (Violet's jar) switches nothing
+HAVE_MESHES = {o.name for o in bpy.data.objects if o.type == 'MESH'}
+BODY_GROUPS = [(g, ch) for g, ch in BODY_GROUPS
+               if len({frozenset(hero.rename.get(m, m) for m in ms) & HAVE_MESHES for _c, ms in ch}) > 1]
+arm['body_groups'] = {g: [c for c, _ in choices] for g, choices in BODY_GROUPS}
+for gi, (g, choices) in enumerate(BODY_GROUPS):
+    arm[f'bodygroup_{g}'] = 0
+    arm.id_properties_ui(f'bodygroup_{g}').update(min=0, max=len(choices) - 1,
+                                                  description=' / '.join(c for c, _ in choices))
+
+
+def group_terms(name):
+    terms, props = [], []
+    for gi, (g, choices) in enumerate(BODY_GROUPS):
+        has = [i for i, (_c, meshes) in enumerate(choices) if name in [hero.rename.get(m, m) for m in meshes]]
+        if not has or len(has) == len(choices):
+            continue
+        terms.append('(' + ' + '.join(f'(g{gi} == {i})' for i in has) + ')')
+        props.append((f'g{gi}', f'["bodygroup_{g}"]'))
+    return terms, props
+
+
+def on_weapon(o):
+    """Mostly skinned to the weapon's bones (its ammo belts)?"""
+    if 'weaponPivot' not in B:
+        return False
+    gun = {g.index for g in o.vertex_groups if g.name in set(descendants('weaponPivot'))}
+    if not gun:
+        return False
+    w = [sum(g.weight for g in v.groups if g.group in gun) for v in o.data.vertices]
+    return sum(w) > 0.5 * len(w)
+
+
+# the gun's mesh, the biggest on its bones: its other pieces hide with it (Rat King's ammo belts float without it)
+GUN_MESH = None
+if BODY_GROUPS:
+    guns = [o for o in bpy.data.objects if o.type == 'MESH' and not o.name.startswith('WGT-') and on_weapon(o)]
+    gun = max(guns, key=lambda o: len(o.data.vertices), default=None)
+    GUN_MESH = gun.name if gun and group_terms(gun.name)[0] else None
+for o in bpy.data.objects:
+    if o.type != 'MESH' or o.name.startswith('WGT-'):
+        continue
+    terms, props = group_terms(o.get('split_from', o.name))
+    if GUN_MESH and o.name != GUN_MESH and on_weapon(o):
+        more, more_props = group_terms(GUN_MESH)
+        terms += more
+        props += [p for p in more_props if p not in props]
+    if not terms:
+        continue
+    o.hide_set(False)
+    for path in ('hide_viewport', 'hide_render'):
+        expr_driver(o, path, None, '1 - ' + ' * '.join(terms), props=props)
+    print('bodygroup', o.name, ' * '.join(terms))
 
 # pose assets
 

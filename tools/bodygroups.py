@@ -18,6 +18,19 @@ def mesh_parts(vmdl_text):
     return {m: m in default_on or m not in listed for m in meshes}
 
 
+def body_groups(vmdl_text):
+    """[(group, [(choice, meshes)])] for the bodygroups with a choice to make, LODs left out."""
+    out = []
+    groups = vmdl_text[vmdl_text.find('"BodyGroupList"'):]
+    group_rx = r'_class = "BodyGroup"\s*name = "([^"]+)"(.*?)(?=_class = "BodyGroup"\s*name|\Z)'
+    for g in re.finditer(group_rx, groups, re.S):
+        choices = re.findall(r'_class = "BodyGroupChoice"\s*name = "([^"]*)"\s*meshes =\s*\[(.*?)\]', g.group(2), re.S)
+        choices = [(c, [m for m in re.findall(r'"([^"]+)"', ms) if not re.search(r'_lod\d+$', m)]) for c, ms in choices]
+        if len(choices) > 1:
+            out.append((g.group(1), choices))
+    return out
+
+
 def keep_faces(o, keep):
     """Deletes the faces keep(face) rejects, and the vertices left with none."""
     import bmesh
@@ -61,6 +74,8 @@ def split_meshes(hero):
 
         def mine(f):
             return f.material_index in idx and (inside is None or all(inside[v.index] for v in f.verts))
+        # the piece shows with its mesh's bodygroup choices (rig.py)
+        part['split_from'] = src.name
         keep_faces(part, mine)
         keep_faces(src, lambda f: not mine(f))
         print('split', name, 'from', src.name, len(part.data.vertices), 'vertices')
