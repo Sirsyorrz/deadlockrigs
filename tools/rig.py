@@ -310,7 +310,7 @@ WEAPON_CLIPS = ('game_primary_stand_idle', 'game_weapon_stand_idle') + HOLD_CLIP
 WEAPON_HOLD = None
 # the idle's fingers on the weapon, a "Weapon" hand pose: side -> bone -> quaternion
 WEAPON_FINGERS = {}
-HAND_BONES = [b.name for b in B if re.match(r'(hand|finger_\w+)_[LR]$', b.name)]
+HAND_BONES = [b.name for b in B if re.match(r'(hand|finger_\w+|weapon_(target_)?hand)_[LR]$', b.name)]
 if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('weaponPivot') for p in PROPS):
     held = descendants('weaponPivot')
     grips = [b for b in held if re.match(r'weapon_?hand_[LR](_|$)', b, re.I)]
@@ -331,7 +331,21 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
                 # the parts (hammer, cylinder) take the idle's pose; the weapon itself only moves through the hold,
                 # so with it off the weapon is back at the origin
                 PROP_POSE.update(parts)
-                WEAPON_HOLD = (hand, idle[grip], idle['weapon'])
+                # the game IKs either the hand or its grip socket (weapon_hand_R, under hand_R) onto the weapon's
+                # grip bone: Rat King's socket sits in his palm 0.5 m from the wrist, Abrams' elsewhere. Of the two,
+                # the one closing the fingers on the weapon wins
+                hand_at = idle[grip]
+                socket = f'weapon_hand_{hand[-1]}'
+                fingers = [b for b in HAND_BONES if b.startswith('finger_') and b.endswith(hand[-1]) and b in idle]
+                if socket in B and B[socket].parent and B[socket].parent.name == hand and hand in idle and fingers:
+                    def off_gun(at):
+                        moved = [at @ idle[hand].inverted() @ idle[f].translation for f in fingers]
+                        return sum(min((to_clip @ p - q).length for p in gun) for q in moved) / len(moved)
+                    alt = idle[grip] @ (idle[hand].inverted() @ idle[socket]).inverted()
+                    print(f'weapon hold: hand on the grip {off_gun(hand_at):.3f} m, socket on it {off_gun(alt):.3f} m')
+                    if off_gun(alt) < off_gun(hand_at):
+                        hand_at = alt
+                WEAPON_HOLD = (hand, hand_at, idle['weapon'])
                 if HAVE_CLIPS:
                     for v in RIGDATA['hold']['weapon'].values():
                         v.pop('pelvis', None)
@@ -1737,7 +1751,7 @@ if WEAPON_HOLD:
     c = pivot.constraints.new('CHILD_OF')
     c.name = 'Weapon hold'
     c.target = arm
-    # MCH-weapon_space is the hand at rest, and the hand takes the grip bone's place
+    # MCH-weapon_space is the hand at rest, and the hand goes where its socket meets the grip
     c.subtarget = 'MCH-weapon_space'
     weapon_in_pivot = rest['weaponPivot'].inverted() @ rest['weapon']
     c.inverse_matrix = grip_idle.inverted() @ weapon_idle @ weapon_in_pivot.inverted() @ pivot.matrix.inverted()
