@@ -7,6 +7,8 @@ same weight, so the rest pose is unchanged. Boxes and pivots are in mm from the 
 
     "mech_parts": {"jaw": {"bone": "head", "boxes": [[x0, y0, z0, x1, y1, z1]], "head": [x, y, z],
                            "tail": [x, y, z]}}
+
+"mesh" limits a part to one mesh (Paradox's hourglass, not the glass around it); "limits" see pose().
 """
 import math
 
@@ -78,7 +80,7 @@ def weights(parts, arm):
             found, w = pieces(o, bone, to_arm)
             src = o.vertex_groups[bone]
             for name, p in parts.items():
-                if p['bone'] != bone:
+                if p['bone'] != bone or p.get('mesh', o.name) != o.name:
                     continue
                 take = [comp for comp, c in found if any(np.all(c >= b[0]) and np.all(c <= b[1]) for b in p['boxes'])]
                 if not take:

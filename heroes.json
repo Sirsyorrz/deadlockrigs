@@ -547,7 +547,33 @@
   "slug": "paradox",
   "name": "Paradox",
   "codename": "chrono",
-  "model": "models/heroes_staging/chrono/chrono.vmdl"
+  "model": "models/heroes_staging/chrono/chrono.vmdl",
+  "mech_parts": {
+   "hourglass": {
+    "bone": "head",
+    "boxes": [
+     [
+      -40,
+      -55,
+      -40,
+      40,
+      25,
+      145
+     ]
+    ],
+    "head": [
+     0,
+     -15,
+     52
+    ],
+    "tail": [
+     0,
+     -15,
+     170
+    ],
+    "mesh": "headhourglass"
+   }
+  }
  },
  {
   "slug": "pocket",
