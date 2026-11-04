@@ -15,7 +15,7 @@ Each hero gets a rig with:
 - hand poses
 - weapons held in hand by default (the `weapon_hold` property; loading a game clip switches it off); Solomon's board
   floats with his body instead
-- an FK jaw (and eyes) for heroes without a face rig whose jaw is skinned (Deadman Danny, Rat King, Vyper)
+- an FK jaw (and eyes) for heroes without a face rig whose jaw is skinned (Deadman Danny, Vyper)
 - face shape keys, controls and expressions for the heroes listed under [Faces](#faces)
 
 NPCs are in the list too, under NPCs: the Guardian, Walker, Base Guardian, Mid-boss, Hidden King, Archmother and the
@@ -120,6 +120,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Abrams, McGinnis | yes (from the game's face bones) |
 | Apollo, Calico, Celeste, Drifter, Graves, Grey Talon, Holliday, Infernus, Kelvin, Lady Geist, Mina, Mirage, Nurse Harrow, Paige, Pocket, Silver, Solomon, The Doorman, Venator, Vindicta, Violet | yes |
 | Billy, Rem, Victor | yes (from the game's face morphs) |
+| Rat King | yes (hand-made) |
 | everyone else | not yet |
 
 ![Violet's expressions](docs/faces_violet.png)

@@ -368,7 +368,25 @@
   "slug": "rat_king",
   "name": "Rat King",
   "codename": "ratking",
-  "model": "models/heroes_wip/ratking/ratking.vmdl"
+  "model": "models/heroes_wip/ratking/ratking.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "ratking_head",
+     "ratking_eyes",
+     "ratking_whiskers"
+    ],
+    "bones": [
+     "head"
+    ]
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": "ratking_eyes",
+   "builder": "handkeys.py"
+  }
  },
  {
   "slug": "rem",
