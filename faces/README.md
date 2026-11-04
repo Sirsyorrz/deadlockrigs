@@ -26,6 +26,7 @@ Weights 0..1 per vertex, by name in `"regions"` or inline:
 | `{"pieces_near": region}` | whole separate pieces reaching into a region |
 | `{"all": [...]}`, `{"any": [...]}`, `{"not": r}` | product, max, 1 - r |
 | `{"times": k, "of": r}`, `{"smooth": n, "of": r}` | scaled; averaged over neighbours n times |
+| `{"ramp": [lo, hi], "of": r}` | 0 where r is below lo, 1 above hi (a hold along the split from the body: the head bones' weight ramping from 0.5) |
 | `{"harmonic": {"one": r, "zero": r}}` | smooth 1 to 0 across the skin between two regions |
 
 ## keys
@@ -70,6 +71,7 @@ the rest pose is unchanged.
 | `"tweaks": {name: {"at": p, "parent": bone, "r": mm, "soft": mm, "mask": region, "field": region, "main": true, "size": mm}}` | a control on the skin at `at` (snapped into `mask`), weighted `r` along the skin fading over `soft`, or by `field`; `main` ones carry the tweaks under them |
 | `"reparent": {"nose_0": "snout_1"}` | game bones that ride a chain |
 | `"show": ["ear_0_{s}"]` | game bones shown with the face bones |
+| `"rigid": region` | separate pieces in it (teeth) move whole, on their mean weights |
 | `"scale"` | widget size, 1 = Violet's face |
 
 `at` can also be `{"lid": "{s}", "t": 0..1, "part": "upper"|"lower"}`, a point on a lid's margin from the inner

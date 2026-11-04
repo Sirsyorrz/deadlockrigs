@@ -41,7 +41,7 @@ if pose_script:
     # a script with POSES (label -> function posing the rig) renders a row per pose
     POSES = ns.get('POSES', POSES)
 bpy.context.view_layer.update()
-origin = arm.matrix_world @ arm.data.bones['head'].head_local
+origin = arm.matrix_world @ (arm.data.bones['head'].head_local if 'head' in arm.data.bones else Vector())
 centre = origin + Vector(centre_mm) / 1000
 
 colls = arm.data.collections_all

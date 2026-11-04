@@ -836,7 +836,27 @@
   "slug": "vyper",
   "name": "Vyper",
   "codename": "viper",
-  "model": "models/heroes_staging/viper/viper.vmdl"
+  "model": "models/heroes_staging/viper/viper.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "viper_body"
+    ],
+    "bones": [
+     "head"
+    ]
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.08,
+    -0.44,
+    2.441
+   ],
+   "builder": "handkeys.py"
+  }
  },
  {
   "slug": "warden",

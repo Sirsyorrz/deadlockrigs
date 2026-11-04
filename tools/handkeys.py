@@ -240,6 +240,9 @@ class Face:
             return 1 - self.region(r['not'], side, mirror)
         if 'times' in r:
             return self.region(r['of'], side, mirror) * r['times']
+        if 'ramp' in r:
+            lo, hi = r['ramp']
+            return smoothstep(lo, hi, self.region(r['of'], side, mirror))
         if 'smooth' in r:
             w = self.region(r['of'], side, mirror).copy()
             for _ in range(r['smooth']):

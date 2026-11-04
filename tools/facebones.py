@@ -204,6 +204,15 @@ class FaceBones:
             if 'pieces' in c:
                 self.pieces(tmpl, c)
         W = self.weights()
+        if 'rigid' in rig:
+            # separate pieces (teeth) take their mean weights and move whole instead of bending with the gum
+            on = (self.f.region(rig['rigid']) > 0.5)[self.h.weld]
+            comp = self.f.comp[self.h.weld]
+            for k in np.unique(comp[on]):
+                m = comp == k
+                for w in W.values():
+                    if np.ndim(w):
+                        w[m] = w[m].mean()
         origin = self.f.origin
         out = {'bones': [], 'reparent': {}, 'show': [], 'scale': rig.get('scale', 1.0)}
         for n in self.order:

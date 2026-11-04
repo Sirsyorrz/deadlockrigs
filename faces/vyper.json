@@ -1,0 +1,1116 @@
+{
+ "eyes": {
+  "gaze": [
+   0.45,
+   -0.88,
+   0.12
+  ],
+  "lid_axis": [
+   0.85,
+   0.35,
+   0.4
+  ],
+  "up": 14,
+  "down": 14,
+  "in": 16,
+  "out": 16
+ },
+ "regions": {
+  "jaw": {
+   "bone": "jaw_0"
+  },
+  "tongue": {
+   "bone": [
+    "tongue_0",
+    "tongue_1",
+    "tongue_2"
+   ]
+  },
+  "lid_up_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "sphere": "eye_{s}",
+     "r": 26,
+     "soft": 16
+    },
+    {
+     "lid": "{s}",
+     "part": "upper"
+    }
+   ]
+  },
+  "lid_lo_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "sphere": "eye_{s}",
+     "r": 26,
+     "soft": 16
+    },
+    {
+     "lid": "{s}",
+     "part": "lower"
+    }
+   ]
+  },
+  "brow_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "box": [
+      82,
+      -92,
+      92
+     ],
+     "size": [
+      45,
+      45,
+      20
+     ],
+     "soft": 1.2
+    },
+    {
+     "not": "lid_lo_{s}"
+    }
+   ]
+  },
+  "brow_in_{s}": {
+   "all": [
+    "brow_{s}",
+    {
+     "half": [
+      72,
+      -92,
+      0
+     ],
+     "n": [
+      -1,
+      -0.6,
+      0
+     ],
+     "soft": 50
+    }
+   ]
+  },
+  "brow_out_{s}": {
+   "all": [
+    "brow_{s}",
+    {
+     "half": [
+      72,
+      -92,
+      0
+     ],
+     "n": [
+      1,
+      0.6,
+      0
+     ],
+     "soft": 50
+    }
+   ]
+  },
+  "cheek_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "not": "jaw"
+    },
+    {
+     "box": [
+      105,
+      -50,
+      10
+     ],
+     "size": [
+      35,
+      45,
+      30
+     ],
+     "soft": 1.2
+    }
+   ]
+  },
+  "corner_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "geo": [
+      98,
+      -72,
+      -45
+     ],
+     "r": 18,
+     "soft": 50
+    }
+   ]
+  },
+  "lip_up_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "not": "jaw"
+    },
+    {
+     "box": [
+      55,
+      -140,
+      -40
+     ],
+     "size": [
+      40,
+      110,
+      18
+     ],
+     "soft": 1
+    }
+   ]
+  },
+  "lip_lo_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    "jaw",
+    {
+     "box": [
+      55,
+      -130,
+      -62
+     ],
+     "size": [
+      40,
+      100,
+      18
+     ],
+     "soft": 1
+    }
+   ]
+  },
+  "snout_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "not": "jaw"
+    },
+    {
+     "box": [
+      30,
+      -190,
+      30
+     ],
+     "size": [
+      40,
+      60,
+      40
+     ],
+     "soft": 1
+    }
+   ]
+  },
+  "nostril_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "geo": [
+      18,
+      -220,
+      5
+     ],
+     "r": 10,
+     "soft": 18
+    }
+   ]
+  },
+  "mouth_back_up_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "not": "jaw"
+    },
+    {
+     "geo": [
+      90,
+      -95,
+      -38
+     ],
+     "r": 30,
+     "soft": 60
+    }
+   ]
+  },
+  "mouth_back_lo_{s}": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    "jaw",
+    {
+     "geo": [
+      88,
+      -95,
+      -55
+     ],
+     "r": 30,
+     "soft": 55
+    }
+   ]
+  },
+  "upper_skin": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    {
+     "not": "jaw"
+    }
+   ]
+  },
+  "lower_skin": {
+   "all": [
+    {
+     "piece": "skin"
+    },
+    "jaw"
+   ]
+  },
+  "jaw_move": {
+   "smooth": 3,
+   "of": "jaw"
+  },
+  "seam": {
+   "not": {
+    "ramp": [
+     0.85,
+     1.0
+    ],
+    "of": {
+     "bone": [
+      "head",
+      "jaw_0",
+      "head_end",
+      "jaw_end",
+      "tongue_0",
+      "tongue_1",
+      "tongue_2"
+     ]
+    }
+   }
+  }
+ },
+ "keys": {
+  "jawOpen": [
+   {
+    "turn": "jaw_move",
+    "about": "jaw_0",
+    "axis": [
+     1,
+     0,
+     0
+    ],
+    "deg": 26
+   }
+  ],
+  "mouthClose": [
+   {
+    "turn": "jaw_move",
+    "about": "jaw_0",
+    "axis": [
+     1,
+     0,
+     0
+    ],
+    "deg": -5
+   }
+  ],
+  "jawForward": [
+   {
+    "move": "jaw_move",
+    "by": [
+     0,
+     -14,
+     0
+    ]
+   }
+  ],
+  "jawLeft": [
+   {
+    "turn": "jaw_move",
+    "about": "jaw_0",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "deg": 6
+   }
+  ],
+  "jawRight": [
+   {
+    "turn": "jaw_move",
+    "about": "jaw_0",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "deg": -6
+   }
+  ],
+  "eyeBlink{S}": [
+   {
+    "lid": "lid_up_{s}",
+    "eye": "{s}",
+    "close": 1.1
+   },
+   {
+    "lid": "lid_lo_{s}",
+    "eye": "{s}",
+    "close": 0.45,
+    "part": "lower"
+   }
+  ],
+  "eyeWide{S}": [
+   {
+    "turn": "lid_up_{s}",
+    "about": "eye_{s}",
+    "axis": "lid_{s}",
+    "deg": -14
+   },
+   {
+    "turn": "lid_lo_{s}",
+    "about": "eye_{s}",
+    "axis": "lid_{s}",
+    "deg": 8
+   }
+  ],
+  "eyeSquint{S}": [
+   {
+    "lid": "lid_lo_{s}",
+    "eye": "{s}",
+    "close": 0.35,
+    "part": "lower"
+   },
+   {
+    "lid": "lid_up_{s}",
+    "eye": "{s}",
+    "close": 0.1
+   },
+   {
+    "move": "cheek_{s}",
+    "by": [
+     0,
+     0,
+     6
+    ]
+   }
+  ],
+  "browDown{S}": [
+   {
+    "move": "brow_{s}",
+    "by": [
+     -3,
+     -5,
+     -12
+    ]
+   },
+   {
+    "lid": "lid_up_{s}",
+    "eye": "{s}",
+    "close": 0.15
+   }
+  ],
+  "browInnerUp": [
+   {
+    "move": "brow_in_{s}",
+    "by": [
+     0,
+     -2,
+     18
+    ],
+    "sym": true
+   }
+  ],
+  "browOuterUp{S}": [
+   {
+    "move": "brow_out_{s}",
+    "by": [
+     0,
+     0,
+     14
+    ]
+   }
+  ],
+  "cheekSquint{S}": [
+   {
+    "move": "cheek_{s}",
+    "by": [
+     0,
+     0,
+     8
+    ]
+   },
+   {
+    "lid": "lid_lo_{s}",
+    "eye": "{s}",
+    "close": 0.15,
+    "part": "lower"
+   }
+  ],
+  "cheekPuff": [
+   {
+    "move": "cheek_{s}",
+    "by": [
+     12,
+     0,
+     0
+    ],
+    "sym": true
+   },
+   {
+    "move": "corner_{s}",
+    "by": [
+     6,
+     0,
+     0
+    ],
+    "sym": true
+   }
+  ],
+  "noseSneer{S}": [
+   {
+    "move": "nostril_{s}",
+    "by": [
+     3,
+     0,
+     8
+    ]
+   },
+   {
+    "move": "snout_{s}",
+    "by": [
+     2,
+     0,
+     6
+    ]
+   },
+   {
+    "move": "lip_up_{s}",
+    "by": [
+     0,
+     0,
+     6
+    ]
+   }
+  ],
+  "mouthSmile{S}": [
+   {
+    "move": "corner_{s}",
+    "by": [
+     8,
+     18,
+     26
+    ]
+   },
+   {
+    "move": "mouth_back_up_{s}",
+    "by": [
+     3,
+     8,
+     14
+    ]
+   },
+   {
+    "move": "mouth_back_lo_{s}",
+    "by": [
+     2,
+     6,
+     10
+    ]
+   },
+   {
+    "move": "cheek_{s}",
+    "by": [
+     3,
+     4,
+     10
+    ]
+   }
+  ],
+  "mouthFrown{S}": [
+   {
+    "move": "corner_{s}",
+    "by": [
+     2,
+     -2,
+     -18
+    ]
+   },
+   {
+    "move": "mouth_back_up_{s}",
+    "by": [
+     0,
+     0,
+     -9
+    ]
+   },
+   {
+    "move": "mouth_back_lo_{s}",
+    "by": [
+     1,
+     0,
+     -5
+    ]
+   }
+  ],
+  "mouthStretch{S}": [
+   {
+    "move": "corner_{s}",
+    "by": [
+     10,
+     6,
+     -4
+    ]
+   }
+  ],
+  "mouthUpperUp{S}": [
+   {
+    "move": "lip_up_{s}",
+    "by": [
+     0,
+     0,
+     12
+    ]
+   }
+  ],
+  "mouthLowerDown{S}": [
+   {
+    "move": "lip_lo_{s}",
+    "by": [
+     0,
+     0,
+     -12
+    ]
+   }
+  ],
+  "mouthPress{S}": [
+   {
+    "move": "lip_up_{s}",
+    "by": [
+     0,
+     0,
+     -3
+    ]
+   },
+   {
+    "move": "lip_lo_{s}",
+    "by": [
+     0,
+     0,
+     3
+    ]
+   }
+  ],
+  "tongueOut": [
+   {
+    "move": "tongue",
+    "by": [
+     0,
+     -170,
+     -10
+    ]
+   }
+  ]
+ },
+ "mid": [
+  "jawOpen"
+ ],
+ "controls": {
+  "snap": false,
+  "scale": 1.8,
+  "landmarks": {
+   "lid": [
+    92,
+    -100,
+    88
+   ],
+   "lidlow": [
+    92,
+    -100,
+    40
+   ],
+   "brow": [
+    90,
+    -95,
+    112
+   ],
+   "cheek": [
+    125,
+    -60,
+    10
+   ],
+   "corner": [
+    118,
+    -70,
+    -45
+   ],
+   "lipup": [
+    62,
+    -170,
+    -30
+   ],
+   "liplow": [
+    58,
+    -150,
+    -80
+   ],
+   "nose": [
+    30,
+    -235,
+    10
+   ]
+  },
+  "brow_mid": [
+   0,
+   -150,
+   95
+  ],
+  "mouth": [
+   0,
+   -260,
+   -45
+  ],
+  "jaw": [
+   0,
+   -200,
+   -130
+  ],
+  "eye_target": [
+   0,
+   -700,
+   63
+  ],
+  "eye_spacing": 76,
+  "face_box": [
+   0,
+   -250,
+   220
+  ]
+ },
+ "hold": "seam",
+ "rig": {
+  "chains": {
+   "snout_{i}": {
+    "points": [
+     [
+      0,
+      -95,
+      40
+     ],
+     [
+      0,
+      -160,
+      30
+     ],
+     [
+      0,
+      -228,
+      5
+     ]
+    ],
+    "parent": "head",
+    "blend": 40,
+    "mask": {
+     "all": [
+      {
+       "not": {
+        "piece": "balls"
+       }
+      },
+      {
+       "not": {
+        "ramp": [
+         0.02,
+         0.3
+        ],
+        "of": "jaw"
+       }
+      }
+     ]
+    },
+    "size": 22
+   }
+  },
+  "tweaks": {
+   "snout_top_0": {
+    "at": [
+     0,
+     -110,
+     74
+    ],
+    "parent": "snout_0",
+    "r": 25,
+    "soft": 35,
+    "main": true,
+    "size": 8
+   },
+   "snout_top_1": {
+    "at": [
+     0,
+     -180,
+     55
+    ],
+    "parent": "snout_1",
+    "r": 22,
+    "soft": 30,
+    "main": true,
+    "size": 8
+   },
+   "snout_side_{s}": {
+    "at": [
+     55,
+     -150,
+     40
+    ],
+    "parent": "snout_0",
+    "r": 20,
+    "soft": 30,
+    "size": 6
+   },
+   "nostril_{s}": {
+    "at": [
+     18,
+     -220,
+     5
+    ],
+    "parent": "snout_1",
+    "r": 10,
+    "soft": 18,
+    "size": 4
+   },
+   "corner_{s}": {
+    "at": [
+     98,
+     -72,
+     -45
+    ],
+    "parent": "head",
+    "r": 18,
+    "soft": 40,
+    "main": true,
+    "size": 8
+   },
+   "lip_up_{s}": {
+    "at": [
+     70,
+     -150,
+     -32
+    ],
+    "parent": "snout_0",
+    "r": 40,
+    "main": true,
+    "size": 9,
+    "mask": "upper_skin",
+    "field": "lip_up_{s}"
+   },
+   "lip_up_1_{s}": {
+    "at": [
+     88,
+     -115,
+     -32
+    ],
+    "parent": "lip_up_{s}",
+    "r": 15,
+    "soft": 25,
+    "size": 4,
+    "mask": "upper_skin"
+   },
+   "lip_up_2_{s}": {
+    "at": [
+     65,
+     -165,
+     -28
+    ],
+    "parent": "lip_up_{s}",
+    "r": 15,
+    "soft": 25,
+    "size": 4,
+    "mask": "upper_skin"
+   },
+   "lip_up_3_{s}": {
+    "at": [
+     32,
+     -212,
+     -22
+    ],
+    "parent": "lip_up_{s}",
+    "r": 15,
+    "soft": 25,
+    "size": 4,
+    "mask": "upper_skin"
+   },
+   "chin": {
+    "at": [
+     0,
+     -170,
+     -100
+    ],
+    "parent": "jaw_0",
+    "r": 35,
+    "soft": 40,
+    "main": true,
+    "size": 9,
+    "mask": "lower_skin"
+   },
+   "lip_lo_{s}": {
+    "at": [
+     55,
+     -145,
+     -62
+    ],
+    "parent": "jaw_0",
+    "r": 40,
+    "main": true,
+    "size": 9,
+    "mask": "lower_skin",
+    "field": "lip_lo_{s}"
+   },
+   "lip_lo_1_{s}": {
+    "at": [
+     78,
+     -105,
+     -50
+    ],
+    "parent": "lip_lo_{s}",
+    "r": 15,
+    "soft": 25,
+    "size": 4,
+    "mask": "lower_skin"
+   },
+   "lip_lo_2_{s}": {
+    "at": [
+     40,
+     -190,
+     -68
+    ],
+    "parent": "lip_lo_{s}",
+    "r": 15,
+    "soft": 25,
+    "size": 4,
+    "mask": "lower_skin"
+   },
+   "cheek_{s}": {
+    "at": [
+     115,
+     -55,
+     10
+    ],
+    "parent": "head",
+    "r": 25,
+    "soft": 35,
+    "main": true,
+    "size": 9
+   },
+   "brow_{s}": {
+    "at": [
+     82,
+     -92,
+     100
+    ],
+    "parent": "head",
+    "mask": "brow_{s}",
+    "main": true,
+    "size": 9,
+    "field": {
+     "sphere": [
+      82,
+      -92,
+      100
+     ],
+     "r": 25,
+     "soft": 30
+    }
+   },
+   "brow_0_{s}": {
+    "at": [
+     55,
+     -105,
+     95
+    ],
+    "parent": "brow_{s}",
+    "mask": "brow_{s}",
+    "size": 4,
+    "field": {
+     "sphere": [
+      55,
+      -105,
+      95
+     ],
+     "r": 9,
+     "soft": 18
+    }
+   },
+   "brow_1_{s}": {
+    "at": [
+     85,
+     -92,
+     102
+    ],
+    "parent": "brow_{s}",
+    "mask": "brow_{s}",
+    "size": 4,
+    "field": {
+     "sphere": [
+      85,
+      -92,
+      102
+     ],
+     "r": 9,
+     "soft": 18
+    }
+   },
+   "brow_2_{s}": {
+    "at": [
+     112,
+     -75,
+     98
+    ],
+    "parent": "brow_{s}",
+    "mask": "brow_{s}",
+    "size": 4,
+    "field": {
+     "sphere": [
+      112,
+      -75,
+      98
+     ],
+     "r": 9,
+     "soft": 18
+    }
+   },
+   "lid_up_{s}": {
+    "at": {
+     "lid": "{s}",
+     "t": 0.5,
+     "part": "upper"
+    },
+    "parent": "head",
+    "mask": "lid_up_{s}",
+    "size": 4,
+    "main": true,
+    "field": "lid_up_{s}"
+   },
+   "lid_up_0_{s}": {
+    "at": {
+     "lid": "{s}",
+     "t": 0.2,
+     "part": "upper"
+    },
+    "parent": "lid_up_{s}",
+    "mask": "lid_up_{s}",
+    "size": 2.5,
+    "r": 6,
+    "soft": 11
+   },
+   "lid_up_1_{s}": {
+    "at": {
+     "lid": "{s}",
+     "t": 0.5,
+     "part": "upper"
+    },
+    "parent": "lid_up_{s}",
+    "mask": "lid_up_{s}",
+    "size": 2.5,
+    "r": 6,
+    "soft": 11
+   },
+   "lid_up_2_{s}": {
+    "at": {
+     "lid": "{s}",
+     "t": 0.8,
+     "part": "upper"
+    },
+    "parent": "lid_up_{s}",
+    "mask": "lid_up_{s}",
+    "size": 2.5,
+    "r": 6,
+    "soft": 11
+   },
+   "lid_lo_{s}": {
+    "at": {
+     "lid": "{s}",
+     "t": 0.5,
+     "part": "lower"
+    },
+    "parent": "head",
+    "mask": "lid_lo_{s}",
+    "size": 4,
+    "main": true,
+    "field": "lid_lo_{s}"
+   },
+   "lid_lo_0_{s}": {
+    "at": {
+     "lid": "{s}",
+     "t": 0.3,
+     "part": "lower"
+    },
+    "parent": "lid_lo_{s}",
+    "mask": "lid_lo_{s}",
+    "size": 2.5,
+    "r": 6,
+    "soft": 11
+   },
+   "lid_lo_1_{s}": {
+    "at": {
+     "lid": "{s}",
+     "t": 0.7,
+     "part": "lower"
+    },
+    "parent": "lid_lo_{s}",
+    "mask": "lid_lo_{s}",
+    "size": 2.5,
+    "r": 6,
+    "soft": 11
+   }
+  },
+  "show": [],
+  "scale": 1.8,
+  "rigid": {
+   "all": [
+    {
+     "piece": "other"
+    },
+    {
+     "not": {
+      "pieces_near": {
+       "ramp": [
+        0.05,
+        0.2
+       ],
+       "of": "tongue"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

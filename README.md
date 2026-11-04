@@ -15,7 +15,7 @@ Each hero gets a rig with:
 - hand poses
 - weapons held in hand by default (the `weapon_hold` property; loading a game clip switches it off); Solomon's board
   floats with his body instead
-- an FK jaw (and eyes) for heroes without a face rig whose jaw is skinned (Deadman Danny, Vyper)
+- an FK jaw (and eyes) for heroes without a face rig whose jaw is skinned (Deadman Danny)
 - a Parts panel with the game's mesh switches (Rat King's banner, ammo and guard rats, Bebop's arm as hand, gun or
   forearm), sliders for animated parts (Bebop's gun folding open and its hyperbeam mode) and extra models the hero
   uses (Bebop's fired hook hand and sticky bomb), each with its own control
@@ -124,7 +124,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Abrams, McGinnis | yes (from the game's face bones) |
 | Apollo, Calico, Celeste, Drifter, Graves, Grey Talon, Holliday, Infernus, Kelvin, Lady Geist, Mina, Mirage, Nurse Harrow, Paige, Pocket, Silver, Solomon, The Doorman, Venator, Vindicta, Violet | yes |
 | Billy, Rem, Victor | yes (from the game's face morphs) |
-| Rat King | yes (hand-made) |
+| Rat King, Vyper | yes (hand-made, with a bone face) |
 | everyone else | not yet |
 
 ![Violet's expressions](docs/faces_violet.png)
