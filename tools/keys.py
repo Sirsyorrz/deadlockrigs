@@ -35,8 +35,9 @@ REF_SPACING = 0.088
 # jawOpen's turn and eyeBlink's lid fractions; the face bones' correctives are solved at the same
 JAW_DEG = 14
 BLINK_UPPER, BLINK_LOWER = 0.8, 0.2
-# painted eyes (Haze, Yamato: no eyeball, the eye is texture on the face skin): half width and half height of the
-# painted patch in metres, from heroes.json face "painted_eye" through head.npz; None for real eyes
+# painted eyes (Haze, Yamato: the eye is texture on the face skin, any eyeball is hidden inside the head): the left
+# patch's half width and half height, centre x and z (metres) and tilt (degrees, outer corner up), from heroes.json
+# face "painted_eye" through head.npz; None for real eyes
 PAINTED = None
 
 
@@ -197,7 +198,9 @@ class Rig:
         self.painted = PAINTED is not None
         for s in 'LR':
             if self.painted:
-                self.eye_c[s], self.eye_r[s] = h.bones['eye_0_' + s].copy(), PAINTED[1]
+                c = h.bones['eye_0_' + s].copy()
+                c[0], c[2] = PAINTED[2] * (1 if s == 'L' else -1), PAINTED[3]
+                self.eye_c[s], self.eye_r[s] = c, PAINTED[1]
                 continue
             q = h.co[h.ball[s]]
             c, r = sphere_fit(q)
@@ -648,34 +651,49 @@ class Rig:
         return {'upper': upper, 'lower': lower, 'up_chain': chain(hits[up_h]), 'lo_chain': chain(hits[~up_h]),
                 'x_in': pi[0], 'x_out': po[0], 'phi': phi}
 
+    def _painted_axes(self, side):
+        """The painted eye's long axis and the one across it, in (x, z) of the front view."""
+        t, sx = np.radians(PAINTED[4]), 1 if side == 'L' else -1
+        return np.array((sx * np.cos(t), np.sin(t))), np.array((-sx * np.sin(t), np.cos(t)))
+
+    def _painted_uv(self, side):
+        p, c = self.h.wco, self.eye_c[side]
+        along, across = self._painted_axes(side)
+        d = np.c_[p[:, 0] - c[0], p[:, 2] - c[2]]
+        return d @ along, d @ across
+
     def _painted_patch(self, side):
         """Per welded vertex: radius in the painted eye's ellipse (front view), 1 on its edge."""
-        p, c = self.h.wco, self.eye_c[side]
-        rho = np.hypot((p[:, 0] - c[0]) / PAINTED[0], (p[:, 2] - c[2]) / PAINTED[1])
-        # only the face's front: not the back of the head behind the eye
-        return np.where(self.soft_w & (p[:, 1] < c[1] + 0.03 * self.s), rho, np.inf)
+        u, v = self._painted_uv(side)
+        rho = np.hypot(u / PAINTED[0], v / PAINTED[1])
+        # only the face's front skin: not the back of the head behind the eye
+        on = self.soft_w & (self.h.wco[:, 1] < self.eye_c[side][1] + 0.03 * self.s)
+        return np.where(on, rho, np.inf)
 
     def _painted_margin(self, side):
         """The painted eye's rim, upper and lower half, standing in for the lid margins (lash cards anchor there)."""
         self.sock[side] = np.zeros(self.nw, bool)
         rho = self._painted_patch(side)
         rim = np.where((rho > 0.8) & (rho < 1.1))[0]
-        up = self.h.wco[rim, 2] >= self.eye_c[side][2]
+        up = self._painted_uv(side)[1][rim] >= 0
         return {'upper': rim[up], 'lower': rim[~up]}
 
     def _painted_move(self, side, upper_frac=0.0, lower_frac=0.0, upper_deg=0.0, lower_deg=0.0):
         """Painted lids: the patch squashes onto a line (closing) or stretches (opening), fading out around it."""
-        p, c = self.h.wco, self.eye_c[side]
-        rz = PAINTED[1]
+        p = self.h.wco
+        rv = PAINTED[1]
+        _, across = self._painted_axes(side)
+        _, v = self._painted_uv(side)
         w = 1 - smoothstep(1.0, 1.9, self._painted_patch(side))
-        off = np.zeros_like(p)
+        dv = np.zeros(len(p))
         shut = upper_frac + lower_frac
         if shut > 0:
             # where the lids meet: low for a blink (the upper lid does most), higher for a squint
-            zm = c[2] + rz * np.clip((lower_frac - upper_frac) / shut, -1, 1)
-            off[:, 2] += (zm - p[:, 2]) * min(shut, 1.0) * w
-        above = p[:, 2] >= c[2]
-        off[:, 2] += np.where(above, upper_deg, lower_deg) / 36 * rz * w
+            vm = rv * np.clip((lower_frac - upper_frac) / shut, -1, 1)
+            dv += (vm - v) * min(shut, 1.0) * w
+        dv += np.where(v >= 0, upper_deg, lower_deg) / 36 * rv * w
+        off = np.zeros_like(p)
+        off[:, 0], off[:, 2] = dv * across[0], dv * across[1]
         return off
 
     def margin_phis(self, side, x):
@@ -996,7 +1014,8 @@ def build(h: fg.Head) -> tuple:
     out = {k: v[h.weld] for k, v in keys.items()}
     out.update(eye_keys(h, rig))
     for side, name in (('L', 'Left'), ('R', 'Right')):
-        out['eyeBlink' + name] += glint_sink(h, rig, side)
+        if not rig.painted:
+            out['eyeBlink' + name] += glint_sink(h, rig, side)
     attach(h, rig, out)
     return out, rig
 
@@ -1579,7 +1598,8 @@ if __name__ == '__main__':
     attach(h, rig, lips)
     for k in sorted(lips):
         print('%-20s max %.1f mm' % (k, np.linalg.norm(lips[k], axis=1).max() * 1000))
-    if np.linalg.norm(lips[TONGUE_JAW], axis=1).max() < 0.0005 * rig.s:
+    # below what test_rig counts as a key (0.5 mm)
+    if np.linalg.norm(lips[TONGUE_JAW], axis=1).max() < 0.0005:
         del lips[TONGUE_JAW]
     keys.update(lips)
     tk = tongue_keys(rig, tco, tw, tu, keys)

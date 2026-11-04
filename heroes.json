@@ -365,7 +365,10 @@
    ],
    "painted_eye": [
     0.021,
-    0.0085
+    0.0085,
+    0.04,
+    2.14,
+    12
    ]
   }
  },
@@ -956,7 +959,34 @@
   "slug": "yamato",
   "name": "Yamato",
   "codename": "yamato",
-  "model": "models/heroes_staging/yamato_v2/yamato.vmdl"
+  "model": "models/heroes_staging/yamato_v2/yamato.vmdl",
+  "split": {
+   "Head": {
+    "mats": [
+     "yamato_shape"
+    ],
+    "bones": [
+     "head"
+    ],
+    "mesh": "yamato_model"
+   }
+  },
+  "face": {
+   "part": "Head",
+   "mesh": "Head",
+   "eyes": [
+    0.035,
+    -0.1,
+    2.56
+   ],
+   "painted_eye": [
+    0.017,
+    0.0065,
+    0.031,
+    2.547,
+    35
+   ]
+  }
  },
  {
   "slug": "guardian",
