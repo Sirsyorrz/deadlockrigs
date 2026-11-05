@@ -130,7 +130,7 @@ build problem, turn on "Keep build files" in the add-on settings and include the
 | Baba | the rider yes (her eyes sit behind opaque lenses); the pigeon no |
 | Ivy, Rat King, Vyper | yes (hand-made, with a bone face) |
 | Viscous | yes (hand-made: his painted eyes blink, squint, widen, look and tilt; the goo squashes and stretches) |
-| Haze, Lash, Shiv, Warden, Wraith, Yamato | yes (painted eyes: the lids squash the paint, no eye look) |
+| Haze, Lash, Shiv, Warden, Wraith, Yamato | yes (painted eyes: the lids squash the paint, the iris slides to look) |
 | Bebop, Paradox | parts instead (Bebop's jaw, monocle and switches; Paradox's hourglass) |
 | Deadman Danny | jaw only (his skull is behind goggles) |
 | Dynamo, Seven, Sinclair | no (a cylinder head with glasses; a helmet; a blank mask) |

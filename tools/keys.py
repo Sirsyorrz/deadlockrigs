@@ -1089,11 +1089,41 @@ def eye_turn(q, piv, pitch, yaw):
     return rot_axis(q, piv, np.array((0, 0, 1.0)), n * np.radians(yaw))
 
 
+def painted_look(h, rig):
+    """Painted eyes look by sliding the inside of the patch (the iris) across it over the face's surface, the rim
+    staying put so the white bunches up on the side it looks to; the lids follow vertical gaze like real ones."""
+    out = {}
+    p = rig.h.wco
+    for s, name in (('L', 'Left'), ('R', 'Right')):
+        along, across = rig._painted_axes(s)
+        rho = rig._painted_patch(s)
+        w = 1 - smoothstep(0.3, 1.0, rho)
+        near = np.where(rho < 2.5)[0]
+        # the face's depth over the front view near the eye, to keep the slid points on it
+        tree = cKDTree(p[near][:, [0, 2]])
+        for key, du, dv, lid_deg in (('eyeLookUp', 0, 0.3, 5), ('eyeLookDown', 0, -0.3, -7),
+                                     ('eyeLookOut', 0.38, 0, 0), ('eyeLookIn', -0.38, 0, 0)):
+            # along points outwards on both sides
+            step = du * PAINTED[0] * along + dv * PAINTED[1] * across
+            moved = p[:, [0, 2]] + w[:, None] * step
+            dist, idx = tree.query(moved, k=4)
+            wt = 1 / np.maximum(dist, 1e-6)
+            y = (p[near][idx, 1] * wt).sum(1) / wt.sum(1)
+            off = np.zeros_like(p)
+            on = w > 0
+            off[on, 0] = moved[on, 0] - p[on, 0]
+            off[on, 2] = moved[on, 1] - p[on, 2]
+            off[on, 1] = y[on] - p[on, 1]
+            if lid_deg:
+                off += rig.lid_move(s, key + name, upper_deg=lid_deg, lower_deg=lid_deg * 0.5)
+            out[key + name] = off[h.weld]
+    return out
+
+
 def eye_keys(h, rig):
     out = {}
     if rig.painted:
-        # nothing to turn: a painted eye can't look
-        return out
+        return painted_look(h, rig)
     for s, name, sx in (('L', 'Left', 1), ('R', 'Right', -1)):
         ball = h.ball[s]
         piv = h.bones['eye_0_' + s]
@@ -1433,9 +1463,6 @@ def controls(rig):
         'eye_spacing': round(float(c[0]), 4),
         'face_box': [0, round(float(rig.front_y(0, ez) + 0.019), 4), round(float(top + 0.126 * s), 4)],
     }
-    if rig.painted:
-        # no eye controls: painted eyes have no look keys
-        del out['eye_target'], out['eye_spacing']
     return out
 
 
