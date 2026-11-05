@@ -21,6 +21,11 @@ fails = []
 limbs = [(limb, s) for limb in ns['limb_list'](arm) for s in 'LR' if f'ik_{limb}_{s}' in arm]
 IK_PROPS = [f'ik_{limb}_{s}' for limb, s in limbs]
 HELPERS = ('IK_', 'pole_', 'IKC-', 'IKE-', 'IKT-', 'IKR-', 'IKS-', 'MCH-')
+# the materials' vertex jitter (map_anim.py) moves with time, not with the rig
+for ob in bpy.data.objects:
+    for mod in ob.modifiers:
+        if mod.type == 'NODES' and mod.name.startswith('Deadlock motion'):
+            mod.show_viewport = False
 
 
 def check(name, ok, detail=''):

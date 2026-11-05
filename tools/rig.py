@@ -33,6 +33,7 @@ from expressions import ARKIT, EXPRESSIONS, GROUPS, VISEMES  # noqa: E402
 import facerig  # noqa: E402
 import mechparts  # noqa: E402
 import hands  # noqa: E402
+import map_anim  # noqa: E402
 import mirror  # noqa: E402
 from hero import from_argv  # noqa: E402
 
@@ -2141,6 +2142,18 @@ if GLOWING:
     arm.id_properties_ui('glow').update(min=0.0, max=5.0, soft_min=0.0, soft_max=2.0,
                                         description='How brightly the self-lit parts glow (eyes, screens)')
     print('glow', GLOWING)
+
+# the game scrolls some textures and jitters some vertices (Infernus' arm and hair flames, Haze's smoke), as on maps
+HERO_MESHES = [o for o in bpy.data.objects if o.type == 'MESH' and o.find_armature() == arm]
+motion_textures = {}
+for m in {s.material for o in HERO_MESHES for s in o.material_slots if s.material}:
+    for p in (map_anim.vmat_dict(m).get('TextureParams') or {}).values():
+        f = hero.path('raw', os.path.splitext(p)[0] + '.png')
+        if os.path.exists(f):
+            motion_textures[p] = f
+moving, jittering = map_anim.animate(HERO_MESHES, motion_textures)
+if moving:
+    print(f'motion: {moving} scrolling or jittering materials, {jittering} jittering meshes')
 
 # collections this hero has no bones in (Violet's Minions) only clutter the lists
 for c in list(arm.data.collections):

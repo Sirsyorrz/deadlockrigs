@@ -21,6 +21,8 @@ Each hero gets a rig with:
   forearm), sliders for animated parts (Bebop's gun folding open and its hyperbeam mode) and extra models the hero
   uses (Bebop's fired hook hand and sticky bomb), each with its own control, and a Glow slider for self-lit parts
   (Bebop's eyes, Rat King's eyes, Infernus' arm)
+- the game's moving materials: textures that scroll and vertices that flicker as the timeline plays (Infernus' arm
+  and hair flames, Haze's smoke, Geist's arms, Mirage's djinn)
 - jointed hard-surface parts where the game has them fused to one bone (Bebop's jaw, monocle and head switches)
 - face shape keys, controls and expressions for the heroes listed under [Faces](#faces)
 

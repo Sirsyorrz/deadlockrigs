@@ -25,6 +25,7 @@ import platform
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import urllib.request
@@ -56,6 +57,12 @@ class BuildError(Exception):
 
 def log(msg):
     print(msg, flush=True)
+
+
+def glb_json(path):
+    with open(path, 'rb') as f:
+        head = f.read(20)
+        return json.loads(f.read(struct.unpack_from('<I', head, 12)[0]))
 
 
 def exe(name):
@@ -323,8 +330,28 @@ class Builder:
         for _key, cfg, glb in h.extra_models:
             if not os.path.exists(glb):
                 cmd = [self.s2v, '-i', self.pak, '-f', cfg['model'] + '_c', '-o', h.path('raw'),
-                       '--gltf_export_format', 'glb', '--gltf_export_materials', '--gltf_textures_adapt']
+                       '--gltf_export_format', 'glb', '--gltf_export_materials', '--gltf_textures_adapt',
+                       '--gltf_export_extras']
                 self.run(cmd, h, show=False)
+        self.motion_textures(h)
+
+    def motion_textures(self, h):
+        """The jitter masks and second translucency textures of the hero's moving materials (map_anim.py), which
+        the glTF export leaves out, as raw/<game path>.png."""
+        paths = set()
+        for glb in [h.raw_glb] + [glb for _k, _c, glb in h.extra_models]:
+            for mat in glb_json(glb).get('materials', []):
+                vmat = (mat.get('extras') or {}).get('vmat') or {}
+                ints, textures = vmat.get('IntParams') or {}, vmat.get('TextureParams') or {}
+                if ints.get('F_JITTER_VERTICES'):
+                    paths.add(textures.get('g_tJitterMask'))
+                if ints.get('F_ADVANCED_TRANSLUCENCY'):
+                    paths.add(textures.get('g_tAltTranslucency'))
+        paths.discard(None)
+        missing = sorted(p for p in paths if not os.path.exists(h.path('raw', os.path.splitext(p)[0] + '.png')))
+        if missing:
+            self.run([self.s2v, '-i', self.pak, '-f', ','.join(p + '_c' for p in missing), '-o', h.path('raw'),
+                      '-d', '-q'], h, show=False)
 
     def data(self, h):
         os.makedirs(h.data, exist_ok=True)
