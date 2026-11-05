@@ -1567,7 +1567,7 @@ class DLRIG_PT_weapon(bpy.types.Panel):
     @classmethod
     def poll(cls, context):
         ob = rig(context)
-        return ob is not None and ('weapon_hold' in ob or 'prop_chain' in ob)
+        return ob is not None and ('weapon_hold' in ob or 'prop_chain' in ob or 'prop_follow' in ob)
 
     def draw(self, context):
         ob = rig(context)
@@ -1580,6 +1580,9 @@ class DLRIG_PT_weapon(bpy.types.Panel):
             col.separator()
             col.prop(ob, '["prop_chain"]', text='Chain follows prop', slider=True)
             col.label(text='Move the prop by its box', icon='INFO')
+        if 'prop_follow' in ob:
+            col.separator()
+            col.prop(ob, '["prop_follow"]', text='Props follow body', slider=True)
 
 
 def parent_row(layout, ob, bone, label):

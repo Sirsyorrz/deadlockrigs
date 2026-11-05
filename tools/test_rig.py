@@ -183,7 +183,7 @@ print('clips', len(clips), 'run', RUN, 'idle', IDLE, 'pose', POSE, 'jump', JUMP,
 # rest pose untouched by the rig (a held prop's chain would reach for the prop, which sits at the origin at rest, and
 # a held weapon leaves the origin for the hand)
 reset()
-for p in ('prop_chain', 'weapon_hold'):
+for p in ('prop_chain', 'weapon_hold', 'prop_follow'):
     if p in arm:
         arm[p] = 0.0
         update()

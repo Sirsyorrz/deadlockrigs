@@ -626,7 +626,13 @@
   "face": {
    "part": "head",
    "mesh": "head"
-  }
+  },
+  "props": [
+   {
+    "bone": "umbrella",
+    "follow": "clavicle_R"
+   }
+  ]
  },
  {
   "slug": "mirage",
@@ -686,7 +692,8 @@
     -0.7001,
     1.0707
    ]
-  }
+  },
+  "rider_idle": true
  },
  {
   "slug": "nurse_harrow",
@@ -697,7 +704,13 @@
    "part": "nurse_head_static_model",
    "mesh": "nurse_head_static_model",
    "eyes": "nurse_eye"
-  }
+  },
+  "props": [
+   {
+    "bone": "bag_0",
+    "follow": "pelvis"
+   }
+  ]
  },
  {
   "slug": "paige",

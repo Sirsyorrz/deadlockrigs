@@ -294,11 +294,20 @@ for prop in PROPS:
     chain = prop.get('chain', [])
     held = [b for b in descendants(prop['bone']) if b not in chain and b != prop.get('chain_end')]
     extra = chain + [prop['chain_end'], prop['anchor'], B[chain[0]].parent.name] if chain else []
+    extra += [prop['follow']] if 'follow' in prop else []
     basis, idle = sample_hold(prop['bone'], held + extra)
     if basis is None:
         continue
     # the chain end's own keyed offset is part of how it meets the prop
     PROP_POSE.update({b: v for b, v in basis.items() if b in held or b == prop.get('chain_end')})
+    if 'follow' in prop:
+        # "follow": a prop on root_motion (Mina's umbrella, Harrow's bag) sits at the origin at rest, and the idle's
+        # key puts it where the idle body is. It takes its idle place relative to the follow bone instead
+        root, f = prop['bone'], prop['follow']
+        at = rest[f] @ idle[f].inverted() @ idle[root]
+        m = rest[root].inverted() @ at
+        PROP_POSE[root] = [*m.to_translation(), *m.to_quaternion(), *m.to_scale()]
+        print(f'{root} follows {f}, {(at.translation - rest[f].translation).length:.2f} m from it as in the idle')
     if chain:
         PROP_CHAINS.append((prop, idle))
 PROP_CHAIN_BONES = {b for prop, _ in PROP_CHAINS for b in prop['chain'] + [prop['chain_end']]}
@@ -471,6 +480,36 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
                 WEAPON_HOLD = ('pelvis', idle['pelvis'], idle['weapon'])
             elif HAVE_CLIPS:
                 RIGDATA['hold']['weapon'] = None
+
+# A gun skinned to a hand socket (Grey Talon's bow on weapon_hand_L) whose bind pose is at the origin: only the clips
+# key it onto the hand, so at rest the gun lay on the floor. The socket hangs off the hand, so the idle's key on it is
+# the hold; the hand's fingers close on it as in the idle.
+SOCKET_HOLD = []
+if not WEAPON_HOLD:
+    for sock in ('weapon_hand_L', 'weapon_hand_R'):
+        hand = 'hand_' + sock[-1]
+        if (sock in B and B[sock].parent and B[sock].parent.name == hand
+                and (B[sock].head_local - B[hand].head_local).length > 0.3 and len(weighted_points({sock})) > 50):
+            SOCKET_HOLD.append(sock)
+if SOCKET_HOLD:
+    basis, idle = sample_hold('socket', SOCKET_HOLD + HAND_BONES, WEAPON_CLIPS)
+    for sock in SOCKET_HOLD if basis else ():
+        if sock not in basis:
+            continue
+        PROP_POSE[sock] = basis[sock]
+        rots = {b: tuple(round(x, 6) for x in v[3:7]) for b, v in basis.items()
+                if b.startswith('finger_') and b.endswith('_' + sock[-1])}
+        if rots:
+            WEAPON_FINGERS[sock[-1]] = rots
+            PROP_POSE.update({b: v for b, v in basis.items() if b in rots})
+        print(f'{sock} holds its gun in {"hand_" + sock[-1]} as the idle does')
+
+# heroes.json "rider_idle": in the bind pose Mo stands on the floor in front of Krill, in game he crouches on Krill's
+# back. The rider's idle keys are sampled here and become its default pose at the end, once its IK exists
+RIDER_IDLE = {}
+for r in RIDERS if hero.cfg.get('rider_idle') else ():
+    basis, _ = sample_hold(f'{r}_idle', [b.name for b in B if b.name.startswith(r + '_')])
+    RIDER_IDLE[r] = basis or {}
 
 # edit mode: new bones
 
@@ -1777,6 +1816,18 @@ def chc_follow(names, kind='CHC-'):
 
 for prop in PROPS:
     prop_widget(prop['bone'])
+FOLLOWS = [p for p in PROPS if 'follow' in p and p['bone'] in PROP_POSE]
+if FOLLOWS:
+    arm['prop_follow'] = 1.0
+    arm.id_properties_ui('prop_follow').update(min=0, max=1, soft_min=0, soft_max=1,
+                                               description='Props ride the body (game clips place them themselves)')
+for prop in FOLLOWS:
+    c = arm.pose.bones[prop['bone']].constraints.new('CHILD_OF')
+    c.name = 'Prop follow'
+    c.target = arm
+    c.subtarget = prop['follow']
+    c.inverse_matrix = rest[prop['follow']].inverted()
+    influence_driver(c, 'prop_follow')
 if PROP_CHAINS:
     arm['prop_chain'] = 1.0
     arm.id_properties_ui('prop_chain').update(min=0, max=1, soft_min=0, soft_max=1,
@@ -1907,6 +1958,7 @@ def mech_con(bone, kind, target, prop, axis_to=None):
 
 
 CLIP_OFF = ['weapon_hold'] if WEAPON_HOLD else []
+CLIP_OFF += ['prop_follow'] if FOLLOWS else []
 if MECH_LEGS:
     arm['mech_ik'] = 1.0
     arm.id_properties_ui('mech_ik').update(min=0, max=1, soft_min=0, soft_max=1,
@@ -2243,6 +2295,42 @@ for o in bpy.data.objects:
             m.use_deform_preserve_volume = True
 arm['dlrig'] = hero.slug
 arm['rig_scale'] = SCALE
+
+if RIDER_IDLE:
+    # FK takes the idle's keys, the root moves under the pelvis, then the IK controls snap onto the FK limbs
+    ui_mod = ui.as_module()
+    ctx = bpy.context
+    pbs = arm.pose.bones
+    for r, basis in RIDER_IDLE.items():
+        limbs = [(d[0], s) for s, d in LIMBS if rider_of(d[0]) == r]
+        for limb, s in limbs:
+            arm[f'ik_{limb}_{s}'] = 0.0
+        for b, v in basis.items():
+            pbs[b].location, pbs[b].rotation_quaternion, pbs[b].scale = v[0:3], v[3:7], v[7:10]
+        ui_mod.update(ctx)
+        pel, root = pbs[f'{r}_pelvis'], pbs[f'{r}_root']
+        at = pel.matrix.copy()
+        m = root.bone.matrix_local.copy()
+        m.translation += at.translation - pel.bone.matrix_local.translation
+        root.matrix = m
+        ui_mod.update(ctx)
+        pel.matrix = at
+        ui_mod.update(ctx)
+        for limb, s in limbs:
+            ui_mod.ik_from_fk(ctx, arm, limb, s)
+        ends = {n: pbs[n].head.copy() for lname, s in limbs for n in ui_mod.limb_names(lname, s)[1:3]}
+        for limb, s in limbs:
+            arm[f'ik_{limb}_{s}'] = 1.0
+        ui_mod.update(ctx)
+        err = max((pbs[n].head - p).length for n, p in ends.items()) * 1000 if ends else 0
+        for b in pbs:
+            if rider_of(b.name) == r and (b.location.length > 1e-6 or abs(b.rotation_quaternion.w) < 1 - 1e-6):
+                if b.rotation_mode != 'QUATERNION':
+                    print(f'WARNING: {b.name} is {b.rotation_mode}, its idle rotation is not kept')
+                PROP_POSE[b.name] = [*b.location, *b.rotation_quaternion, *b.scale]
+        print(f'rider_idle: {r} sits as in the idle, root moved {(m.translation - root.bone.head_local).length:.2f} m,'
+              f' IK off FK by {err:.2f} mm')
+    arm['prop_pose'] = PROP_POSE
 # the timeline otherwise only shows keys of the selected bones in pose mode
 bpy.context.scene.show_keys_from_selected_only = False
 
