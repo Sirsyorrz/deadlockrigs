@@ -359,7 +359,8 @@ WEAPON_CLIPS = ('game_primary_stand_idle', 'game_weapon_stand_idle') + HOLD_CLIP
 WEAPON_HOLD = None
 # the idle's fingers on the weapon, a "Weapon" hand pose: side -> bone -> quaternion
 WEAPON_FINGERS = {}
-HAND_BONES = [b.name for b in B if re.match(r'(hand|finger_\w+|weapon_(target_)?hand)_[LR]$', b.name)]
+# a rider's hands too (Baba holds her cane in baba_finger_*)
+HAND_BONES = [b.name for b in B if re.match(r'([a-z]+\d*_)?(hand|finger_\w+|weapon_(target_)?hand)_[LR]$', b.name)]
 if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('weaponPivot') for p in PROPS):
     held = descendants('weaponPivot')
     grips = [b for b in held if re.match(r'weapon_?hand_[LR](_|$)', b, re.I)]
@@ -367,6 +368,7 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
     if grips and len(gun) > 50:
         basis, idle = sample_hold('weapon', held + ['pelvis'] * ('pelvis' in B) + HAND_BONES, WEAPON_CLIPS)
         if basis is not None:
+
             gun = gun[::max(1, len(gun) // 400)]
             to_clip = idle['weapon'] @ rest['weapon'].inverted()
             near = {g: min((to_clip @ p - idle[g].translation).length for p in gun) for g in grips}
@@ -375,17 +377,56 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
             print(f'weapon grip {grip} is {near[grip]:.3f} m from the weapon in the idle')
             # Rem's small hand holds his tray 0.12 m from the wrist, so only giants scale the reach
             parts = {b: v for b, v in basis.items() if b in held and b not in ('weaponPivot', 'weapon')}
+
+            def siblings_held(anchor, anchor_at):
+                """The hold puts the pivot where the weapon's idle place is relative to anchor_at, without the weapon's
+                own key: the weapon's siblings (Baba's cane on offhand) are keyed to keep their idle place relative to
+                the anchor bone itself, not where their key would put them from that pivot (by her knee)."""
+                for b in parts:
+                    if B[b].parent and B[b].parent.name == 'weaponPivot' and b in idle and anchor in idle:
+                        off = idle[anchor].inverted() @ idle[b]
+                        if b in hero.cfg.get('upright', []):
+                            off = upright(b, anchor, off)
+                        m = rest[b].inverted() @ rest['weapon'] @ idle['weapon'].inverted() @ anchor_at @ off
+                        parts[b] = [*m.to_translation(), *m.to_quaternion(), *m.to_scale()]
+
+            def upright(b, anchor, off):
+                """heroes.json "upright": a stick (Baba's cane) stands straight up by the hand at rest, through its
+                palm: at the idle's angle to the bind pose's hand it went through the bench (leant on it, idle)."""
+                at = rest[anchor] @ off
+                axis = (at.to_3x3() @ Vector((0, 1, 0))).normalized()
+                palm = rest[anchor].translation
+                up = B[anchor].parent.name if B[anchor].parent else ''
+                pre = (up[:-len(anchor)] if up.endswith(anchor) else '') + 'finger_'
+                s = anchor[-1]
+                if all(f'{pre}{f}_{i}_{s}' in rest for f in ('index', 'middle', 'pinky') for i in range(3)):
+                    P = lambda n: rest[f'{pre}{n}_{s}'].translation  # noqa: E731
+                    f = P('middle_0') - palm
+                    n = (P('index_0') - P('pinky_0')).cross(f).normalized()
+                    bend = sum(((P(f'{g}_2') - P(f'{g}_1')).normalized() - (P(f'{g}_1') - P(f'{g}_0')).normalized()
+                                for g in ('index', 'middle', 'pinky')), Vector())
+                    # in the hollow the fingers close around, not through the middle of the hand
+                    palm = palm + f / 2 + n * (1 if n.dot(bend) > 0 else -1) * f.length * 0.25
+                grip = at.translation + axis * (palm - at.translation).dot(axis)
+                turn = axis.rotation_difference(Vector((0, 0, 1))).to_matrix().to_4x4()
+                print(f'{b} stands upright in {anchor}: turned {math.degrees(axis.angle(Vector((0, 0, 1)))):.0f} deg,'
+                      f' moved {(palm - grip).length * 1000:.0f} mm into the palm')
+                at = Matrix.Translation(palm) @ turn @ Matrix.Translation(-grip) @ at
+                return rest[anchor].inverted() @ at
             giant = max(1.0, B['head'].head_local.z / 2.094 if 'head' in B else 1.0)
             if near[grip] < 0.2 * giant:
-                # the parts (hammer, cylinder) take the idle's pose; the weapon itself only moves through the hold,
-                # so with it off the weapon is back at the origin
-                PROP_POSE.update(parts)
+                # the parts (hammer, cylinder) take the idle's pose (below, once the hold is known); the weapon itself
+                # only moves through the hold, so with it off the weapon is back at the origin
                 # the game IKs either the hand or its grip socket (weapon_hand_R, under hand_R) onto the weapon's
                 # grip bone: Rat King's socket sits in his palm 0.5 m from the wrist, Abrams' elsewhere. Of the two,
                 # the one closing the fingers on the weapon wins
                 hand_at = idle[grip]
                 socket = f'weapon_hand_{hand[-1]}'
-                fingers = [b for b in HAND_BONES if b.startswith('finger_') and b.endswith(hand[-1]) and b in idle]
+                # the fingers of whoever's hand it is: the hero's, or the rider's whose hand bone hand_L hangs from
+                up = B[hand].parent.name if B[hand].parent else ''
+                fpre = up[:-len(hand)] if up.endswith(hand) and rider_of(up) else ''
+                fingers = [b for b in HAND_BONES
+                           if b.startswith(fpre + 'finger_') and b.endswith(hand[-1]) and b in idle]
                 if socket in B and B[socket].parent and B[socket].parent.name == hand and hand in idle and fingers:
                     def off_gun(at):
                         moved = [at @ idle[hand].inverted() @ idle[f].translation for f in fingers]
@@ -395,12 +436,14 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
                     if off_gun(alt) < off_gun(hand_at):
                         hand_at = alt
                 WEAPON_HOLD = (hand, hand_at, idle['weapon'])
+                siblings_held(hand, hand_at)
+                PROP_POSE.update(parts)
                 if HAVE_CLIPS:
                     for v in RIGDATA['hold']['weapon'].values():
                         v.pop('pelvis', None)
                 # the grip hand's fingers as the idle has them; rigdata saved before fingers were sampled has none
                 rots = {b: tuple(round(x, 6) for x in v[3:7]) for b, v in basis.items()
-                        if b.startswith('finger_') and b.endswith('_' + hand[-1])}
+                        if b.startswith(fpre + 'finger_') and b.endswith('_' + hand[-1])}
                 if rots:
                     WEAPON_FINGERS[hand[-1]] = rots
                     # and the hand holds it by default (the reset pose keeps the grip, like the weapon's parts)
@@ -408,6 +451,7 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
             elif 'pelvis' in idle:
                 # no hand on it (Solomon's board hovers in front of him): it rides the pelvis, which keeps the
                 # idle's offset best across his clips
+                siblings_held('pelvis', idle['pelvis'])
                 PROP_POSE.update(parts)
                 WEAPON_HOLD = ('pelvis', idle['pelvis'], idle['weapon'])
             elif HAVE_CLIPS:

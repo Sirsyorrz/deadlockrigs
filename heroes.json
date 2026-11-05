@@ -66,7 +66,10 @@
     2.39
    ],
    "mirror_keys": true
-  }
+  },
+  "upright": [
+   "offhand"
+  ]
  },
  {
   "slug": "bebop",

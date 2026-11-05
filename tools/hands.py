@@ -5,6 +5,7 @@ rest pose, which is already slightly curled. The thumb is solved: its base gets 
 hinges are searched so the tip reaches a target (e.g. across the curled index and middle fingers) without
 passing through the other fingers."""
 import math
+import re
 
 from mathutils import Matrix, Quaternion, Vector
 
@@ -259,14 +260,14 @@ class Hand:
         return build(best)
 
 
-def tip_points(arm, meshes, side):
+def tip_points(arm, meshes, side, pre=''):
     """Fingertip estimate per finger: the weighted vertex farthest from the last joint along the finger.
     Falls back to the last joint plus the previous segment's length when no mesh is skinned to it."""
     rest = {b.name: b.matrix_local for b in arm.data.bones}
     tips = {}
     for fg in FINGERS + ('thumb',):
-        last = f'finger_{fg}_2_{side}'
-        prev = f'finger_{fg}_1_{side}'
+        last = f'{pre}finger_{fg}_2_{side}'
+        prev = f'{pre}finger_{fg}_1_{side}'
         a, b = rest[prev].translation, rest[last].translation
         d = (b - a).normalized()
         bd = -1
@@ -283,22 +284,30 @@ def tip_points(arm, meshes, side):
     return tips
 
 
-def has_hand(arm, side):
+def has_hand(arm, side, pre=''):
     names = {b.name for b in arm.data.bones}
-    need = [f'hand_{side}'] + [f'finger_{f}_{k}_{side}' for f in FINGERS for k in ('meta', '0', '1', '2')] + \
-        [f'finger_thumb_{i}_{side}' for i in range(3)]
+    need = [f'{pre}hand_{side}'] + [f'{pre}finger_{f}_{k}_{side}' for f in FINGERS for k in ('meta', '0', '1', '2')] \
+        + [f'{pre}finger_thumb_{i}_{side}' for i in range(3)]
     return all(n in names for n in need)
 
 
 def hand_poses(arm, meshes, cfg=None):
-    """pose -> side -> bone -> quaternion, for the sides that have the full set of finger bones."""
-    rest = {b.name: b.matrix_local.copy() for b in arm.data.bones}
-    parent = {b.name: b.parent.name for b in arm.data.bones if b.parent}
+    """pose -> side -> bone -> quaternion, for the sides that have the full set of finger bones. A hero without hands
+    of its own (Baba's bench) gets its rider's (baba_hand_L ...), under the same sides."""
+    pre = ''
+    if not any(has_hand(arm, s) for s in 'LR'):
+        found = (re.match(r'([a-z]+\d*_)hand_[LR]$', b.name) for b in arm.data.bones)
+        riders = sorted({m.group(1) for m in found if m})
+        pre = next((p for p in riders if any(has_hand(arm, s, p) for s in 'LR')), '')
+    # the rider's bones under the plain names the solver uses
+    rest = {b.name[len(pre):]: b.matrix_local.copy() for b in arm.data.bones if b.name.startswith(pre)}
+    parent = {b.name[len(pre):]: b.parent.name[len(pre):] if b.parent.name.startswith(pre) else b.parent.name
+              for b in arm.data.bones if b.parent and b.name.startswith(pre)}
     out, reports = {name: {} for name in POSES}, []
-    for s in [s for s in 'LR' if has_hand(arm, s)]:
-        h = Hand(rest, parent, tip_points(arm, meshes, s), s, cfg)
+    for s in [s for s in 'LR' if has_hand(arm, s, pre)]:
+        h = Hand(rest, parent, tip_points(arm, meshes, s, pre), s, cfg)
         for name, spec in POSES.items():
             basis = h.solve(spec)
-            out[name][s] = {b: tuple(round(v, 6) for v in q) for b, q in basis.items()}
+            out[name][s] = {pre + b: tuple(round(v, 6) for v in q) for b, q in basis.items()}
             reports.append((s, name) + h.report)
     return out, reports

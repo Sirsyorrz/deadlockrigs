@@ -816,7 +816,7 @@ if IDLE:
     check('idle layer applies', r == {'FINISHED'} and sway < 0.3 * SCALE, f'{top} sways {sway * 1000:.1f} mm')
     if hand_poses['Fist']:
         side = next(iter(hand_poses['Fist']))
-        fist = pb[f'finger_index_1_{side}'].rotation_quaternion.copy()
+        fist = pb[next(b for b in hand_poses['Fist'][side] if 'finger_index_1_' in b)].rotation_quaternion.copy()
         check('idle layer keeps the pose', abs(fist.w - 1) > 0.01, str(tuple(round(x, 3) for x in fist)))
 # face: every ARKit key moves the head by a sane amount, and the controls drive the keys
 if 'FACE' in pb:
