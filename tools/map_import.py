@@ -1,11 +1,12 @@
 """Imports a rebatched map into Blender and saves it with its textures next to it (run by mapbuild.py).
 
 blender -b --factory-startup -P tools/map_import.py -- <map.gltf> <out.blend> <map slug> <title> <game version>
-    [<lighting folder> [<props.json>]]
+    [<lighting folder> [<props.json> [<Deadlock install folder>]]]
 
 The lighting folder (from mapbuild.py's lighting step) has the lightmaps, the light probe atlas, the sky and
 settings.json with what map_environment.py read from the map's entities. props.json (from the props step) lists
-the animated props, each exported on its own.
+the animated props, each exported on its own. With the install folder, the map's particle effects are built from the
+game's files (map_particles.py).
 """
 import glob
 import json
@@ -27,6 +28,7 @@ args = sys.argv[sys.argv.index('--') + 1:]
 gltf, out_blend, slug, title, version = args[:5]
 lighting_dir = args[5] if len(args) > 5 else ''
 props_file = args[6] if len(args) > 6 else ''
+install = args[7] if len(args) > 7 else ''
 out_dir = os.path.dirname(os.path.abspath(out_blend))
 tex_dir = os.path.join(out_dir, 'textures')
 light_dir = os.path.join(out_dir, 'lightmaps')
@@ -36,7 +38,7 @@ RIG_SUN_STRENGTH = 3.0
 # meshes up to GLTF_END
 GLTF_END = 0.22
 PROGRESS = {'props': 0.23, 'materials': 0.47, 'paint': 0.48, 'lights': 0.485, 'bake': 0.69, 'probes': 0.905,
-            'baked': 0.96, 'fog': 0.97, 'motion': 0.97, 'volumes': 0.98, 'textures': 0.99}
+            'baked': 0.96, 'fog': 0.97, 'motion': 0.97, 'volumes': 0.98, 'particles': 0.985, 'textures': 0.99}
 
 
 def progress(frac):
@@ -181,6 +183,7 @@ if sky_files:
     bpy.context.scene.world = world
     sky_mips = [(4, map_lighting.downsample(sky_img, 16)), (7, map_lighting.downsample(sky_img, 128))]
 cube, gradient = settings.get('cubemap_fog'), settings.get('gradient_fog')
+fog = None
 if (cube and sky_mips) or gradient:
     face = sky_mips[0][1].size[0] * 16 // 4 if sky_mips else 1024
     fog = map_lighting.fog_group(cube, gradient, sky_mips, sky.get('strength', 1.0), face)
@@ -206,6 +209,19 @@ if fog_volume:
         print('volumetric fog: none')
 
 progress(PROGRESS['volumes'])
+if install:
+    import map_particles
+    try:
+        built, warnings = map_particles.add_particles(coll, slug, install, os.path.join(os.path.dirname(lighting_dir),
+                                                                                       'particles'), fog)
+        print(f'particles: {built} effects')
+        for w in warnings:
+            print(f'  {w}')
+    except Exception as e:  # the map is still worth having without them
+        import traceback
+        traceback.print_exc()
+        print(f'WARNING: particle effects failed: {e}')
+progress(PROGRESS['particles'])
 os.makedirs(tex_dir, exist_ok=True)
 for img in tracked(bpy.data.images, 'volumes', 'textures'):
     src = bpy.path.abspath(img.filepath) if img.filepath else ''

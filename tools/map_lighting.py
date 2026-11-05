@@ -1155,11 +1155,13 @@ def ramp(g, x, start, end, exponent):
 
 
 def fog_group(cube=None, gradient=None, sky_mips=None, sky_strength=1.0, sky_face=1024):
-    """Node group: Shader, Alpha -> Shader with the map's fog over it (camera rays only)."""
+    """Node group: Shader, Alpha -> Shader with the map's fog over it (camera rays only), and Attenuation: how much
+    of an additive surface (particles) is left through the fog."""
     tree = bpy.data.node_groups.new(FOG_GROUP, 'ShaderNodeTree')
     tree.interface.new_socket(name='Shader', in_out='INPUT', socket_type='NodeSocketShader')
     tree.interface.new_socket(name='Alpha', in_out='INPUT', socket_type='NodeSocketFloat')
     tree.interface.new_socket(name='Shader', in_out='OUTPUT', socket_type='NodeSocketShader')
+    tree.interface.new_socket(name='Attenuation', in_out='OUTPUT', socket_type='NodeSocketFloat')
     g = Graph(tree)
     inp, out = g.node('NodeGroupInput'), g.node('NodeGroupOutput')
     strength = g.node('ShaderNodeValue', label='Fog strength', name='Strength')
@@ -1169,12 +1171,15 @@ def fog_group(cube=None, gradient=None, sky_mips=None, sky_strength=1.0, sky_fac
     camera = g.node('ShaderNodeLightPath').outputs['Is Camera Ray']
     gate = g.math('MULTIPLY', g.math('MULTIPLY', camera, inp.outputs['Alpha']), strength.outputs[0])
     shader = inp.outputs['Shader']
+    attenuation = [1.0]
 
     def layer(shader, fog_color, amount):
         emission = g.node('ShaderNodeEmission')
         g.put(emission.inputs['Color'], fog_color)
         mix = g.node('ShaderNodeMixShader')
-        g.put(mix.inputs[0], g.math('MULTIPLY', amount, gate, clamp=True))
+        fac = g.math('MULTIPLY', amount, gate, clamp=True)
+        attenuation[0] = g.math('MULTIPLY', attenuation[0], g.math('SUBTRACT', 1.0, fac))
+        g.put(mix.inputs[0], fac)
         g.put(mix.inputs[1], shader)
         g.links.new(emission.outputs[0], mix.inputs[2])
         return mix.outputs[0]
@@ -1205,6 +1210,7 @@ def fog_group(cube=None, gradient=None, sky_mips=None, sky_strength=1.0, sky_fac
         shader = layer(shader, color, g.math('MULTIPLY', amount, f['opacity']))
 
     g.links.new(shader, out.inputs['Shader'])
+    g.put(out.inputs['Attenuation'], attenuation[0])
     return tree
 
 

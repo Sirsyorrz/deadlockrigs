@@ -12,7 +12,7 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
-from . import crop, look, riglight
+from . import crop, look, particles, riglight
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -580,6 +580,7 @@ class DLR_PT_map(bpy.types.Panel):
         if crop.any_map(sc):
             riglight.draw(layout, context)
             crop.draw(layout, context)
+        particles.draw(layout, context)
 
 
 _map_items = []
@@ -608,11 +609,13 @@ def register():
     bpy.app.handlers.load_post.append(on_load)
     crop.register()
     riglight.register()
+    particles.register()
 
 
 def unregister():
     if _job:
         _job.cancel()
+    particles.unregister()
     riglight.unregister()
     crop.unregister()
     if on_load in bpy.app.handlers.load_post:

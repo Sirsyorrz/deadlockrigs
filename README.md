@@ -95,8 +95,16 @@ rate: textures that scroll (screens, smoke, film, string lights), surfaces whose
 cards, curtains, leaves, flags, ghosts) and props that loop an idle animation (the Hideout's ghosts, projector,
 reel-to-reel, gramophone, the computer's spinning pentagram). It plays, scrubs and renders with no baking. Swaying
 meshes have a `Deadlock motion` geometry nodes modifier; the props are in the map's `animated props` collection,
-each an armature with its idle clip on repeat. Particle effects (candle flames, the
-fireplace, fireworks) aren't brought over.
+each an armature with its idle clip on repeat.
+
+**Particles.** The map's particle effects (candle flames, the fireplace, Midtown's street steam and crows) are built
+from the game's files with the map, as the game shows them a few seconds after the map loads: each effect is
+simulated and frozen, its sprites and trails turned to the camera and shaded like the game's particle shader, lit by
+the map's light probes and dimmed by its fog. They are in the map's `particles` collection, each effect an empty
+holding its parts. Particle Effects in the Map section places any of the game's ~18,000 effects at the 3D cursor
+(type words of its path to search), at its busiest moment or a time you set, and Rebuild simulates a selected effect
+again at another time or seed. Effects stay still; light-only effects, projected decals and a few rarer operators
+aren't drawn.
 
 **Rig light.** Rigs are lit from the map's light probes per pixel, as the game lights heroes, so they pick up the
 room they stand in and follow it as they move. Linking or appending a map does this for the rigs in the scene, and so
@@ -110,7 +118,8 @@ like Deadlock rather than Blender. Bloom and Vignette in the Map section set the
 
 **Crop.** With a map in the scene, the crop section can cut it down to what a shot needs, which makes the viewport and
 renders much faster: Add Crop Box and Crop to Boxes keep what is inside the boxes, Crop to Camera keeps what the scene
-camera sees over the frame range. Objects across the edge keep the polygons that reach in. The Keep dropdown picks
+camera sees over the frame range. Objects across the edge keep the polygons that reach in; particle effects stay whole
+when any of their particles is inside. The Keep dropdown picks
 map parts that are never cropped (skyline buildings, sky clouds, smoke, fog planes). Restore Map undoes it; Delete
 Cropped removes the cropped parts for good to make the file smaller. A linked map crops the same way: the map's
 collection is hidden and a `(cropped)` collection next to it holds what is kept, with the cut objects as local
@@ -182,6 +191,8 @@ The map tools follow work by others in the Deadlock community:
   add-on showed cropping a map to boxes or the camera, which our Crop is modelled on.
 - spenzo: his Blender port of Midtown, and merging the map's objects so Blender can handle it, which our map build
   does from your own install.
+- Divined, Deadlock Bridge: the particle simulation and shading, and the model materials of particle effects, are his
+  add-on's (in `tools/deadlock_bridge`, GPL-3.0-or-later), with a few changes to fit these maps.
 - [Cravvnn](https://github.com/cravvnn), [RenderLock](https://github.com/cravvnn/RenderLock): research into using
   the game's Source 2 lighting in Blender.
 - [Source 2 Viewer / ValveResourceFormat contributors](https://github.com/ValveResourceFormat/ValveResourceFormat):

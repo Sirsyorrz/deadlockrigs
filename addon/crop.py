@@ -198,6 +198,13 @@ def faces_kept(ob, mesh, region_codes, whole_objects, keep_re):
     return keep, totals
 
 
+def particle_kept(ob, region_codes):
+    """A particle effect's object (map_particles.py) is kept whole when any of its particles is inside: its points
+    are cards' centres, and cutting it would split the effect."""
+    points = world_vertices(ob, ob.data)
+    return len(points) > 0 and any((codes == 0).any() for codes in region_codes(points))
+
+
 def layer_collections(scene, coll):
     def find(lc):
         if lc.collection == coll:
@@ -255,6 +262,10 @@ def crop_linked(scene, coll, region_codes, whole_objects, keep_re):
         if ob.type != 'MESH' or BARN_MASK in ob:
             view.objects.link(ob)
             continue
+        if 'dl_effect' in ob:
+            if particle_kept(ob, region_codes):
+                view.objects.link(ob)
+            continue
         keep, totals = faces_kept(ob, ob.data, region_codes, whole_objects, keep_re)
         total += int((totals - 2).sum())
         if not keep.any():
@@ -287,6 +298,9 @@ def crop(scene, region_codes, whole_objects, keep):
     keep_re = keep_pattern(keep)
     for ob in list(map_meshes(scene)):
         restore(ob)
+        if 'dl_effect' in ob:
+            set_hidden(ob, not particle_kept(ob, region_codes))
+            continue
         keep, totals = faces_kept(ob, ob.data, region_codes, whole_objects, keep_re)
         total += int((totals - 2).sum())
         if not keep.any():

@@ -7,7 +7,8 @@ python tools/mapbuild.py <map> [options]
   props     the props that play an idle animation, each as its own glTF with that clip; the rebatch leaves them out
   rebatch   one mesh per grid cell and material instead of ~30,000 objects (map_rebatch.py)
   lighting  the baked lighting (lightmaps, light probes) and the sky, sun, fog and tonemapping the map uses
-  import    <out>/maps/<map>/<map>.blend, textures in textures/ and lighting files in lightmaps/ next to it
+  import    <out>/maps/<map>/<map>.blend, textures in textures/ and lighting files in lightmaps/ next to it, with
+            the map's particle effects
 
 The map is rebuilt only when the game's version or the map's archive changed since the last build (or with --force).
 """
@@ -50,6 +51,11 @@ class MapFiles:
         self.stamp_file = os.path.join(self.out, 'map.json')
 
 
+def install_dir(pak):
+    """The Deadlock folder holding game/citadel/pak01_dir.vpk."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(pak))))
+
+
 def map_vpk(pak, slug):
     path = os.path.join(os.path.dirname(pak), 'maps', slug + '.vpk')
     if not os.path.exists(path):
@@ -69,7 +75,7 @@ def game_version(pak):
 
 
 # raised when a change to the build makes earlier builds wrong, so they show as needing a rebuild
-BUILDER = 15
+BUILDER = 16
 
 
 def game_stamp(pak, slug, mods=True):
@@ -374,7 +380,7 @@ class MapBuilder(Builder):
         meshes = sum('mesh' in n for n in json.load(open(m.rebatched, encoding='utf-8'))['nodes'])
         self.run([self.blender, '-b', '--factory-startup', '--python-exit-code', '1',
                   '-P', os.path.join(TOOLS, 'map_import.py'), '--', m.rebatched, tmp, m.slug, m.title,
-                  game_version(self.pak), m.lighting, m.props_file], m, env=self.blender_env(m),
+                  game_version(self.pak), m.lighting, m.props_file, install_dir(self.pak)], m, env=self.blender_env(m),
                  count=('Blender create Mesh node', meshes, GLTF_IMPORT_END))
         if not os.path.exists(tmp):
             raise BuildError('map_import.py wrote no ' + tmp)
