@@ -1,5 +1,6 @@
 """blender -b -P dump.py -- <hero> : face mesh arrays (world space, Blender axes), eye bone heads and eyeball
 vertices (skinned to the eye bones) -> data/head.npz"""
+import json
 import os
 import sys
 
@@ -141,6 +142,10 @@ for m in bpy.context.scene.objects:
     part = next((p for p in sorted(parts, key=len, reverse=True) if m.name.endswith('.' + p)), m.name.rsplit('.', 1)[-1])
     if part in hero.drop or not parts.get(part, True):
         continue
+    # meshes that take the face keys themselves (Warden's hat with its chin strap, heroes.json face "follow") move
+    # with the skin instead of holding it still
+    if part in hero.face.get('follow', {}):
+        continue
     q = np.empty(len(m.data.vertices) * 3, np.float32)
     m.data.vertices.foreach_get('co', q)
     w = np.array(m.matrix_world)
@@ -160,6 +165,10 @@ for v in me.vertices:
 extra = {'painted_eye': np.array(hero.face['painted_eye'], float)} if 'painted_eye' in hero.face else {}
 if hero.face.get('mirror_keys'):
     extra['mirror_keys'] = np.array(True)
+if hero.face.get('jaw_deg'):
+    extra['jaw_deg'] = np.array(float(hero.face['jaw_deg']))
+if hero.face.get('gain'):
+    extra['gain'] = np.array(json.dumps(hero.face['gain']))
 np.savez(os.path.join(hero.data, 'head.npz'), **extra, co=co, nrm=nrm.reshape(-1, 3), tris=tris, mats=mats, matnames=np.array([m.name for m in me.materials]),
          other=other, **{'bone_' + k: v for k, v in bones.items()}, **balls, **weights)
 print('dumped', n, len(tris), 'other', len(other))

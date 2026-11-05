@@ -402,6 +402,13 @@ class Rig:
         # split the bag level with the lip line (a geodesic split leans towards the shorter lip)
         o = np.argsort(q[:, 0])
         zr = np.interp(p[:, 0], q[o, 0], q[o, 2])
+        # the lip line's arch, smooth (the rim's raw heights jump between the lips at the corners), on clearly arched
+        # mouths only (Warden's rises 27 mm over its corners): elsewhere the corners' height, as the corner weights are
+        # knife-edge and shift with any change to it
+        corner_z = (cl[2] + cr[2]) / 2
+        arch = np.polyval(np.polyfit(q[:, 0], q[:, 2], 2), np.clip(p[:, 0], q[:, 0].min(), q[:, 0].max()))
+        rise = np.polyval(np.polyfit(q[:, 0], q[:, 2], 2), 0) - corner_z
+        self.lip_zr = np.maximum(arch, corner_z) if rise > 0.008 * s else np.full(len(p), corner_z)
         upper = p[:, 2] >= zr - 0.001 * s
         # except the lips' own inner faces, which belong with their lip
         du = fg.geodesic(h, self.rim_u, limit=0.01 * s)
@@ -820,8 +827,11 @@ class Rig:
             zero[self.corner['L']] = zero[self.corner['R']] = True
         one |= (lab > 0.6) & (dl < 0.012 * s) & self.soft_w & ~near_corner
         zero |= (lab < 0.4) & (du < 0.012 * s) & ~near_corner
-        one |= (p[:, 1] < ly + 0.018 * s) & (p[:, 2] < lz - 0.010 * s) & (lab > 0.5) & self.soft_w
-        zero |= (p[:, 2] > lz + 0.025 * s) | (p[:, 2] < lz - 0.105 * s) | (p[:, 1] > jy - 0.006 * s)
+        # heights from the lip line above each vertex, not the corners: an arched mouth (Warden's, corners 27 mm under
+        # the middle) otherwise pins the top of its lower lip to the head
+        zr = self.lip_zr
+        one |= (p[:, 1] < ly + 0.018 * s) & (p[:, 2] < zr - 0.010 * s) & (lab > 0.5) & self.soft_w
+        zero |= (p[:, 2] > zr + 0.025 * s) | (p[:, 2] < lz - 0.105 * s) | (p[:, 1] > jy - 0.006 * s)
         # the mouth bag floor lies a few mm over the skin under the chin: it takes that skin's weight
         # (solved without the bag), else it pokes out under the jaw
         rim_l = self.rim_l
@@ -1577,6 +1587,8 @@ if __name__ == '__main__':
     if 'painted_eye' in arrays:
         PAINTED = tuple(float(v) for v in arrays.pop('painted_eye'))
     MIRROR = bool(arrays.pop('mirror_keys', False))
+    JAW_DEG = float(arrays.pop('jaw_deg', JAW_DEG))
+    GAIN = json.loads(str(arrays.pop('gain'))) if 'gain' in arrays else {}
     h = fg.from_arrays(arrays)
     n_head = len(h.co)
     bag_mesh = None
@@ -1627,6 +1639,11 @@ if __name__ == '__main__':
     if np.linalg.norm(lips[TONGUE_JAW], axis=1).max() < 0.0005:
         del lips[TONGUE_JAW]
     keys.update(lips)
+    # heroes.json face "gain" {key name prefix: factor}: the moves are tuned on Violet's realistic face; stylised ones
+    # (Warden's) read better pushed further
+    for k in keys:
+        f = next((g for pre, g in sorted(GAIN.items(), key=lambda i: -len(i[0])) if k.startswith(pre)), 1.0)
+        keys[k] = keys[k] * f
     if MIRROR:
         # a coarse, slightly lopsided head (Warden's) picks different handles each side: the right keys are the left
         # ones mirrored, vertex by nearest mirrored vertex

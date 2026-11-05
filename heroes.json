@@ -1088,7 +1088,27 @@
     2.5,
     0
    ],
-   "mirror_keys": true
+   "mirror_keys": true,
+   "follow": {
+    "hat": [
+     "head"
+    ]
+   },
+   "jaw_deg": 20,
+   "gain": {
+    "brow": 3.0,
+    "eyeWide": 3.0,
+    "eyeSquint": 2.0,
+    "cheek": 1.5,
+    "noseSneer": 2.0,
+    "mouthSmile": 1.4,
+    "mouthFrown": 2.0,
+    "mouthUpperUp": 1.5,
+    "mouthLowerDown": 2.0,
+    "mouthStretch": 1.5,
+    "browInnerUp": 1.5,
+    "browOuterUp": 2.0
+   }
   }
  },
  {
