@@ -102,11 +102,9 @@ from the game's files with the map and play with the timeline: each effect is si
 it has settled, and baked into a seamless loop of 2 to 6 seconds at the game's speed, whatever the frame rate. Their
 sprites and trails turn to the camera and are shaded like the game's particle shader, lit by the map's light probes
 and dimmed by its fog; effects that draw models (the steam puffs) fade and wobble as the game's do. They are in the
-map's `particles` collection, each effect an empty holding its parts. Particle Effects in the Map section places any
-of the game's ~18,000 effects at the 3D cursor (type words of its path to search), looping, playing once from the
-current frame (bursts, explosions) or as a still at its busiest moment or a time you set, and Rebuild simulates a
-selected effect again at another time or seed. Light-only effects, projected decals, the game's extra bloom on some
-materials and a few rarer operators aren't drawn.
+map's `particles` collection, each effect an empty holding its parts; with one selected in an appended map, the Map
+section's Rebuild simulates it again at another time or seed. Light-only effects, projected decals, the game's extra
+bloom on some materials and a few rarer operators aren't drawn.
 
 **Rig light.** Rigs are lit from the map's light probes per pixel, as the game lights heroes, so they pick up the
 room they stand in and follow it as they move. Linking or appending a map does this for the rigs in the scene, and so
