@@ -98,13 +98,15 @@ meshes have a `Deadlock motion` geometry nodes modifier; the props are in the ma
 each an armature with its idle clip on repeat.
 
 **Particles.** The map's particle effects (candle flames, the fireplace, Midtown's street steam and crows) are built
-from the game's files with the map, as the game shows them a few seconds after the map loads: each effect is
-simulated and frozen, its sprites and trails turned to the camera and shaded like the game's particle shader, lit by
-the map's light probes and dimmed by its fog. They are in the map's `particles` collection, each effect an empty
-holding its parts. Particle Effects in the Map section places any of the game's ~18,000 effects at the 3D cursor
-(type words of its path to search), at its busiest moment or a time you set, and Rebuild simulates a selected effect
-again at another time or seed. Effects stay still; light-only effects, projected decals and a few rarer operators
-aren't drawn.
+from the game's files with the map and play with the timeline: each effect is simulated from a few seconds in, once
+it has settled, and baked into a seamless loop of 2 to 6 seconds at the game's speed, whatever the frame rate. Their
+sprites and trails turn to the camera and are shaded like the game's particle shader, lit by the map's light probes
+and dimmed by its fog; effects that draw models (the steam puffs) fade and wobble as the game's do. They are in the
+map's `particles` collection, each effect an empty holding its parts. Particle Effects in the Map section places any
+of the game's ~18,000 effects at the 3D cursor (type words of its path to search), looping, playing once from the
+current frame (bursts, explosions) or as a still at its busiest moment or a time you set, and Rebuild simulates a
+selected effect again at another time or seed. Light-only effects, projected decals, the game's extra bloom on some
+materials and a few rarer operators aren't drawn.
 
 **Rig light.** Rigs are lit from the map's light probes per pixel, as the game lights heroes, so they pick up the
 room they stand in and follow it as they move. Linking or appending a map does this for the rigs in the scene, and so

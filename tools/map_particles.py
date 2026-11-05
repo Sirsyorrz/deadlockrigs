@@ -1,10 +1,12 @@
 """A map's particle effects (candle flames, the fireplace, street steam, crows) into its built scene, through the
-vendored Deadlock Bridge (tools/deadlock_bridge, by Divined): every effect the map plays as it loads, simulated a
-few seconds in and frozen, its sprites and ropes facing the camera.
+vendored Deadlock Bridge (tools/deadlock_bridge, by Divined): every effect the map plays as it loads, its sprites and
+ropes facing the camera. Each is baked from a few seconds in, once it has settled, into a seamless loop that plays
+with the scene's time (DL Particle Time keeps the step the frame is at).
 
 The bridge places them in game space; the map's glTF export is a quarter turn about Z from it, so the effects are
-built into that frame. Effects that draw models (Midtown's steam blobs) get the bridge's materials, lit by the light
-probes through a lighting group without lightmaps, and the map's own fog.
+built into that frame. Effects that draw models (Midtown's steam blobs) instance them with the bridge's materials,
+lit by the light probes through a lighting group without lightmaps, fading by the particles' alpha, jittering as
+pbr does (map_anim's motion group) and fogged with the map's own fog.
 """
 import math
 
@@ -18,6 +20,7 @@ from deadlock_bridge.blender.map_import import MapImporter
 from deadlock_bridge.blender.textures import TextureCache
 from deadlock_bridge.core import content as contentlib
 from deadlock_bridge.core import world as vworld
+from map_anim import add_jitter
 
 UNIT = 0.0254
 # game space -> the map's Blender space: Source2Viewer's glTF export, re-imported, is turned -90 degrees about Z
@@ -120,12 +123,48 @@ def add_particles(coll, slug, install, cache, fog_group=None):
         coll.children.link(parts)
         source = MapSource(content, slug, cache, coll, fog_group)
         source.collections['Particles'] = parts
-        built = particles.build_particle_systems(source, SIM_TIME)
+        built = particles.build_particle_systems(source, SIM_TIME, animate=True)
         for ob in parts.objects:
             ob['dlr_particles'] = True
+        jitter_models(parts.objects, source.materials.compiled, source.textures)
         return built, source.log
     finally:
         content.close()
+
+
+def jitter_models(objects, compiled, textures):
+    """Jitters the model particles' models (the templates the objects instance) whose materials ask for it.
+    compiled: a material path to the game's material; textures: the bridge's texture cache."""
+    for ob in objects:
+        templates = ob.get('dl_templates')
+        if not isinstance(templates, bpy.types.Collection):
+            continue
+        for template in templates.objects:
+            if template.type != 'MESH' or any(m.type == 'NODES' for m in template.modifiers):
+                continue
+            for mat in template.data.materials:
+                source = compiled(mat.get('dl_path', '')) if mat else None
+                if source is None or not source.int('F_JITTER_VERTICES'):
+                    continue
+                mask = textures.image(source.texture('g_tJitterMask') or 'materials/default/default_mask.vtex')
+                mat['vmat'] = {'IntParams': dict(source.ints), 'FloatParams': dict(source.floats),
+                               'VectorParams': {k: list(v) for k, v in source.vectors.items()}}
+                object_space(template.data)
+                add_jitter(template, mat, mask)
+
+
+def object_space(mesh):
+    """The attributes pbr's object space jitter reads: positions in game units and the model's axes scaled back
+    into the mesh (the bridge builds models in game axes, scaled to metres)."""
+    if '_JITTER_POS' in mesh.attributes:
+        return
+    co = np.empty(len(mesh.vertices) * 3, np.float32)
+    mesh.vertices.foreach_get('co', co)
+    mesh.attributes.new('_JITTER_POS', 'FLOAT_VECTOR', 'POINT').data.foreach_set('vector', co / UNIT)
+    for axis, name in enumerate(('_JITTER_X', '_JITTER_Y', '_JITTER_Z')):
+        values = np.zeros((len(mesh.vertices), 3), np.float32)
+        values[:, axis] = UNIT
+        mesh.attributes.new(name, 'FLOAT_VECTOR', 'POINT').data.foreach_set('vector', values.ravel())
 
 
 _scene_models = None
@@ -151,6 +190,20 @@ def scene_models(context, target):
         return _scene_models.model_mesh(path, skin, overrides)
 
     return model_mesh
+
+
+def scene_jitter(objects):
+    """jitter_models() for effects placed in a scene, reading the game's materials through the add-on's session."""
+    from deadlock_bridge import session
+    from deadlock_bridge.core.material import CompiledMaterial
+    from deadlock_bridge.preferences import cache_dir
+    content = session.content()
+
+    def compiled(path):
+        data = content.try_read(contentlib.compiled(path)) if path else None
+        return CompiledMaterial(data) if data is not None else None
+
+    jitter_models(objects, compiled, TextureCache(content, cache_dir()))
 
 
 _probe_lights = {}
