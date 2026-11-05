@@ -18,6 +18,8 @@ from mathutils import Matrix, Quaternion
 from map_lighting import Graph, load_image, param, vmat_dict, vmat_params
 
 MOTION_GROUP = 'Deadlock motion'
+# bumped when the motion group changes, so a file's older one is replaced
+MOTION_VERSION = 2
 TIME_GROUP = 'Deadlock time'
 UV2_ATTR = '_UV2'
 UNIT = 0.0254
@@ -141,11 +143,13 @@ def add_alt_translucency(mat, g, ints, floats, values, uv2, textures):
 def motion_group():
     """Geometry, Material and the jitter settings -> Geometry: moves the material's vertices by pbr's jitter: two
     smoothed triangle waves of position * frequency + time * speed, each axis a dot product of its amplitudes with
-    them, snapped to steps, times the jitter mask's red."""
-    tree = bpy.data.node_groups.get(MOTION_GROUP)
-    if tree:
-        return tree
+    them, snapped to steps, times the jitter mask's red. The normals stay as they were, as the game's vertex shader
+    leaves them (Blender's custom normals are stored relative to the faces and would turn with them)."""
+    old = next((t for t in bpy.data.node_groups if t.name == MOTION_GROUP and t.library is None), None)
+    if old is not None and old.get('dlr_version') == MOTION_VERSION:
+        return old
     tree = bpy.data.node_groups.new(MOTION_GROUP, 'GeometryNodeTree')
+    tree['dlr_version'] = MOTION_VERSION
     tree.is_modifier = True
     sockets = [('Geometry', 'NodeSocketGeometry'), ('Material', 'NodeSocketMaterial'),
                ('Object Space', 'NodeSocketBool'), ('Frequency A', 'NodeSocketVector'),
@@ -203,13 +207,24 @@ def motion_group():
                           g.vec('SCALE', named(g, '_JITTER_Z'), d[2]))
     offset = switch(g, 'VECTOR', inp['Object Space'], world_offset, object_offset)
 
+    normals = g.node('GeometryNodeCaptureAttribute', domain='CORNER')
+    normals.capture_items.new('VECTOR', 'Normal')
+    g.links.new(inp['Geometry'], normals.inputs['Geometry'])
+    g.links.new(g.node('GeometryNodeInputNormal').outputs[0], normals.inputs[1])
     selection = g.node('GeometryNodeMaterialSelection')
     g.links.new(inp['Material'], selection.inputs['Material'])
     move = g.node('GeometryNodeSetPosition')
-    g.links.new(inp['Geometry'], move.inputs['Geometry'])
+    g.links.new(normals.outputs['Geometry'], move.inputs['Geometry'])
     g.links.new(selection.outputs[0], move.inputs['Selection'])
     g.links.new(offset, move.inputs['Offset'])
-    g.links.new(move.outputs['Geometry'], out.inputs[0])
+    keep = g.node('GeometryNodeSetMeshNormal', mode='FREE', domain='CORNER')
+    g.links.new(move.outputs['Geometry'], keep.inputs['Mesh'])
+    g.links.new(normals.outputs[1], keep.inputs['Custom Normal'])
+    g.links.new(keep.outputs['Mesh'], out.inputs[0])
+    if old is not None:
+        old.user_remap(tree)
+        bpy.data.node_groups.remove(old)
+        tree.name = MOTION_GROUP
     return tree
 
 
@@ -241,7 +256,7 @@ def jitter_mask(mat, textures):
 
 
 def add_jitter(ob, mat, mask_path):
-    """A motion modifier on ob jittering mat's vertices."""
+    """A motion modifier on ob jittering mat's vertices. mask_path: the mask's file, or its image."""
     ints, floats = vmat_params(mat)
     values = vectors(mat)
     mode = jitter_mode(mat)
@@ -260,7 +275,7 @@ def add_jitter(ob, mat, mask_path):
     set_input(mod, 'Offset', list(vec(values, 'g_vJitterExpression')))
     set_input(mod, 'Time Step', param(floats, 'g_flJitterQuantizeTime', 0.0))
     set_input(mod, 'Displacement Step', param(floats, 'g_flJitterQuantizeDisplacement', 0.0))
-    set_input(mod, 'Mask', load_image(mask_path))
+    set_input(mod, 'Mask', mask_path if isinstance(mask_path, bpy.types.Image) else load_image(mask_path))
     secondary = ints.get('g_bUseSecondaryUvForJitterMask') and UV2_ATTR in ob.data.attributes
     set_input(mod, 'Mask UV', UV2_ATTR if secondary else 'UVMap')
     return mod
