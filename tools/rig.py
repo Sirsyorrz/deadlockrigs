@@ -303,9 +303,11 @@ for prop in PROPS:
 PROP_CHAIN_BONES = {b for prop, _ in PROP_CHAINS for b in prop['chain'] + [prop['chain_end']]}
 
 # pose sliders (heroes.json "sliders"): a stretch of a game clip on a few bones (Bebop's gun folding) as one 0..1
-# property. Each bone's keys between the two frames, relative to the first, are sampled here (and kept in rigdata/)
+# property. Each bone's keys between the two frames, relative to the first, are sampled here (and kept in rigdata/).
+# A bone's first slider's first frame is its default pose (at the bind pose Bebop's gun flap floats off his arm)
 SLIDER_SAMPLES = 9
 SLIDERS = {}
+SLIDER_BASE = {}
 for sname, sl in hero.cfg.get('sliders', {}).items():
     pat = re.compile(sl['bones'])
     bones = [b.name for b in B if pat.fullmatch(b.name)]
@@ -319,14 +321,18 @@ for sname, sl in hero.cfg.get('sliders', {}).items():
         f0, f1 = sl['frames']
         frames = []
         if f0 == 'rest':
-            # from the rest pose straight to one frame (Bebop's hyperbeam: its clip opens from folded)
+            # from the default pose straight to one frame (Bebop's hyperbeam: its clip opens from folded)
             bpy.context.scene.frame_set(f1)
             end = {b: arm.pose.bones[b].matrix_basis.copy() for b in bones}
+            start = {b: Matrix(SLIDER_BASE[b]) if b in SLIDER_BASE else Matrix.Identity(4) for b in bones}
             for i in range(SLIDER_SAMPLES):
-                frames.append({b: Matrix.Identity(4).lerp(m, i / (SLIDER_SAMPLES - 1)) for b, m in end.items()})
+                frames.append({b: start[b].lerp(m, i / (SLIDER_SAMPLES - 1)) for b, m in end.items()})
         for i in range(SLIDER_SAMPLES if f0 != 'rest' else 0):
             bpy.context.scene.frame_set(round(f0 + (f1 - f0) * i / (SLIDER_SAMPLES - 1)))
             frames.append({b: arm.pose.bones[b].matrix_basis.copy() for b in bones})
+            if not i:
+                for b in bones:
+                    SLIDER_BASE.setdefault(b, [list(r) for r in frames[0][b]])
         arm.animation_data.action = None
         bpy.data.actions.remove(a)
         for b in arm.pose.bones:
@@ -337,7 +343,12 @@ for sname, sl in hero.cfg.get('sliders', {}).items():
         deltas = {b: v for b, v in deltas.items()
                   if any(abs(m[i][j] - (i == j)) > 1e-4 for m in v for i in range(4) for j in range(4))}
         RIGDATA.setdefault('sliders', {})[sname] = deltas
+        RIGDATA['slider_base'] = SLIDER_BASE
     SLIDERS[sname] = {b: [Matrix(m) for m in v] for b, v in RIGDATA.get('sliders', {}).get(sname, {}).items()}
+for b, m in RIGDATA.get('slider_base', {}).items() if SLIDERS else ():
+    m = Matrix(m)
+    if any(abs(m[i][j] - (i == j)) > 1e-4 for i in range(4) for j in range(4)):
+        PROP_POSE[b] = [*m.to_translation(), *m.to_quaternion(), *m.to_scale()]
 
 
 def weighted_points(bones):
@@ -2032,8 +2043,9 @@ for o in bpy.data.objects:
         expr_driver(o, path, None, '1 - ' + ' * '.join(terms), props=props)
     print('bodygroup', o.name, ' * '.join(terms))
 
-# pose sliders: an action holding the sampled stretch, played by an Action constraint on each bone (before its own
-# keys, so clips and posing still work on top) with slider_<name> as the constraint's evaluation time
+# pose sliders: an action holding the sampled stretch, played by an Action constraint on each bone (after its own
+# pose, the default one the stretch starts from, so clips and posing still work) with slider_<name> as the
+# constraint's evaluation time
 arm['sliders'] = list(SLIDERS)
 for sname, deltas in SLIDERS.items():
     if not deltas:
@@ -2065,7 +2077,7 @@ for sname, deltas in SLIDERS.items():
         con.action_slot = slot
         con.use_eval_time = True
         con.frame_start, con.frame_end = 0, len(mats) - 1
-        con.mix_mode = 'BEFORE_SPLIT'
+        con.mix_mode = 'AFTER_SPLIT'
         con.use_bone_object_action = False
         pbone.constraints.move(len(pbone.constraints) - 1, 0)
         expr_driver(con, 'eval_time', None, 'v', props=[('v', f'["{key}"]')])
