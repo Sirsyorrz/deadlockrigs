@@ -563,7 +563,30 @@
     2.453,
     0
    ],
-   "estimate_jaw": true
+   "estimate_jaw": true,
+   "card_follow": [
+    [
+     0.0,
+     -0.1953,
+     2.3847
+    ]
+   ],
+   "jaw_deg": 20,
+   "gain": {
+    "brow": 2.5,
+    "browInnerUp": 1.5,
+    "browOuterUp": 2.0,
+    "eyeWide": 3.0,
+    "eyeSquint": 2.0,
+    "eyeBlink": 1.0,
+    "cheek": 1.5,
+    "noseSneer": 2.0,
+    "mouthSmile": 1.4,
+    "mouthFrown": 1.8,
+    "mouthUpperUp": 2.0,
+    "mouthLowerDown": 1.5,
+    "mouthStretch": 1.3
+   }
   }
  },
  {
@@ -1111,7 +1134,24 @@
     "mouthStretch": 1.5,
     "browInnerUp": 1.5,
     "browOuterUp": 2.0
-   }
+   },
+   "card_follow": [
+    [
+     -0.0009,
+     -0.2023,
+     2.4495
+    ],
+    [
+     -0.023,
+     -0.1956,
+     2.3294
+    ],
+    [
+     0.0213,
+     -0.1956,
+     2.3294
+    ]
+   ]
   }
  },
  {

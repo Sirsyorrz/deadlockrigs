@@ -169,6 +169,8 @@ if hero.face.get('jaw_deg'):
     extra['jaw_deg'] = np.array(float(hero.face['jaw_deg']))
 if hero.face.get('gain'):
     extra['gain'] = np.array(json.dumps(hero.face['gain']))
+if hero.face.get('card_follow'):
+    extra['card_follow'] = np.array(hero.face['card_follow'], float).reshape(-1, 3)
 np.savez(os.path.join(hero.data, 'head.npz'), **extra, co=co, nrm=nrm.reshape(-1, 3), tris=tris, mats=mats, matnames=np.array([m.name for m in me.materials]),
          other=other, **{'bone_' + k: v for k, v in bones.items()}, **balls, **weights)
 print('dumped', n, len(tris), 'other', len(other))

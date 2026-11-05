@@ -41,6 +41,9 @@ BLINK_UPPER, BLINK_LOWER = 0.8, 0.2
 PAINTED = None
 # heroes.json face "mirror_keys": right keys mirrored from the left ones
 MIRROR = False
+# heroes.json face "card_follow": points (m) on loose pieces that ride the skin whatever their size (Lash's
+# moustache is wider than the size that tells lashes and brows from hair)
+CARD_FOLLOW = np.zeros((0, 3))
 
 
 def smoothstep(a, b, x):
@@ -1355,6 +1358,7 @@ class Cards:
         anchors = np.zeros(len(h.co), int)
         lid_card = np.zeros(len(h.co), bool)
         follow = np.zeros(len(h.co))
+        forced = np.zeros(len(h.co), bool)
         skin_soft = np.where(rig.soft_w)[0]
         soft_tree = cKDTree(h.wco[skin_soft])
         for c in np.unique(comp[h.weld[cards]]):
@@ -1367,6 +1371,9 @@ class Cards:
             # beards hang off the jaw (Mirage's): they go with it whatever their size
             _, ia = soft_tree.query(h.co[sel])
             on_skin |= np.median(ds) < 0.02 * s and rig.jaw_w[skin_soft[ia]].mean() > 0.2
+            if len(CARD_FOLLOW) and cKDTree(h.co[sel]).query(CARD_FOLLOW)[0].min() < 0.005:
+                on_skin = True
+                forced[sel] = True
             follow[sel] = float(on_skin)
             if np.median(dm) < 0.012 * s and small:
                 anchors[sel] = margin[im]
@@ -1386,6 +1393,12 @@ class Cards:
         self.skin_soft = skin_soft
         # cards follow a smooth blend of the skin around them
         dist, self.near = soft_tree.query(h.co[self.idx], k=8)
+        # card_follow pieces ride the skin above the jaw: a moustache's tips hang by the chin but don't open with it
+        f = forced[self.idx]
+        if f.any():
+            upper = np.where(rig.jaw_w[skin_soft] < 0.3)[0]
+            dist[f], q = cKDTree(h.wco[skin_soft[upper]]).query(h.co[self.idx[f]], k=8)
+            self.near[f] = upper[q]
         wts = 1 / np.maximum(dist, 1e-4) ** 2
         self.wts = wts / wts.sum(1, keepdims=True)
 
@@ -1616,6 +1629,7 @@ if __name__ == '__main__':
     MIRROR = bool(arrays.pop('mirror_keys', False))
     JAW_DEG = float(arrays.pop('jaw_deg', JAW_DEG))
     GAIN = json.loads(str(arrays.pop('gain'))) if 'gain' in arrays else {}
+    CARD_FOLLOW = arrays.pop('card_follow', CARD_FOLLOW)
     h = fg.from_arrays(arrays)
     n_head = len(h.co)
     bag_mesh = None
