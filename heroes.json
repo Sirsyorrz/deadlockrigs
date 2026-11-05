@@ -787,7 +787,8 @@
   "hands": {
    "scale": 2.1,
    "clear": 0.18
-  }
+  },
+  "hold_arm": true
  },
  {
   "slug": "rem",
