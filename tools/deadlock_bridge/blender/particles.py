@@ -64,6 +64,7 @@ def build_particle_systems(importer, time: float = 2.0) -> int:
         importer.collections["Particles"] = collection
     target = _Target(importer.textures, importer.scale, importer.fog_group, collection, importer.warn)
     target.model_mesh = importer.model_mesh
+    target.frame = getattr(importer, "frame", Matrix.Identity(4))
     target.lit_collection = importer.collections.get("Props")
 
     by_name = {}
@@ -138,7 +139,8 @@ def spawn_particle_system(context, path: str, matrix_world: Matrix, time: float 
         if time is None:
             return None
     simulation = plib.simulate(definition, points, time, seed, unset_value=1.0)
-    ambient = _scene_light(context, np.array(matrix_world.translation, np.float64) / target.scale, target.scale)
+    ambient = _scene_light(context, np.array(matrix_world.translation, np.float64) / target.scale, target.scale,
+                           target)
     holder = _ObjectBuilder(target).build(_stem(definition.path), definition.path, simulation, points, time, seed,
                                           ambient, local=True)
     if holder is not None:
@@ -185,12 +187,14 @@ def rebuild_particle_system(context, holder, time: float | None = None, seed: in
         points = plib.preview_control_points(definition)
         simulation = plib.simulate(definition, points, time, seed, unset_value=1.0)
         ambient = _scene_light(context, np.array(holder.matrix_world.translation, np.float64) / target.scale,
-                               target.scale)
+                               target.scale, target)
         _clear_children(holder)
         _ObjectBuilder(target).build(holder.name, path, simulation, points, time, seed, ambient, holder, local=True)
         return bool(holder.children)
-    rotation = np.array(holder.matrix_world.to_3x3().normalized(), np.float64)
-    origin = np.array(holder.matrix_world.translation, np.float64) / target.scale
+    target.frame = _frame(holder)
+    in_game = target.frame.inverted_safe() @ holder.matrix_world
+    rotation = np.array(in_game.to_3x3().normalized(), np.float64)
+    origin = np.array(in_game.translation, np.float64) / target.scale
     points = {0: (origin, rotation)}
     for key, values in (holder.get("dl_control_points") or {}).items():
         values = [float(x) for x in values]
@@ -198,20 +202,31 @@ def rebuild_particle_system(context, holder, time: float | None = None, seed: in
         points[int(key)] = (position, rotation @ np.array(values[3:12]).reshape(3, 3) if len(values) >= 12 else None)
     simulation = plib.simulate(definition, points, time, seed)
     built_at = np.array(holder.get("dl_origin", origin), np.float64)
-    ambient = holder.get("dl_ambient")
-    if ambient is None or np.linalg.norm(built_at - origin) > 1.0:
-        ambient = _scene_light(context, origin, target.scale)
+    stored = holder.get("dl_ambient")
+    # also called when the stored light is kept, for a host's ambient cube for the models
+    ambient = _scene_light(context, np.array(holder.matrix_world.translation, np.float64) / target.scale,
+                           target.scale, target)
+    if stored is not None and np.linalg.norm(built_at - origin) <= 1.0:
+        ambient = stored
 
     _clear_children(holder)
     _ObjectBuilder(target).build(holder.name, path, simulation, points, time, seed, np.asarray(ambient), holder)
     return bool(holder.children)
 
 
+def _frame(holder) -> Matrix:
+    values = holder.get("dl_frame")
+    if values is None or len(values) != 16:
+        return Matrix.Identity(4)
+    return Matrix([list(values[i:i + 4]) for i in range(0, 16, 4)])
+
+
 def _clear_children(holder):
     for child in list(holder.children):
         data = child.data
         bpy.data.objects.remove(child)
-        if isinstance(data, bpy.types.Mesh) and data.users == 0:
+        # model meshes are shared with the map (and the rebuild may place them again)
+        if isinstance(data, bpy.types.Mesh) and data.users == 0 and "dl_model" not in data:
             bpy.data.meshes.remove(data)
 
 
@@ -309,9 +324,17 @@ class _ProbeLight:
         return light
 
 
-def _scene_light(context, position, scale: float) -> np.ndarray:
+def _scene_light(context, position, scale: float, target=None) -> np.ndarray:
     """The light at a point (game units) from the nearest imported prop's ambient cube (the probes there), or full
-    light, as the game draws particles without a map's lighting."""
+    light, as the game draws particles without a map's lighting. A host's light_source comes first; its ambient cube
+    there lights the effect's models (through ``target``)."""
+    if light_source is not None:
+        found = light_source(context, np.asarray(position, np.float64) * scale)
+        if found is not None:
+            ambient, cube = found
+            if target is not None:
+                target.fixed_cube = cube
+            return np.asarray(ambient, np.float64)
     best, best_distance = None, None
     for obj in context.scene.objects:
         if "dl_amb_px" not in obj:
@@ -342,6 +365,11 @@ class _Target:
         self.model_mesh = None
         self.lit_collection = None
         self.probe_cube = None
+        # The ambient cube for every model particle of a placed effect (light_source's), when there's no probe_cube.
+        self.fixed_cube = None
+        # Where game space (scaled to Blender units) sits in the scene: a host whose maps are turned (Deadlock
+        # Rigs' are a quarter turn about Z) builds a map's effects into its frame.
+        self.frame = Matrix.Identity(4)
 
     @classmethod
     def for_scene(cls, context, scale: float | None = None) -> "_Target":
@@ -360,11 +388,25 @@ class _Target:
                 fog_group = bpy.data.node_groups.get(f"DL Fog {name}")
                 collection = next((c for c in child.children if c.name.startswith("Particles")), None)
                 break
+        if fog_group is None and any(c.get("dlr_map") for c in context.scene.collection.children_recursive):
+            # a Deadlock Rigs map: its fog group, local or linked from the map's file
+            fog_group = next((g for g in bpy.data.node_groups if g.name == "Deadlock fog"), None)
         if collection is None:
             collection = bpy.data.collections.get("Deadlock Particles") or bpy.data.collections.new("Deadlock Particles")
             if collection.name not in context.scene.collection.children:
                 context.scene.collection.children.link(collection)
-        return cls(textures, scale, fog_group, collection)
+        target = cls(textures, scale, fog_group, collection)
+        if model_source is not None:
+            target.model_mesh = model_source(context, target)
+        return target
+
+
+# Set by a host add-on: (context, target) -> a model_mesh(path, skin, overrides) function, so effects placed or rebuilt
+# outside a map import can draw their model renderers too.
+model_source = None
+# Set by a host add-on: (context, point in Blender units) -> (ambient rgb, ambient cube's six faces along the scene's
+# axes) from its map's light probes, or None.
+light_source = None
 
 
 class _ObjectBuilder:
@@ -390,13 +432,15 @@ class _ObjectBuilder:
             holder.empty_display_size = 4 * self.scale
             world = Matrix(np.asarray(rotation).tolist()).to_4x4()
             world.translation = tuple(np.asarray(origin) * self.scale)
-            holder.matrix_world = world
+            holder.matrix_world = self.target.frame @ world
             self.target.collection.objects.link(holder)
         holder["dl_effect"] = effect
         holder["dl_local"] = bool(local)
         holder["dl_time"] = float(time)
         holder["dl_seed"] = int(seed)
         holder["dl_unit_scale"] = float(self.scale)
+        if not local and self.target.frame != Matrix.Identity(4):
+            holder["dl_frame"] = [float(x) for row in self.target.frame for x in row]
         holder["dl_origin"] = [float(x) for x in origin]
         holder["dl_ambient"] = [float(x) for x in ambient]
         # The other control points in the first one's frame, so a rebuild carries them along with the empty.
@@ -404,13 +448,15 @@ class _ObjectBuilder:
         for index, (position, cp_rotation) in points.items():
             if index == 0:
                 continue
-            local = list(np.asarray(rotation).T @ (np.asarray(position) - origin))
+            # not called local: that would overwrite the parameter the inverse below depends on
+            placed = list(np.asarray(rotation).T @ (np.asarray(position) - origin))
             if cp_rotation is not None:
-                local += list((np.asarray(rotation).T @ np.asarray(cp_rotation)).ravel())
-            relative[str(index)] = [float(x) for x in local]
+                placed += list((np.asarray(rotation).T @ np.asarray(cp_rotation)).ravel())
+            relative[str(index)] = [float(x) for x in placed]
         holder["dl_control_points"] = relative
 
-        inverse = Matrix.Identity(4) if local else holder.matrix_world.inverted_safe()
+        inverse = Matrix.Identity(4) if local else holder.matrix_world.inverted_safe() @ self.target.frame
+        self._ambient = ambient
         # Each object sits at the system with its vertices around it: EEVEE sorts blended objects by their origins.
         for system, renderer, batch in drawn:
             if isinstance(batch, R.Models):
@@ -453,9 +499,12 @@ class _ObjectBuilder:
             obj["dl_effect"] = effect
             obj["dl_renderer"] = renderer.index
             if self.target.probe_cube is not None:
-                cube = self.target.probe_cube(batch.matrix[i][:3, 3])
-                for face, values in zip(names, cube):
-                    obj[f"dl_amb_{face}"] = [float(x) for x in values]
+                cube = _cube_in_frame(self.target.probe_cube(batch.matrix[i][:3, 3]), self.target.frame)
+            else:
+                # no map's probes: the light the effect's sprites get, from every side
+                cube = self.target.fixed_cube or [self._ambient] * 6
+            for face, values in zip(names, cube):
+                obj[f"dl_amb_{face}"] = [float(x) for x in values]
             self.target.collection.objects.link(obj)
             if self.target.lit_collection is not None:
                 self.target.lit_collection.objects.link(obj)
@@ -520,6 +569,21 @@ class _ObjectBuilder:
         for layer, offset in enumerate(batch.offsets):
             if offset is not None:
                 _attribute(mesh, f"dl_offset{layer}", "FLOAT_VECTOR", offset)
+
+
+def _cube_in_frame(cube, frame: Matrix):
+    """An ambient cube's faces (+x +y +z -x -y -z, game axes) along the scene's axes when game space is turned by a
+    multiple of a quarter turn: the lighting group looks faces up by the world normal."""
+    if frame == Matrix.Identity(4):
+        return cube
+    to_game = np.array(frame.to_3x3().inverted_safe())
+    faces = []
+    for sign in (1.0, -1.0):
+        for axis in range(3):
+            direction = to_game[:, axis] * sign
+            game_axis = int(np.argmax(np.abs(direction)))
+            faces.append(cube[game_axis + (0 if direction[game_axis] > 0 else 3)])
+    return faces
 
 
 def _attribute(mesh, name, kind, values):
@@ -849,10 +913,15 @@ class _SpritecardShader:
             emission = b.node("ShaderNodeEmission")
             b.set(emission.inputs["Color"], b.vscale(color, overbright))
             fog_group = self.target.fog_group
-            fog = b.group(fog_group, Amount=1.0) if fog_group is not None else None
+            fog = None
+            if fog_group is not None:
+                # Deadlock Rigs' fog group calls its amount Alpha
+                amount = "Amount" if "Amount" in fog_group.interface.items_tree else "Alpha"
+                fog = b.group(fog_group, **{amount: 1.0})
             if blend_mode == R.BLEND_ADD:
                 # Drawn over a fogged scene: dimmed by the fog in front of it rather than fogged again.
-                b.set(emission.inputs["Strength"], b.mul(alpha, fog.outputs["Attenuation"]) if fog else alpha)
+                attenuation = fog.outputs.get("Attenuation") if fog else None
+                b.set(emission.inputs["Strength"], b.mul(alpha, attenuation) if attenuation is not None else alpha)
                 add = b.node("ShaderNodeAddShader")
                 b.set(add.inputs[0], transparent.outputs[0])
                 b.set(add.inputs[1], emission.outputs[0])

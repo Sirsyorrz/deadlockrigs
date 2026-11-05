@@ -20,8 +20,12 @@ def default_cache_dir() -> str:
 
 
 def cache_dir() -> str:
+    from . import session
     prefs = get_prefs()
-    path = bpy.path.abspath(prefs.cache_dir) if prefs and prefs.cache_dir else default_cache_dir()
+    if session.cache_override:
+        path = session.cache_override
+    else:
+        path = bpy.path.abspath(prefs.cache_dir) if prefs and prefs.cache_dir else default_cache_dir()
     os.makedirs(path, exist_ok=True)
     return path
 

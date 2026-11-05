@@ -1,3 +1,5 @@
+> Vendored into Deadlock Rigs from Divined's deadlock_bridge 0.1.0 (GPL-3.0-or-later), used for map particle effects (tools/map_particles.py, addon/particles.py). Changed: the bundled Windows library is left out (the Python decoders run instead); session.py and preferences.py take the host's Deadlock and cache folders; blender/particles.py builds into a host's turned map frame, takes host model and light sources and a fog group with an Alpha input, and keeps map effects with several control points in place.
+
 # Deadlock Bridge
 
 A Blender 5.2 extension that loads Deadlock maps straight from the game's VPKs: geometry, props, materials, baked

@@ -3,9 +3,14 @@ from .core import content as contentlib
 
 _content = None
 _install = None
+# Set by a host add-on (Deadlock Rigs) that has its own Deadlock folder setting and cache folder.
+install_override = None
+cache_override = None
 
 
 def install_path() -> str | None:
+    if install_override and contentlib.is_deadlock_folder(install_override):
+        return install_override
     try:
         from .preferences import get_prefs
         prefs = get_prefs()
