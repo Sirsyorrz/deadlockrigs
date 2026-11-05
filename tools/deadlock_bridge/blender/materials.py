@@ -171,12 +171,24 @@ class Translator:
         return node.outputs[0]
 
     def vertex_color(self):
-        """dl_vcolor times the object's tint (Object > Viewport Display > Color, linear; white by default)."""
+        """dl_vcolor times the object's tint (Object > Viewport Display > Color, linear; white by default) and an
+        instance's (a particle's model, from Geometry Nodes)."""
         b = self.b
         attr = b.attribute("dl_vcolor")
+        tint, fade = self.object_tint()
+        color = b.vmul(attr.outputs["Color"], tint)
+        alpha = b.mul(attr.outputs["Alpha"], fade)
+        return color, alpha
+
+    def object_tint(self):
+        """The object's colour and alpha times its instance's. Instances carry them inverted (dl_untint, dl_fade) so
+        that what isn't an instance, reading zeroes, keeps its own."""
+        b = self.b
         info = b.node("ShaderNodeObjectInfo")
-        color = b.vmul(attr.outputs["Color"], info.outputs["Color"])
-        alpha = b.mul(attr.outputs["Alpha"], info.outputs["Alpha"])
+        untint = b.attribute("dl_untint", "INSTANCER").outputs["Vector"]
+        fade = b.attribute("dl_fade", "INSTANCER").outputs["Fac"]
+        color = b.vmul(info.outputs["Color"], b.vsub((1.0, 1.0, 1.0), untint))
+        alpha = b.mul(info.outputs["Alpha"], b.sub(1.0, fade))
         return color, alpha
 
     def casts_shadows(self, blended: bool) -> bool:
@@ -396,6 +408,10 @@ class Translator:
                            b.saturate(b.div(distance, max(self.f("g_flAlphaBoostDistance", 20000.0), 1.0))))
             raw = b.mul(b.mul(color_alpha, vc_alpha), boost)
             alpha = b.math("GREATER_THAN", raw, self.f("g_flAlphaTestReference1", self.f("g_flAlphaTestReference", 0.5)))
+        else:
+            # Opaque surfaces fade out by the object's alpha (raised to the fade exponent) with a dither, as the
+            # engine's surface shaders do: model particles fading in and out.
+            alpha = b.math("POWER", self.object_tint()[1], max(self.f("g_flFadeExponent", 1.0), 0.0001))
 
         fog = self.fog_amount()
         if unlit or additive:

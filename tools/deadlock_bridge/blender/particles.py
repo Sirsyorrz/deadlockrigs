@@ -7,6 +7,10 @@ Nodes and shaded by a port of the game's spritecard shader.
     ropes     a ribbon along the particles' spline, trails a card per particle along its motion; ``DL Particle
               Ribbons`` pushes each side of them out across the strip, in the plane facing the camera
 
+Played back (build_animated): a bake's steps all in each object, a dl_step per point; ``DL Particle Time`` keeps
+the step the scene's time is at, before the other groups run. Model particles are then points (dl_matrix, dl_model,
+dl_untint, dl_fade) that ``DL Particle Models`` instances the models on, from a collection of template objects.
+
 Which systems are built: those set to start active, and inactive ones the map's own logic starts as it loads (a
 logic_auto firing Start, directly or through a logic_relay). Systems that start disabled are left out, and so are
 inactive ones the map never starts: game code plays those when something happens (in the hideout: the matchmaking
@@ -35,6 +39,7 @@ from mathutils import Matrix
 
 from ..core import particles as plib
 from ..core import probes as probelib
+from ..core.particles import bake as baking
 from ..core.particles import renderers as R
 from . import lights as lightlib
 from .nodes import Builder
@@ -52,9 +57,13 @@ def _srgb(c: float) -> float:
     return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
 
 
-def build_particle_systems(importer, time: float = 2.0) -> int:
-    """Builds every shown info_particle_system of the map as it looks ``time`` seconds after it starts. Returns how
-    many systems were built."""
+# Bake steps a second for effects played back with the scene's time.
+BAKE_RATE = 30.0
+
+
+def build_particle_systems(importer, time: float = 2.0, animate: bool = False) -> int:
+    """Builds every shown info_particle_system of the map as it looks ``time`` seconds after it starts, or with
+    ``animate`` looping from then on with the scene's time. Returns how many systems were built."""
     started = _time.time()
     library = plib.library(importer.content)
     collection = importer.collections.get("Particles")
@@ -97,9 +106,13 @@ def build_particle_systems(importer, time: float = 2.0) -> int:
         try:
             points = _control_points(importer, entity, by_name)
             seed = zlib.crc32(f"{entity.get_str('hammeruniqueid') or index}".encode()) & 0x7FFFFFFF
-            simulation = plib.simulate(definition, points, time, seed)
-            holder = builder.build(entity.targetname or _stem(path), definition.path, simulation, points, time, seed,
-                                   lights.at(points[0][0]))
+            name = entity.targetname or _stem(path)
+            ambient = lights.at(points[0][0])
+            if animate:
+                holder = _build_played(builder, name, definition, points, time, seed, ambient, {"loop": True})
+            else:
+                simulation = plib.simulate(definition, points, time, seed)
+                holder = builder.build(name, definition.path, simulation, points, time, seed, ambient)
             if holder is not None:
                 holder["dl_start_active"] = entity.get_bool("start_active", True)
                 built += 1
@@ -119,9 +132,35 @@ def build_particle_systems(importer, time: float = 2.0) -> int:
     return built
 
 
-def spawn_particle_system(context, path: str, matrix_world: Matrix, time: float | None = 2.0, seed: int = 0):
+def _build_played(builder, name, definition, points, time, seed, ambient, playback: dict, holder=None, local=False,
+                  unset_value=0.0):
+    """Bakes an effect and builds it to play with the scene's time. ``playback``: loop (from ``time`` seconds in,
+    for ``length`` seconds or a length that suits the effect when None) or play once from its start for
+    ``length`` seconds, beginning at ``start`` (scene seconds)."""
+    playback = dict(playback, rate=playback.get("rate", BAKE_RATE))
+    if playback["loop"]:
+        frames = baking.loop(definition, points, seed, time, playback.get("length"), playback["rate"], ambient,
+                             unset_value)
+    else:
+        frames = baking.once(definition, points, seed, playback["length"], playback["rate"], ambient, unset_value)
+    return builder.build_animated(name, definition.path, frames, points, time, seed, ambient, playback, holder, local)
+
+
+def _holder_playback(holder) -> dict | None:
+    """How an effect's empty plays back, or None for a still."""
+    if not holder.get("dl_animated"):
+        return None
+    loop = bool(holder.get("dl_loop", True))
+    length = None if loop else int(holder.get("dl_steps", 1)) / float(holder.get("dl_rate", BAKE_RATE))
+    return {"loop": loop, "length": length, "start": float(holder.get("dl_start", 0.0)),
+            "rate": float(holder.get("dl_rate", BAKE_RATE))}
+
+
+def spawn_particle_system(context, path: str, matrix_world: Matrix, time: float | None = 2.0, seed: int = 0,
+                          playback: dict | None = None):
     """Places a particle system from the game's content at a transform (Blender units) as it looks ``time`` seconds
     in (None: at the moment it draws the most), lit and fogged like the Deadlock map in the scene if there is one.
+    With ``playback`` it plays with the scene's time instead (see _build_played; looping from ``time``).
 
     It plays as the particle editor previews it: at the origin with the control points of its preview setup, and
     control points nothing sets reading 1 (the game code that sets scales and counts isn't running), then the empty
@@ -134,15 +173,20 @@ def spawn_particle_system(context, path: str, matrix_world: Matrix, time: float 
     if definition is None:
         raise LookupError(f"'{path}' isn't one of the game's particle systems")
     points = plib.preview_control_points(definition)
-    if time is None:
+    if time is None and not (playback and not playback["loop"]):
         time = plib.busiest_moment(definition, points, seed)
         if time is None:
             return None
-    simulation = plib.simulate(definition, points, time, seed, unset_value=1.0)
     ambient = _scene_light(context, np.array(matrix_world.translation, np.float64) / target.scale, target.scale,
                            target)
-    holder = _ObjectBuilder(target).build(_stem(definition.path), definition.path, simulation, points, time, seed,
-                                          ambient, local=True)
+    builder = _ObjectBuilder(target)
+    if playback:
+        holder = _build_played(builder, _stem(definition.path), definition, points, time or 0.0, seed, ambient,
+                               playback, local=True, unset_value=1.0)
+    else:
+        simulation = plib.simulate(definition, points, time, seed, unset_value=1.0)
+        holder = builder.build(_stem(definition.path), definition.path, simulation, points, time, seed, ambient,
+                               local=True)
     if holder is not None:
         holder.matrix_world = matrix_world
     return holder
@@ -166,9 +210,11 @@ def unsupported_renderers(path: str) -> list[str]:
     return sorted(found)
 
 
-def rebuild_particle_system(context, holder, time: float | None = None, seed: int | None = None) -> bool:
-    """Builds an effect's particles again where its empty is now, at another moment (and seed) if given. Control
-    points beyond the first move and turn with the empty. Returns whether anything was drawn."""
+def rebuild_particle_system(context, holder, time: float | None = None, seed: int | None = None,
+                            playback: dict | None = None) -> bool:
+    """Builds an effect's particles again where its empty is now, at another moment (and seed) and playback (see
+    _build_played; False for a still) if given. Control points beyond the first move and turn with the empty.
+    Returns whether anything was drawn."""
     from .. import session
     path = holder.get("dl_effect")
     if not path:
@@ -182,14 +228,19 @@ def rebuild_particle_system(context, holder, time: float | None = None, seed: in
     definition = library.get(path)
     if definition is None:
         return False
+    playback = _holder_playback(holder) if playback is None else playback or None
     if holder.get("dl_local"):
         # Spawned from the sidebar: played at the origin as previewed, the empty placing it.
         points = plib.preview_control_points(definition)
-        simulation = plib.simulate(definition, points, time, seed, unset_value=1.0)
         ambient = _scene_light(context, np.array(holder.matrix_world.translation, np.float64) / target.scale,
                                target.scale, target)
         _clear_children(holder)
-        _ObjectBuilder(target).build(holder.name, path, simulation, points, time, seed, ambient, holder, local=True)
+        builder = _ObjectBuilder(target)
+        if playback:
+            _build_played(builder, holder.name, definition, points, time, seed, ambient, playback, holder, True, 1.0)
+        else:
+            simulation = plib.simulate(definition, points, time, seed, unset_value=1.0)
+            builder.build(holder.name, path, simulation, points, time, seed, ambient, holder, local=True)
         return bool(holder.children)
     target.frame = _frame(holder)
     in_game = target.frame.inverted_safe() @ holder.matrix_world
@@ -200,7 +251,6 @@ def rebuild_particle_system(context, holder, time: float | None = None, seed: in
         values = [float(x) for x in values]
         position = origin + rotation @ np.array(values[0:3])
         points[int(key)] = (position, rotation @ np.array(values[3:12]).reshape(3, 3) if len(values) >= 12 else None)
-    simulation = plib.simulate(definition, points, time, seed)
     built_at = np.array(holder.get("dl_origin", origin), np.float64)
     stored = holder.get("dl_ambient")
     # also called when the stored light is kept, for a host's ambient cube for the models
@@ -210,7 +260,12 @@ def rebuild_particle_system(context, holder, time: float | None = None, seed: in
         ambient = stored
 
     _clear_children(holder)
-    _ObjectBuilder(target).build(holder.name, path, simulation, points, time, seed, np.asarray(ambient), holder)
+    builder = _ObjectBuilder(target)
+    if playback:
+        _build_played(builder, holder.name, definition, points, time, seed, np.asarray(ambient), playback, holder)
+    else:
+        simulation = plib.simulate(definition, points, time, seed)
+        builder.build(holder.name, path, simulation, points, time, seed, np.asarray(ambient), holder)
     return bool(holder.children)
 
 
@@ -223,6 +278,11 @@ def _frame(holder) -> Matrix:
 
 def _clear_children(holder):
     for child in list(holder.children):
+        templates = child.get("dl_templates")
+        if isinstance(templates, bpy.types.Collection):
+            for template in list(templates.objects):
+                bpy.data.objects.remove(template)
+            bpy.data.collections.remove(templates)
         data = child.data
         bpy.data.objects.remove(child)
         # model meshes are shared with the map (and the rebuild may place them again)
@@ -425,6 +485,86 @@ class _ObjectBuilder:
         drawn = list(plib.draw(simulation, ambient))
         if not drawn and holder is None:
             return None
+        holder, inverse = self._holder(name, effect, points, time, seed, ambient, holder, local)
+        holder["dl_animated"] = False
+        origin = points[0][0]
+        self._ambient = ambient
+        # Each object sits at the system with its vertices around it: EEVEE sorts blended objects by their origins.
+        for system, renderer, batch in drawn:
+            if isinstance(batch, R.Models):
+                self._models(_stem(system.definition.path), batch, holder, inverse, system.definition.path, renderer)
+                continue
+            material = self.materials.get(system.definition, renderer, batch.shading)
+            if isinstance(batch, R.Sprites):
+                obj = self._sprites(f"{_stem(system.definition.path)} sprites", batch, origin, material)
+            else:
+                obj = self._ribbons(f"{_stem(system.definition.path)} {renderer.kind}", batch, origin, material)
+            self._place(obj, system, renderer, holder, inverse, origin)
+        return holder
+
+    def build_animated(self, name, effect, frames, points, time, seed, ambient, playback: dict, holder=None,
+                       local=False):
+        """As build(), from a bake (core.particles.bake: the draws of every step) played back with the scene's time:
+        each object holds every step's particles, a ``dl_step`` per point, and DL Particle Time keeps the current
+        step's. ``playback``: rate (steps a second), loop (or play once from ``start``, scene seconds)."""
+        groups = {}
+        for step, drawn in enumerate(frames):
+            for system, renderer, batch in drawn:
+                groups.setdefault((id(system), renderer.index), (system, renderer, []))[2].append((step, batch))
+        if not groups and holder is None:
+            return None
+        holder, inverse = self._holder(name, effect, points, time, seed, ambient, holder, local)
+        holder["dl_animated"] = True
+        holder["dl_rate"] = float(playback["rate"])
+        holder["dl_steps"] = len(frames)
+        holder["dl_loop"] = bool(playback["loop"])
+        holder["dl_start"] = float(playback.get("start", 0.0))
+        origin = points[0][0]
+        self._ambient = ambient
+        for system, renderer, entries in groups.values():
+            stem = _stem(system.definition.path)
+            steps = np.array([step for step, _ in entries], np.int32)
+            batches = [batch for _, batch in entries]
+            if isinstance(batches[0], R.Models):
+                obj = self._animated_models(f"{stem} models", batches, steps, origin)
+                if obj is None:
+                    continue
+            else:
+                shading, varying = _varying_shading([batch.shading for batch in batches])
+                material = self.materials.get(system.definition, renderer, shading)
+                if isinstance(batches[0], R.Sprites):
+                    merged, counts = _merge_sprites(renderer, batches)
+                    obj = self._sprites(f"{stem} sprites", merged, origin, material, timed=True)
+                else:
+                    merged, counts = _merge_ribbons(renderer, batches)
+                    obj = self._ribbons(f"{stem} {renderer.kind}", merged, origin, material, timed=True)
+                for attribute_name, (kind, values) in varying.items():
+                    _attribute(obj.data, attribute_name, kind, np.repeat(values, counts, axis=0))
+                _attribute(obj.data, "dl_step", "INT", np.repeat(steps, counts))
+            self._set_playback(obj, holder)
+            self._place(obj, system, renderer, holder, inverse, origin)
+        return holder
+
+    def _place(self, obj, system, renderer, holder, inverse, origin):
+        obj["dl_effect"] = system.definition.path
+        obj["dl_renderer"] = renderer.index
+        obj.visible_shadow = False
+        obj.parent = holder
+        obj.matrix_parent_inverse = inverse
+        obj.matrix_basis = Matrix.Translation(tuple(np.asarray(origin) * self.scale))
+        self.target.collection.objects.link(obj)
+
+    @staticmethod
+    def _set_playback(obj, holder):
+        modifier = obj.modifiers.get("Particle time")
+        _set_input(modifier, "Rate", float(holder["dl_rate"]))
+        _set_input(modifier, "Steps", int(holder["dl_steps"]))
+        _set_input(modifier, "Loop", bool(holder["dl_loop"]))
+        _set_input(modifier, "Start", float(holder["dl_start"]))
+
+    def _holder(self, name, effect, points, time, seed, ambient, holder, local):
+        """The effect's empty (a new one at its first control point, or the given one emptied by the caller) with
+        what a rebuild needs, and the parent inverse its objects take."""
         origin, rotation = points[0]
         if holder is None:
             holder = bpy.data.objects.new(name, None)
@@ -454,27 +594,8 @@ class _ObjectBuilder:
                 placed += list((np.asarray(rotation).T @ np.asarray(cp_rotation)).ravel())
             relative[str(index)] = [float(x) for x in placed]
         holder["dl_control_points"] = relative
-
         inverse = Matrix.Identity(4) if local else holder.matrix_world.inverted_safe() @ self.target.frame
-        self._ambient = ambient
-        # Each object sits at the system with its vertices around it: EEVEE sorts blended objects by their origins.
-        for system, renderer, batch in drawn:
-            if isinstance(batch, R.Models):
-                self._models(_stem(system.definition.path), batch, holder, inverse, system.definition.path, renderer)
-                continue
-            material = self.materials.get(system.definition, renderer, batch.shading)
-            if isinstance(batch, R.Sprites):
-                obj = self._sprites(f"{_stem(system.definition.path)} sprites", batch, origin, material)
-            else:
-                obj = self._ribbons(f"{_stem(system.definition.path)} {renderer.kind}", batch, origin, material)
-            obj["dl_effect"] = system.definition.path
-            obj["dl_renderer"] = renderer.index
-            obj.visible_shadow = False
-            obj.parent = holder
-            obj.matrix_parent_inverse = inverse
-            obj.matrix_basis = Matrix.Translation(tuple(np.asarray(origin) * self.scale))
-            self.target.collection.objects.link(obj)
-        return holder
+        return holder, inverse
 
     def _models(self, name, batch: R.Models, holder, inverse, effect, renderer):
         """A linked duplicate of the model per particle, lit like the map's props."""
@@ -509,7 +630,61 @@ class _ObjectBuilder:
             if self.target.lit_collection is not None:
                 self.target.lit_collection.objects.link(obj)
 
-    def _sprites(self, name, batch: R.Sprites, origin, material):
+    def _animated_models(self, name, batches, steps, origin):
+        """A point per model particle of every step with its transform, model and tint, instancing the models
+        (DL Particle Models). The models are template objects, out of the scene, lit by the light at the effect."""
+        if self.target.model_mesh is None:
+            self.target.warn(f"particles: model renderer of '{name}' needs a map import")
+            return None
+        first = batches[0]
+        overrides = ((0, 0xFFFFFFFF, first.material),) if first.material else ()
+        meshes = [self.target.model_mesh(path, first.skin, overrides) for path in first.paths]
+        if not any(meshes):
+            return None
+        if self.target.probe_cube is not None:
+            cube = _cube_in_frame(self.target.probe_cube(np.asarray(origin, np.float64)), self.target.frame)
+        else:
+            cube = self.target.fixed_cube or [self._ambient] * 6
+        templates = bpy.data.collections.new(f"{name} templates")
+        for index, mesh in enumerate(meshes):
+            # a missing model still takes its index, drawing nothing
+            template = bpy.data.objects.new(f"{name} {index}", mesh)
+            template.visible_shadow = False
+            for face, values in zip(("px", "py", "pz", "nx", "ny", "nz"), cube):
+                template[f"dl_amb_{face}"] = [float(x) for x in values]
+            templates.objects.link(template)
+            if mesh is None:
+                template.hide_render = template.hide_viewport = True
+
+        counts = [batch.count for batch in batches]
+        matrix = np.concatenate([batch.matrix for batch in batches]).copy()
+        matrix[:, :3, 3] = (matrix[:, :3, 3] - np.asarray(origin)) * self.scale
+        tint = np.concatenate([np.vectorize(_srgb)(batch.tint) for batch in batches])
+        alpha = np.clip(np.concatenate([batch.alpha for batch in batches]), 0.0, 1.0)
+        mesh = bpy.data.meshes.new(name)
+        mesh.vertices.add(len(matrix))
+        mesh.vertices.foreach_set("co", matrix[:, :3, 3].astype(np.float32).ravel())
+        # Blender's matrices are stored column by column
+        _attribute(mesh, "dl_matrix", "FLOAT4X4", matrix.transpose(0, 2, 1))
+        _attribute(mesh, "dl_model", "INT", np.concatenate([batch.model for batch in batches]))
+        _attribute(mesh, "dl_untint", "FLOAT_VECTOR", 1.0 - tint)
+        _attribute(mesh, "dl_fade", "FLOAT", 1.0 - alpha)
+        _attribute(mesh, "dl_step", "INT", np.repeat(steps, counts))
+        mesh.update()
+        obj = bpy.data.objects.new(name, mesh)
+        self._time_modifier(obj)
+        modifier = obj.modifiers.new("Particle models", "NODES")
+        modifier.node_group = _shared_group("DL Particle Models", _model_group)
+        _set_input(modifier, "Models", templates)
+        obj["dl_templates"] = templates
+        return obj
+
+    @staticmethod
+    def _time_modifier(obj):
+        modifier = obj.modifiers.new("Particle time", "NODES")
+        modifier.node_group = _shared_group("DL Particle Time", _time_group)
+
+    def _sprites(self, name, batch: R.Sprites, origin, material, timed=False):
         n = batch.count
         mesh = bpy.data.meshes.new(name)
         mesh.vertices.add(n)
@@ -526,6 +701,8 @@ class _ObjectBuilder:
         self._shading_attributes(mesh, batch)
         mesh.update()
         obj = bpy.data.objects.new(name, mesh)
+        if timed:
+            self._time_modifier(obj)
         modifier = obj.modifiers.new("Camera facing cards", "NODES")
         modifier.node_group = self.sprite_group
         _set_input(modifier, "Facing", batch.orientation)
@@ -533,7 +710,7 @@ class _ObjectBuilder:
         mesh.materials.append(material)
         return obj
 
-    def _ribbons(self, name, batch: R.Ribbons, origin, material):
+    def _ribbons(self, name, batch: R.Ribbons, origin, material, timed=False):
         mesh = bpy.data.meshes.new(name)
         count = len(batch.position)
         quads = len(batch.quads)
@@ -552,6 +729,8 @@ class _ObjectBuilder:
         mesh.update(calc_edges=True)
         mesh.materials.append(material)
         obj = bpy.data.objects.new(name, mesh)
+        if timed:
+            self._time_modifier(obj)
         modifier = obj.modifiers.new("Camera facing strips", "NODES")
         modifier.node_group = self.ribbon_group
         _set_input(modifier, "Face Camera", batch.facing is None)
@@ -588,8 +767,78 @@ def _cube_in_frame(cube, frame: Matrix):
 
 def _attribute(mesh, name, kind, values):
     attribute = mesh.attributes.new(name, kind, "POINT")
-    key = "value" if kind == "FLOAT" else "vector" if kind == "FLOAT_VECTOR" else "color"
-    attribute.data.foreach_set(key, np.ascontiguousarray(values, np.float32).ravel())
+    key = "vector" if kind == "FLOAT_VECTOR" else "color" if kind == "FLOAT_COLOR" else "value"
+    dtype = np.int32 if kind == "INT" else np.float32
+    attribute.data.foreach_set(key, np.ascontiguousarray(values, dtype).ravel())
+
+
+# Baked steps -------------------------------------------------------------------------------------------------------
+
+_VARYING_TOP = ("overbright", "desaturation")
+_VARYING_LAYER = ("blend", "rotation", "distortion", "zoom", "scale", "offset")
+
+
+def _varying_shading(shadings: list) -> tuple[dict, dict]:
+    """A renderer's shading over the steps of a bake: the first step's, with the values that change from step to
+    step (a texture scrolling with the system's age, say) named point attributes instead, and those attributes'
+    values per step: {name: (kind, values)}."""
+    base = dict(shadings[0])
+    base["layers"] = [dict(layer) for layer in shadings[0]["layers"]]
+    attributes = {}
+    for key in _VARYING_TOP:
+        values = [s[key] for s in shadings]
+        if any(v != values[0] for v in values):
+            base[key] = f"dl_v_{key}"
+            attributes[base[key]] = ("FLOAT", np.asarray(values, np.float64))
+    for index, layer in enumerate(base["layers"]):
+        for key in _VARYING_LAYER:
+            values = [s["layers"][index][key] for s in shadings]
+            if all(v == values[0] for v in values):
+                continue
+            layer[key] = f"dl_v{index}_{key}"
+            if key in ("scale", "offset"):
+                third = 1.0 if key == "scale" else 0.0
+                attributes[layer[key]] = ("FLOAT_VECTOR", np.array([(v[0], v[1], third) for v in values]))
+            else:
+                attributes[layer[key]] = ("FLOAT", np.asarray(values, np.float64))
+    return base, attributes
+
+
+def _stack(batches, name):
+    return np.concatenate([getattr(batch, name) for batch in batches])
+
+
+def _merge_layers(out, batches):
+    for field in ("rects", "next_rects", "offsets"):
+        for layer in range(len(getattr(out, field))):
+            values = [getattr(batch, field)[layer] for batch in batches]
+            if all(v is not None for v in values):
+                getattr(out, field)[layer] = np.concatenate(values)
+
+
+def _merge_sprites(renderer, batches):
+    """Every step's sprites as one batch, and how many each step has."""
+    counts = [batch.count for batch in batches]
+    out = R.Sprites(renderer, sum(counts))
+    out.orientation = batches[0].orientation
+    for name in ("position", "half_width", "roll", "yaw", "right", "up", "card", "color", "frame_blend"):
+        setattr(out, name, _stack(batches, name))
+    _merge_layers(out, batches)
+    return out, counts
+
+
+def _merge_ribbons(renderer, batches):
+    """Every step's strips as one batch, and how many vertices each step has."""
+    counts = [len(batch.position) for batch in batches]
+    out = R.Ribbons(renderer)
+    for name in ("position", "axis", "width", "card", "color", "frame_blend"):
+        setattr(out, name, _stack(batches, name))
+    if all(batch.facing is not None for batch in batches):
+        out.facing = _stack(batches, "facing")
+    starts = np.cumsum([0] + counts[:-1])
+    out.quads = np.concatenate([batch.quads + start for batch, start in zip(batches, starts)])
+    _merge_layers(out, batches)
+    return out, counts
 
 
 def _set_input(modifier, name, value):
@@ -768,6 +1017,62 @@ def _sprite_group() -> bpy.types.NodeTree:
     return tree
 
 
+def _time_group() -> bpy.types.NodeTree:
+    """``DL Particle Time``: keeps the points (and the faces on them) of the bake step the scene's time is at:
+    seconds times Rate, wrapped round Steps when looping, else counted from Start and nothing outside the bake."""
+    tree, b, i, out = _geometry_group("DL Particle Time", [("Rate", "NodeSocketFloat", 30.0),
+                                                          ("Steps", "NodeSocketInt", 1),
+                                                          ("Loop", "NodeSocketBool", True),
+                                                          ("Start", "NodeSocketFloat", 0.0)])
+    seconds = b.node("GeometryNodeInputSceneTime").outputs["Seconds"]
+    # a hair over, so a frame on a step's boundary doesn't round down to the step before
+    looped = b.math("FLOOR", b.math("FLOORED_MODULO", b.madd(seconds, i["Rate"], 0.001), i["Steps"]))
+    once = b.math("FLOOR", b.madd(b.sub(seconds, i["Start"]), i["Rate"], 0.001))
+    switch = b.node("GeometryNodeSwitch", input_type="FLOAT")
+    b.set(switch.inputs["Switch"], i["Loop"])
+    b.set(switch.inputs["False"], once)
+    b.set(switch.inputs["True"], looped)
+    b.column(2)
+    step = b.node("GeometryNodeInputNamedAttribute", data_type="INT")
+    step.inputs["Name"].default_value = "dl_step"
+    other = b.node("FunctionNodeCompare", data_type="FLOAT", operation="NOT_EQUAL")
+    other.inputs["Epsilon"].default_value = 0.5
+    b.set(other.inputs["A"], step.outputs["Attribute"])
+    b.set(other.inputs["B"], switch.outputs[0])
+    b.column(4)
+    delete = b.node("GeometryNodeDeleteGeometry", domain="POINT")
+    b.set(delete.inputs["Geometry"], i["Geometry"])
+    b.set(delete.inputs["Selection"], other.outputs[0])
+    b.set(out.inputs[0], delete.outputs[0])
+    return tree
+
+
+def _model_group() -> bpy.types.NodeTree:
+    """``DL Particle Models``: the model each point names (dl_model, an index into the Models collection's objects)
+    placed by its dl_matrix; the points' tint and fade carry over to the instances for the materials."""
+    tree, b, i, out = _geometry_group("DL Particle Models", [("Models", "NodeSocketCollection", None)])
+    models = b.node("GeometryNodeCollectionInfo", transform_space="ORIGINAL")
+    b.set(models.inputs["Collection"], i["Models"])
+    models.inputs["Separate Children"].default_value = True
+    models.inputs["Reset Children"].default_value = True
+    index = b.node("GeometryNodeInputNamedAttribute", data_type="INT")
+    index.inputs["Name"].default_value = "dl_model"
+    b.column(2)
+    instances = b.node("GeometryNodeInstanceOnPoints")
+    b.set(instances.inputs["Points"], i["Geometry"])
+    b.set(instances.inputs["Instance"], models.outputs[0])
+    instances.inputs["Pick Instance"].default_value = True
+    b.set(instances.inputs["Instance Index"], index.outputs["Attribute"])
+    matrix = b.node("GeometryNodeInputNamedAttribute", data_type="FLOAT4X4")
+    matrix.inputs["Name"].default_value = "dl_matrix"
+    b.column(4)
+    placed = b.node("GeometryNodeSetInstanceTransform")
+    b.set(placed.inputs["Instances"], instances.outputs[0])
+    b.set(placed.inputs["Transform"], matrix.outputs["Attribute"])
+    b.set(out.inputs[0], placed.outputs[0])
+    return tree
+
+
 def _ribbon_group() -> bpy.types.NodeTree:
     """``DL Particle Ribbons``: pushes each vertex of a strip sideways by its signed width, across the strip's
     direction in the plane facing the camera (or the plane with the stored normal)."""
@@ -867,6 +1172,14 @@ class _SpritecardShader:
         self.b = Builder(material.node_tree)
         self._previous = None  # the last layer sampled: image, extension, coordinate (distortion resamples it)
 
+    # A shading value is a number, or the name of the point attribute holding it when it changes during a bake.
+
+    def _num(self, value):
+        return self.b.attribute(value).outputs["Fac"] if isinstance(value, str) else value
+
+    def _vec(self, value):
+        return self.b.attribute(value).outputs["Vector"] if isinstance(value, str) else value
+
     def build(self):
         b = self.b
         b.column(0)
@@ -895,7 +1208,7 @@ class _SpritecardShader:
         desaturation = self.shading["desaturation"]
         if desaturation:
             gray = b.dot(color, _LUMA)
-            color = b.vlerp(color, b.combine(gray, gray, gray), desaturation)
+            color = b.vlerp(color, b.combine(gray, gray, gray), self._num(desaturation))
         alpha = b.mul(alpha, vertex.outputs["Alpha"])
         b.frame(None)
 
@@ -909,7 +1222,8 @@ class _SpritecardShader:
             b.set(transparent.inputs["Color"], b.vscale(b.vmath("MINIMUM", b.vmath("MAXIMUM", tint, (0, 0, 0)), (1, 1, 1)), 2.0))
             shader = transparent.outputs[0]
         else:
-            overbright = b.value(self.shading["overbright"], "Overbright")
+            overbright = self.shading["overbright"]
+            overbright = self._num(overbright) if isinstance(overbright, str) else b.value(overbright, "Overbright")
             emission = b.node("ShaderNodeEmission")
             b.set(emission.inputs["Color"], b.vscale(color, overbright))
             fog_group = self.target.fog_group
@@ -959,10 +1273,17 @@ class _SpritecardShader:
         if rotation:
             rotate = b.node("ShaderNodeVectorRotate", rotation_type="Z_AXIS")
             b.set(rotate.inputs["Vector"], centred)
-            b.set(rotate.inputs["Angle"], rotation)
+            b.set(rotate.inputs["Angle"], self._num(rotation))
             centred = rotate.outputs[0]
-        origin = (((offset[0] + 0.5) % 1.0), ((offset[1] + 0.5) % 1.0), 0.0)
-        inverse = tuple(1.0 / s if s else 0.0 for s in scale) + (1.0,)
+        if isinstance(offset, str):
+            origin = b.vmul(b.vmath("FRACTION", b.vadd(self._vec(offset), (0.5, 0.5, 0.0))), (1.0, 1.0, 0.0))
+        else:
+            origin = (((offset[0] + 0.5) % 1.0), ((offset[1] + 0.5) % 1.0), 0.0)
+        if isinstance(scale, str):
+            # the safe divide gives 0 for a zero scale, as the constant does
+            inverse = b.vmath("DIVIDE", (1.0, 1.0, 1.0), self._vec(scale))
+        else:
+            inverse = tuple(1.0 / s if s else 0.0 for s in scale) + (1.0,)
         placed = b.vmath("MULTIPLY_ADD", centred, inverse, origin)
         if layer["clamp"]:
             placed = b.vmath("MINIMUM", b.vmath("MAXIMUM", placed, (0.0, 0.0, 0.0)), (1.0, 1.0, 1.0))
@@ -1019,14 +1340,22 @@ class _SpritecardShader:
         """Zooms in on the card's centre, between a wide and a tight sample, by how far through its cycle the
         layer's zoom rate is."""
         b = self.b
-        phase = rate % 1.0
-        eased = phase / (-0.4 * (1.0 - phase) + 1.0)
+        if isinstance(rate, str):
+            phase = b.math("FRACT", self._num(rate))
+            eased = b.div(phase, b.madd(b.sub(1.0, phase), -0.4, 1.0))
+            scales = (b.madd(eased, 1.0 - 4.0, 4.0), b.madd(eased, 0.0625 - 1.0, 1.0))
+            amount = b.mul(eased, eased)
+        else:
+            phase = rate % 1.0
+            eased = phase / (-0.4 * (1.0 - phase) + 1.0)
+            scales = (4.0 + (1.0 - 4.0) * eased, 1.0 + (0.0625 - 1.0) * eased)
+            amount = eased * eased
         samples = []
-        for scale in (4.0 + (1.0 - 4.0) * eased, 1.0 + (0.0625 - 1.0) * eased):
-            zoomed = b.vmath("MULTIPLY_ADD", b.vsub(uv, (0.5, 0.5, 0.0)), (scale, scale, 1.0), (0.5, 0.5, 0.0))
+        for scale in scales:
+            factor = b.combine(scale, scale, 1.0) if not isinstance(scale, float) else (scale, scale, 1.0)
+            zoomed = b.vmath("MULTIPLY_ADD", b.vsub(uv, (0.5, 0.5, 0.0)), factor, (0.5, 0.5, 0.0))
             samples.append(b.image(image, zoomed, extension=extension, label=f"Layer {index} zoom"))
         wide, tight = samples
-        amount = eased * eased
         return (b.vlerp(tight.outputs["Color"], wide.outputs["Color"], amount),
                 b.lerp(tight.outputs["Alpha"], wide.outputs["Alpha"], amount))
 
@@ -1038,7 +1367,7 @@ class _SpritecardShader:
         b.set(gamma.inputs["Color"], rgb)
         b.set(gamma.inputs["Gamma"], 1.0 / 2.2)
         push = b.vmath("MULTIPLY_ADD", gamma.outputs[0], (2.0, 2.0, 0.0), (-1.0, -1.0, 0.0))
-        push = b.vscale(push, b.mul(alpha, strength * 0.125))
+        push = b.vscale(push, b.mul(alpha, b.mul(self._num(strength), 0.125)))
         # V runs up in Blender's image coordinates: a push down the card moves the sample up the image.
         moved = b.vmath("MULTIPLY_ADD", push, (-1.0, 1.0, 0.0), uv)
         sample = b.image(image, moved, extension=extension, label=f"Layer {index} distorted")
@@ -1126,8 +1455,8 @@ class _SpritecardShader:
             out_rgb, out_a = b.vscale(acc_rgb, b.dot(m_rgb, _LUMA)), m_a
         else:
             out_rgb, out_a = b.vmul(acc_rgb, m_rgb), b.mul(acc_a, m_a)
-        amount = layer["blend"]
-        if amount != 1.0:
+        amount = self._num(layer["blend"])
+        if isinstance(layer["blend"], str) or amount != 1.0:
             out_rgb = b.vlerp(acc_rgb, out_rgb, amount)
             out_a = b.lerp(acc_a, out_a, amount)
         return b.vmath("MAXIMUM", out_rgb, zero_rgb), b.math("MAXIMUM", out_a, 0.0)
