@@ -12,7 +12,7 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
-from . import crop, look, npcs, particles, riglight, textures
+from . import crop, look, npcs, particles, riglight, textures, ziplines
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -663,11 +663,13 @@ def register():
     riglight.register()
     particles.register()
     npcs.register()
+    ziplines.register()
 
 
 def unregister():
     if _job:
         _job.cancel()
+    ziplines.unregister()
     npcs.unregister()
     particles.unregister()
     riglight.unregister()

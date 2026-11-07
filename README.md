@@ -126,6 +126,10 @@ toggle off removes them. Maps built before this get the NPC spots in a few secon
 a while in a file with Midtown in it (Blender appends slowly into large files, about 8 seconds per kind of NPC, about
 2 minutes for all of them); the panel shows which one it is on.
 
+**Ziplines.** The Ziplines toggle under the NPCs puts the lanes' ziplines on the map in their lane colours (yellow,
+blue, green), in a `<map> ziplines` collection. They wobble and pulse as in the game, driven by the scene's time, so
+play or scrub the timeline to see them move. Turning it off removes them.
+
 **Game look.** Adding a map puts the game's post-processing on the scene: its compositor gets the game's exposure,
 filmic curve, bloom and vignette, and the view transform is set to Standard. That is most of what makes a render look
 like Deadlock rather than Blender. Bloom and Vignette in the Map section set their strength.

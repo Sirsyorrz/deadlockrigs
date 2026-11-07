@@ -16,6 +16,8 @@ import bpy
 from mathutils import Euler, Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
+from . import ziplines
+
 ROOT = 'dlr_npcs'
 # heroes.json "idle" names each NPC's clip; these are tried for the others
 IDLE_CLIPS = ('game_idle', 'game_primary_idle', 'game_stand_idle')
@@ -387,12 +389,13 @@ def draw(layout, context):
     row = box.row()
     row.enabled = not busy
     row.prop(sc, 'dlr_npc_anims')
+    ziplines.draw(box, context)
     if _placing['at'] is not None:
         done, total, name = _placing['at']
         box.label(text=f'Placing {name} ({done + 1}/{total})')
         box.progress(factor=done / total, type='BAR', text=f'{done}/{total}')
     elif pos is not None and _job is not None:
-        what = {'NPCS': "Finding the map's NPCs", 'RIG': f'Building {hero_name(_job.slug)}',
+        what = {'NPCS': "Finding the map's NPCs and ziplines", 'RIG': f'Building {hero_name(_job.slug)}',
                 'ANIMS': f"Exporting {hero_name(_job.slug)}'s animations"}.get(_job.kind, _job.slug)
         box.label(text=f'{what} ({pos[0]}/{pos[1]})')
         box.progress(factor=_job.progress, type='BAR', text=f'{_job.status}  {_job.progress:.0%}')

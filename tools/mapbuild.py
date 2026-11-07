@@ -51,6 +51,7 @@ class MapFiles:
         self.blend = os.path.join(self.out, slug + '.blend')
         self.stamp_file = os.path.join(self.out, 'map.json')
         self.npcs_file = os.path.join(self.out, 'npcs.json')
+        self.ziplines_file = os.path.join(self.out, 'ziplines.json')
 
 
 def install_dir(pak):
@@ -310,8 +311,6 @@ class MapBuilder(Builder):
         settings['glass_masks'] = self.glass_masks(m, vpks)
         settings['layer_textures'] = self.layer_textures(m, vpks)
         settings['anim_textures'] = self.anim_textures(m, vpks)
-        colors = env.lane_colors(self.dump(m, 'scripts/generic_data.vdata', [self.pak]))
-        settings['ziplines'] = env.ziplines(ents, colors)
         os.remove(os.path.join(m.dir, 'dump.txt'))
         json.dump(settings, open(os.path.join(m.lighting, 'settings.json'), 'w', encoding='utf-8'), indent=1)
         log(f'  lighting: sun {"baked" if settings["sun"] and settings["sun"]["baked"] else "live"}, '
@@ -326,9 +325,13 @@ class MapBuilder(Builder):
         npcs = map_npcs.spawns(ents)
         json.dump({'npcs': npcs}, open(m.npcs_file, 'w', encoding='utf-8'), indent=1)
         log(f'  npcs: {len(npcs)} spawns')
+        colors = env.lane_colors(self.dump(m, 'scripts/generic_data.vdata', [self.pak]))
+        ziplines = env.ziplines(ents, colors)
+        json.dump({'ziplines': ziplines}, open(m.ziplines_file, 'w', encoding='utf-8'))
+        log(f'  ziplines: {len(ziplines)}')
 
     def npcs_only(self, slug):
-        """Just <map>/npcs.json, for a map built before the build wrote it."""
+        """Just <map>/npcs.json and ziplines.json, for a map built before the build wrote them."""
         work = os.environ.get('DLRIG_WORK') or os.path.join(os.path.dirname(TOOLS), 'heroes')
         out = os.environ.get('DLRIG_OUT') or os.path.join(work, 'out')
         m = MapFiles(slug, work, out)
@@ -462,7 +465,7 @@ def main(argv=None):
     ap.add_argument('--out', help='the map goes in <out>/maps/<map>/ (default: heroes/out/)')
     ap.add_argument('--keep', action='store_true', help='keep the export and the rebatched copy')
     ap.add_argument('--force', action='store_true', help='rebuild even if the map is up to date')
-    ap.add_argument('--npcs', action='store_true', help="only write the map's NPC spawns (npcs.json)")
+    ap.add_argument('--npcs', action='store_true', help="only write the map's npcs.json and ziplines.json")
     ap.add_argument('--no-mods', dest='mods', action='store_false',
                     help="leave out the mods in Deadlock's addons folders (they are in by default, as in the game)")
     args = ap.parse_args(argv)

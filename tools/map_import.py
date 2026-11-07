@@ -26,7 +26,6 @@ import map_probes  # noqa: E402
 import map_reflections  # noqa: E402
 import map_parallax  # noqa: E402
 import map_textures  # noqa: E402
-import map_ziplines  # noqa: E402
 
 # so the build log shows each line as it happens
 sys.stdout.reconfigure(line_buffering=True)
@@ -247,8 +246,6 @@ if install:
         traceback.print_exc()
         print(f'WARNING: particle effects failed: {e}')
 reached('particles')
-zips = map_ziplines.add_ziplines(coll, settings.get('ziplines'))
-print(f'ziplines: {len(zips)}')
 os.makedirs(tex_dir, exist_ok=True)
 written = set()
 for img in tracked(bpy.data.images, 'volumes', 'textures'):

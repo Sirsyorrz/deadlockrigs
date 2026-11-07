@@ -225,15 +225,22 @@ def zipline_group(material):
     return tree
 
 
-def add_ziplines(coll, ziplines):
-    """One object per lane, in a '<map> ziplines' collection; returns them."""
-    if not ziplines:
-        return []
-    material = zipline_material()
-    group = zipline_group(material)
-    zcoll = bpy.data.collections.new(coll.name + ' ziplines')
-    coll.children.link(zcoll)
-    out = []
+def shared_group():
+    """The group and its material, made again when an older version is in the file."""
+    group = bpy.data.node_groups.get(GROUP)
+    if group is not None and group.get('dlr_version') == VERSION:
+        return group
+    for old in (group, bpy.data.materials.get(MATERIAL)):
+        if old is not None:
+            old.name += ' old'
+    return zipline_group(zipline_material())
+
+
+def add_ziplines(parent, name, ziplines):
+    """One object per lane in a new collection under parent; returns the collection."""
+    group = shared_group()
+    zcoll = bpy.data.collections.new(name)
+    parent.children.link(zcoll)
     for path in ziplines:
         name = f'zipline lane {path["lane"]}' if path.get('lane') else 'zipline ' + path['name']
         me = line_mesh(name, path)
@@ -246,5 +253,4 @@ def add_ziplines(coll, ziplines):
         ob.visible_shadow = False
         # crop.py keeps effects whole (a cut line would lose its far parts' motion)
         ob['dl_effect'] = 'zipline'
-        out.append(ob)
-    return out
+    return zcoll
