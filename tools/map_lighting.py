@@ -628,20 +628,33 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
 
 
 def apply_self_illum(mat, bsdf, floats, vectors):
-    """pbr's self-illumination, which the export leaves unlit (it writes no emissive factor): the albedo turns to
-    the illum tint (mixed towards tint * albedo by g_flSelfIllumAlbedoFactor) where the mask is, by
-    mask * saturate(scale), and glows with that colour * mask * scale."""
+    """pbr's self-illumination, which the export leaves unlit (it writes no emissive factor), as the game's pixel
+    shader has it (pbr_vulkan_60_ps.vcs): the illum colour is the tint mixed towards tint * albedo by
+    g_flSelfIllumAlbedoFactor, both scaled by the fresnel mask when g_vSelfIllumFresnelMaskRange1 is set; the albedo
+    turns to it by mask * saturate(scale) and glows with it * mask * scale. The tints have no Expression in the
+    .vfx, so the shader gets them as written, not linearised."""
     g = Graph(mat.node_tree)
     scale = param(floats, 'g_flSelfIllumScale', 1.0)
     mask_source = source_of(bsdf.inputs['Emission Color'])
-    mask = g.split(mask_source)[0] if mask_source else 1.0
+    mask = g.split(mask_source)[0] if mask_source else float((vectors.get('TextureSelfIllumMask1') or [1])[0])
     albedo = source_of(bsdf.inputs['Base Color']) or tuple(bsdf.inputs['Base Color'].default_value)
-    tint = tuple(srgb_to_linear(np.asarray(list(vectors.get('g_vSelfIllumTint1') or (1, 1, 1))[:3], float))) + (1,)
-    illum_tint = g.mix('MIX', tint, g.mix('MULTIPLY', tint, albedo), param(floats, 'g_flSelfIllumAlbedoFactor', 1.0))
-    amount = g.math('MULTIPLY', mask, min(max(scale, 0.0), 1.0)) if mask_source else min(max(scale, 0.0), 1.0)
-    lit = g.mix('MIX', albedo, illum_tint, amount)
+    tint = tuple(float(x) for x in list(vectors.get('g_vSelfIllumTint1') or (1, 1, 1))[:3]) + (1.0,)
+    illum = g.mix('MIX', tint, g.mix('MULTIPLY', tint, albedo), param(floats, 'g_flSelfIllumAlbedoFactor', 1.0))
+    lo, hi = (list(vectors.get('g_vSelfIllumFresnelMaskRange1') or (0, 0)) + [0, 0])[:2]
+    if hi != lo:
+        facing = g.vec('DOT_PRODUCT', g.node('ShaderNodeNewGeometry').outputs['Incoming'],
+                       source_of(bsdf.inputs['Normal']) or g.node('ShaderNodeNewGeometry').outputs['Normal'])
+        rim = g.math('POWER', g.math('MAXIMUM', facing, 0.0), float(floats.get('g_flSelfIllumFresnelMaskExponent', 5)))
+        f = g.math('DIVIDE', g.math('SUBTRACT', rim, float(lo)), float(hi - lo), clamp=True)
+        fresnel_tint = tuple(float(x) for x in list(vectors.get('g_vSelfIllumFresnelMaskTint1') or (1, 1, 1))[:3])
+        fm = g.mix('MIX', fresnel_tint + (1.0,), (1.0, 1.0, 1.0, 1.0), f)
+        illum = g.mix('MULTIPLY', illum, fm)
+        albedo = g.mix('MULTIPLY', albedo, g.mix('MIX', (1.0, 1.0, 1.0, 1.0), fm, mask))
+    amount = g.math('MULTIPLY', mask, min(max(scale, 0.0), 1.0)) if mask_source else mask * min(max(scale, 0.0), 1.0)
+    lit = g.mix('MIX', albedo, illum, amount)
     g.links.new(lit, bsdf.inputs['Base Color'])
-    g.put(bsdf.inputs['Emission Color'], g.mix('MULTIPLY', lit, g.combine(mask, mask, mask)) if mask_source else lit)
+    g.put(bsdf.inputs['Emission Color'], g.mix('MULTIPLY', lit, g.combine(mask, mask, mask)) if mask_source
+          else g.mix('MULTIPLY', lit, (mask, mask, mask, 1.0)) if mask != 1.0 else lit)
     bsdf.inputs['Emission Strength'].default_value = scale
 
 
