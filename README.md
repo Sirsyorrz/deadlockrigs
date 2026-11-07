@@ -122,7 +122,9 @@ trooper wave at each lane's spawn (stood on the floor under the game's zipline p
 groups. Rigs and animations that aren't built yet are built first, one after another, which takes a few minutes the
 first time. Each NPC is a full rig playing its game idle on repeat from its own point in the loop (Play Idles), in a
 `<map> NPCs` collection; the copies of an NPC share its meshes, so pose and animate them like any rig. Turning the
-toggle off removes them. Maps built before this get the NPC spots in a few seconds the first time.
+toggle off removes them. Maps built before this get the NPC spots in a few seconds the first time. Placing them takes
+a while in a file with Midtown in it (Blender appends slowly into large files, about 8 seconds per kind of NPC, about
+2 minutes for all of them); the panel shows which one it is on.
 
 **Game look.** Adding a map puts the game's post-processing on the scene: its compositor gets the game's exposure,
 filmic curve, bloom and vignette, and the view transform is set to Standard. That is most of what makes a render look

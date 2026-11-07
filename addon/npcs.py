@@ -14,6 +14,7 @@ import random
 
 import bpy
 from mathutils import Euler, Matrix, Vector
+from mathutils.bvhtree import BVHTree
 
 ROOT = 'dlr_npcs'
 # heroes.json "idle" names each NPC's clip; these are tried for the others
@@ -196,47 +197,83 @@ def play(arm, act, offset):
     strip.extrapolation = 'HOLD'
 
 
-def ground(scene, spot):
-    """The floor under an airborne spawn point, else the point. Walls and slopes steeper than 45 degrees don't
-    count."""
+class Floor:
+    """The floor under airborne spawn points. scene.ray_cast builds a tree of every map object on each cast (minutes
+    on Midtown), so only the objects whose bounds are under the point are cast against, each tree built once."""
+
+    def __init__(self, scene):
+        self.dg = bpy.context.evaluated_depsgraph_get()
+        self.boxes = []
+        for o in scene.objects:
+            if o.type != 'MESH' or not o.visible_get():
+                continue
+            pts = [o.matrix_world @ Vector(c) for c in o.bound_box]
+            self.boxes.append((o, Vector([min(p[i] for p in pts) for i in range(3)]),
+                               Vector([max(p[i] for p in pts) for i in range(3)])))
+        self.trees = {}
+
+    def tree(self, o):
+        if o.name not in self.trees:
+            self.trees[o.name] = (BVHTree.FromObject(o, self.dg), o.matrix_world.copy())
+        return self.trees[o.name]
+
+    def under(self, loc):
+        """The highest upward-facing surface within GROUND_REACH under loc; walls and slopes over 45 degrees don't
+        count."""
+        top, best = loc.z + 0.3, None
+        for o, lo, hi in self.boxes:
+            if not (lo.x <= loc.x <= hi.x and lo.y <= loc.y <= hi.y and lo.z <= top and hi.z >= loc.z - GROUND_REACH):
+                continue
+            tree, mw = self.tree(o)
+            inv = mw.inverted()
+            start = inv @ Vector((loc.x, loc.y, top))
+            down = (inv.to_3x3() @ Vector((0, 0, -1))).normalized()
+            for _ in range(8):
+                at, normal, _i, _d = tree.ray_cast(start, down)
+                if at is None:
+                    break
+                world = mw @ at
+                if world.z < loc.z - GROUND_REACH:
+                    break
+                if (mw.to_3x3().inverted().transposed() @ normal).normalized().z > 0.7:
+                    if best is None or world.z > best.z:
+                        best = world
+                    break
+                start = at + down * 0.01
+        return best
+
+
+def ground(floor, spot):
     loc = Vector(spot['location'])
     if not spot.get('ground'):
         return loc
-    dg = bpy.context.evaluated_depsgraph_get()
-    start = loc + Vector((0, 0, 0.3))
-    for _ in range(8):
-        hit, at, normal, *_ = scene.ray_cast(dg, start, Vector((0, 0, -1)), distance=GROUND_REACH)
-        if not hit:
-            break
-        if normal.z > 0.7:
-            return at
-        start = at - Vector((0, 0, 0.01))
-    return loc
+    return floor.under(loc) or loc
 
 
-def spawn(context):
-    from . import hero_name, load_rig, register_rig_ui, riglight, rig_path
+def placing(context):
+    """Puts the picked NPCs on the scene's map, one NPC (its rig and copies) per step; yields (done, how many, the
+    next NPC's name) before each. Appending a rig into a file holding a map takes seconds per rig (Blender's append
+    work grows with the file), so the panel shows the progress between them."""
+    from . import hero_name, load_rig, register_rig_ui, riglight, rig_path, tools_module
     scene = context.scene
     slug = scene_map(scene)
     spawns = wanted(scene, slug, context) if slug else None
     if not spawns:
-        return 0
+        return
     remove(scene)
     # before any NPC is there to be hit
+    floor = Floor(scene) if any(s.get('ground') for s in spawns) else None
     for spot in spawns:
-        spot['location'] = ground(scene, spot)
-    from . import tools_module
+        spot['location'] = ground(floor, spot)
     title = tools_module('mapbuild').MAPS.get(slug, slug)
     root = bpy.data.collections.new(f'{title} NPCs')
     root[ROOT] = slug
     scene.collection.children.link(root)
     rnd = random.Random(SEED)
-    count = 0
-    for npc in dict.fromkeys(s['slug'] for s in spawns):
-        path = rig_path(npc, context)
-        if not os.path.exists(path):
-            continue
-        first = load_rig(path, npc)
+    kinds = [n for n in dict.fromkeys(s['slug'] for s in spawns) if os.path.exists(rig_path(n, context))]
+    for k, npc in enumerate(kinds):
+        yield k, len(kinds), hero_name(npc)
+        first = load_rig(rig_path(npc, context), npc)
         if not first:
             continue
         first = first[0]
@@ -254,21 +291,57 @@ def spawn(context):
             arm.matrix_world = Matrix.LocRotScale(spot['location'], Euler((0, 0, spot['yaw'])), None)
             if act:
                 play(arm, act, rnd.random())
-            count += 1
     register_rig_ui()
     riglight.light_rigs(scene)
-    return count
+
+
+def spawn(context):
+    """All at once; returns the number of NPCs placed."""
+    for _ in placing(context):
+        pass
+    root = npc_root(context.scene)
+    return sum(1 for o in root.all_objects if o.type == 'ARMATURE') if root else 0
+
+
+_placing = {'steps': None, 'at': None}
+
+
+def stop_placing():
+    if _placing['steps'] is not None:
+        _placing['steps'].close()
+    _placing.update(steps=None, at=None)
+
+
+def place_later():
+    """Runs placing() a step per timer tick so the panel redraws between rigs."""
+    stop_placing()
+    steps = _placing['steps'] = placing(bpy.context)
+
+    def step():
+        from . import redraw
+        if _placing['steps'] is not steps:
+            return None
+        try:
+            _placing['at'] = next(steps)
+        except StopIteration:
+            _placing.update(steps=None, at=None)
+            redraw()
+            return None
+        redraw()
+        return 0.05
+    bpy.app.timers.register(step, first_interval=0.1)
 
 
 def toggle(self, context):
     from . import queue_position, start_queue
     scene = context.scene
+    stop_placing()
     if not scene.dlr_npcs:
         remove(scene)
         return
     slug = scene_map(scene)
     if not slug or queue_position() is not None:
-        # a queue already running spawns them when it is done
+        # a queue already running places them when it is done
         return
 
     def ready(ok):
@@ -287,8 +360,7 @@ def toggle(self, context):
         sc = bpy.context.scene
         sc.dlr_npcs_status = 'failed' if not ok else ''
         if ok and sc.dlr_npcs:
-            # appending the rigs is done in a timer so the panel shows the build finishing first
-            bpy.app.timers.register(lambda: spawn(bpy.context) and None, first_interval=0.1)
+            place_later()
 
     scene.dlr_npcs_status = ''
     if wanted(scene, slug, context) is None:
@@ -315,7 +387,11 @@ def draw(layout, context):
     row = box.row()
     row.enabled = not busy
     row.prop(sc, 'dlr_npc_anims')
-    if pos is not None and _job is not None:
+    if _placing['at'] is not None:
+        done, total, name = _placing['at']
+        box.label(text=f'Placing {name} ({done + 1}/{total})')
+        box.progress(factor=done / total, type='BAR', text=f'{done}/{total}')
+    elif pos is not None and _job is not None:
         what = {'NPCS': "Finding the map's NPCs", 'RIG': f'Building {hero_name(_job.slug)}',
                 'ANIMS': f"Exporting {hero_name(_job.slug)}'s animations"}.get(_job.kind, _job.slug)
         box.label(text=f'{what} ({pos[0]}/{pos[1]})')
@@ -346,5 +422,6 @@ def register():
 
 
 def unregister():
+    stop_placing()
     for p in ('dlr_npcs', 'dlr_npc_groups', 'dlr_npc_anims', 'dlr_npcs_status'):
         delattr(bpy.types.Scene, p)
