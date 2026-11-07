@@ -25,7 +25,7 @@ ADDON_TOOLS = ['pipeline.py', 'hero.py', 'vmdl_extract.py', 'gamerig.py', 'fe_ex
                'facegeo.py', 'handkeys.py', 'facebones.py', 'facerig.py', 'mechparts.py', 'morphs.py', 'bonekeys.py', 'build.py', 'bodygroups.py', 'collar.py',
                'tongue_mesh.py', 'rig.py', 'rig_ui.py', 'expressions.py', 'hands.py', 'mirror.py', 'anims.py', 'mapbuild.py',
                'map_rebatch.py', 'map_import.py', 'map_lighting.py', 'map_environment.py', 'map_blend.py', 'map_fog.py',
-               'map_probes.py', 'map_reflections.py', 'map_anim.py', 'map_particles.py']
+               'map_probes.py', 'map_reflections.py', 'map_anim.py', 'map_particles.py', 'map_textures.py']
 SCIPY = 'scipy>=1.16,<1.17'
 # Blender 5.1+ runs Python 3.13
 WHEEL_PLATFORMS = {

@@ -123,7 +123,16 @@ when any of their particles is inside. The Keep dropdown picks
 map parts that are never cropped (skyline buildings, sky clouds, smoke, fog planes). Restore Map undoes it; Delete
 Cropped removes the cropped parts for good to make the file smaller. A linked map crops the same way: the map's
 collection is hidden and a `(cropped)` collection next to it holds what is kept, with the cut objects as local
-copies.
+copies. With Hidden Behind on, Crop to Camera also drops the map parts the camera can't see past other map parts (a
+building behind another one), found by casting rays over each sampled frame; those parts then no longer cast shadows
+or show in reflections.
+
+**Rendering Midtown.** Rendered view and F12 load every texture and compile a shader for every material still in the
+scene, so render a cropped map (Crop to Camera with Hidden Behind keeps a street shot to a few hundred materials).
+Map Textures (Map section) switches the map to copies of its textures at most 1024 or 512 pixels, which the build
+writes next to the full ones: for a cropped street shot that took texture memory to about a third and VRAM to a bit
+over half. The lightmaps stay full size. The first render of a session also compiles the shaders, which takes a
+while; later renders reuse them.
 
 ## Help
 

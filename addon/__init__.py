@@ -12,7 +12,7 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
-from . import crop, look, particles, riglight
+from . import crop, look, particles, riglight, textures
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -345,6 +345,7 @@ def append_map(path, slug, link=False):
     look.enable(scene)
     look.show_in_viewport(bpy.context)
     riglight.light_rigs(scene)
+    textures.apply(scene)
     return dst.collections
 
 
@@ -579,6 +580,7 @@ class DLR_PT_map(bpy.types.Panel):
         look.draw(layout, context)
         if crop.any_map(sc):
             riglight.draw(layout, context)
+            textures.draw(layout, context)
             crop.draw(layout, context)
         particles.draw(layout, context)
 
@@ -608,6 +610,7 @@ def register():
                ('NONE', 'Just Save', 'Only save it to the output folder')])
     bpy.app.handlers.load_post.append(on_load)
     crop.register()
+    textures.register()
     riglight.register()
     particles.register()
 
@@ -617,6 +620,7 @@ def unregister():
         _job.cancel()
     particles.unregister()
     riglight.unregister()
+    textures.unregister()
     crop.unregister()
     if on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load)

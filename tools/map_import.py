@@ -23,6 +23,7 @@ import map_fog  # noqa: E402
 import map_lighting  # noqa: E402
 import map_probes  # noqa: E402
 import map_reflections  # noqa: E402
+import map_textures  # noqa: E402
 
 args = sys.argv[sys.argv.index('--') + 1:]
 gltf, out_blend, slug, title, version = args[:5]
@@ -247,6 +248,9 @@ for name in os.listdir(tex_dir):
     path = os.path.join(tex_dir, name)
     if path not in written and os.path.isfile(path):
         os.remove(path)
+for size in map_textures.SIZES:
+    shutil.rmtree(map_textures.tier_dir(out_dir, size), ignore_errors=True)
+print(f'smaller textures: {map_textures.make_tiers(out_dir)}')
 
 progress(PROGRESS['textures'])
 bpy.ops.wm.save_as_mainfile(filepath=out_blend, relative_remap=True)
