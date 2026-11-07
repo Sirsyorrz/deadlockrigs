@@ -118,10 +118,26 @@ def node_group(name, inputs, outputs, build):
     return tree
 
 
-def load_image(path):
-    img = bpy.data.images.load(path, check_existing=True)
-    img.colorspace_settings.name = 'Non-Color'
+_images = {}
+
+
+def cached_image(path, colorspace='Non-Color', alpha_mode=None):
+    """An image file loaded once for the whole import: images.load(check_existing) looks through every image and
+    setting the colour space reloads it, which cost Midtown's ~4,000 layer textures over a minute."""
+    key = (os.path.abspath(path), colorspace, alpha_mode)
+    img = _images.get(key)
+    if img is None:
+        img = bpy.data.images.load(path, check_existing=True)
+        if img.colorspace_settings.name != colorspace:
+            img.colorspace_settings.name = colorspace
+        if alpha_mode and img.alpha_mode != alpha_mode:
+            img.alpha_mode = alpha_mode
+        _images[key] = img
     return img
+
+
+def load_image(path):
+    return cached_image(path)
 
 
 def band_in_blender_axes(g, packed):
@@ -1072,18 +1088,33 @@ def load_probe_atlas(folder):
     if not files:
         return None
     files.sort(key=lambda f: int(f.rsplit('_z', 1)[1].split('.')[0]))
-    atlas = None
-    for z, f in enumerate(files):
-        img = bpy.data.images.load(f)
-        w, h = img.size
-        px = np.empty(w * h * 4, np.float32)
-        img.pixels.foreach_get(px)
-        bpy.data.images.remove(img)
-        if atlas is None:
-            atlas = np.empty((len(files), h, w, 3), np.float16)
-        # Blender's rows go bottom up
-        atlas[z] = px.reshape(h, w, 4)[::-1, :, :3]
-    return atlas
+    try:
+        import OpenImageIO as oiio
+    except ImportError:
+        oiio = None
+    if oiio is None:
+        return np.stack([read_slice_blender(f) for f in files])
+
+    def read(f):
+        image = oiio.ImageInput.open(f)
+        try:
+            return image.read_image(0, 0, 0, 3, 'half')
+        finally:
+            image.close()
+    # Midtown has ~1,400 slices: through bpy.data.images that took most of a minute
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(min(16, os.cpu_count() or 4)) as pool:
+        return np.stack(list(pool.map(read, files)))
+
+
+def read_slice_blender(f):
+    img = bpy.data.images.load(f)
+    w, h = img.size
+    px = np.empty(w * h * 4, np.float32)
+    img.pixels.foreach_get(px)
+    bpy.data.images.remove(img)
+    # Blender's rows go bottom up
+    return px.reshape(h, w, 4)[::-1, :, :3].astype(np.float16)
 
 
 def trilinear(atlas, x, y, z):
@@ -1106,34 +1137,68 @@ def trilinear(atlas, x, y, z):
     return out
 
 
+PROBE_CHUNK = 1 << 18
+
+
+def volume_bounds(v):
+    """A probe volume's Source-space bounding box, (lo, hi)."""
+    mins, maxs = v['mins'], v['maxs']
+    local = np.array([[(mins, maxs)[(k >> a) & 1][a] for a in range(3)] for k in range(8)], float)
+    world = np.array(v['origin'], float) + local @ np.array(v['rotation'], float).T
+    return world.min(0), world.max(0)
+
+
 def sample_probes(atlas, volumes, points, normals):
     """Probe irradiance at Source-space points for Source-space unit normals (SampleProbeAmbientCube): each point
-    takes the first volume, in priority order, that holds it, else the nearest one."""
+    takes the first volume, in priority order, that holds it, else the nearest one. Works through the points in
+    chunks against the volumes whose boxes reach the chunk's, which is what keeps Midtown's 10M vertices and 169
+    volumes to seconds."""
+    bounds = [volume_bounds(v) for v in volumes]
+    out = np.zeros((len(points), 3), np.float32)
+    for start in range(0, len(points), PROBE_CHUNK):
+        end = min(start + PROBE_CHUNK, len(points))
+        pts = points[start:end]
+        lo, hi = pts.min(0), pts.max(0)
+        near = [i for i, (a, b) in enumerate(bounds) if np.all(a <= hi) and np.all(b >= lo)]
+        out[start:end] = sample_chunk(atlas, volumes, pts, normals[start:end], near)
+    return out
+
+
+def volume_local(v, points):
+    return (points - np.array(v['origin'])) @ np.array(v['rotation'])
+
+
+def sample_chunk(atlas, volumes, points, normals, near):
     n = len(points)
     choice = np.full(n, -1, np.int64)
     locals_ = np.zeros((n, 3))
-    nearest = np.full(n, np.inf)
-    nearest_vol = np.zeros(n, np.int64)
-    for i, v in enumerate(volumes):
-        rot = np.array(v['rotation'])
-        mins, maxs = np.array(v['mins']), np.array(v['maxs'])
-        local = (points - np.array(v['origin'])) @ rot
-        norm = (local - mins) / (maxs - mins)
-        todo = choice < 0
-        inside = todo & np.all((norm >= 0) & (norm <= 1), axis=1)
-        choice[inside] = i
-        locals_[inside] = norm[inside]
-        dist = np.linalg.norm(np.maximum(mins - local, 0) + np.maximum(local - maxs, 0), axis=1)
-        closer = todo & ~inside & (dist < nearest)
-        nearest[closer] = dist[closer]
-        nearest_vol[closer] = i
-    rest = choice < 0
-    for i in np.unique(nearest_vol[rest]):
-        sel = rest & (nearest_vol == i)
+    for i in near:
+        todo = np.flatnonzero(choice < 0)
+        if not len(todo):
+            break
         v = volumes[i]
-        local = (points[sel] - np.array(v['origin'])) @ np.array(v['rotation'])
-        locals_[sel] = np.clip((local - np.array(v['mins'])) / (np.array(v['maxs']) - np.array(v['mins'])), 0, 1)
-        choice[sel] = i
+        mins, maxs = np.array(v['mins']), np.array(v['maxs'])
+        norm = (volume_local(v, points[todo]) - mins) / (maxs - mins)
+        inside = np.all((norm >= 0) & (norm <= 1), axis=1)
+        choice[todo[inside]] = i
+        locals_[todo[inside]] = norm[inside]
+    rest = np.flatnonzero(choice < 0)
+    if len(rest):
+        nearest = np.full(len(rest), np.inf)
+        nearest_vol = np.zeros(len(rest), np.int64)
+        for i, v in enumerate(volumes):
+            local = volume_local(v, points[rest])
+            dist = np.linalg.norm(np.maximum(np.array(v['mins']) - local, 0) +
+                                  np.maximum(local - np.array(v['maxs']), 0), axis=1)
+            closer = dist < nearest
+            nearest[closer] = dist[closer]
+            nearest_vol[closer] = i
+        for i in np.unique(nearest_vol):
+            sel = rest[nearest_vol == i]
+            v = volumes[i]
+            locals_[sel] = np.clip((volume_local(v, points[sel]) - np.array(v['mins'])) /
+                                   (np.array(v['maxs']) - np.array(v['mins'])), 0, 1)
+            choice[sel] = i
     face_depth = atlas.shape[0] // 6
     out = np.zeros((n, 3), np.float32)
     for i in np.unique(choice):

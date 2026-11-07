@@ -120,6 +120,16 @@ def volume_corners(v):
     return source @ SOURCE_FROM_BLENDER * UNIT
 
 
+def cells_near(corners, lo, cell, dims):
+    """Flat indices (z, y, x order) of the grid cells whose centres are within a cell of a box's corners' bounds."""
+    a = np.clip(np.floor((corners.min(0) - lo) / cell - 1).astype(int), 0, dims)
+    b = np.clip(np.ceil((corners.max(0) - lo) / cell + 1).astype(int), 0, dims)
+    if np.any(b <= a):
+        return np.zeros(0, np.int64)
+    z, y, x = np.meshgrid(np.arange(a[2], b[2]), np.arange(a[1], b[1]), np.arange(a[0], b[0]), indexing='ij')
+    return ((z * dims[1] + y) * dims[0] + x).ravel()
+
+
 def index_grid(volumes):
     """The candidate volumes of each grid cell: the ones reaching into it in priority order, up to the first that
     holds all of it, then the nearest if none does. Returns (cells z, y, x, CANDIDATES), origin, cell size."""
@@ -135,22 +145,31 @@ def index_grid(volumes):
     cand = np.full((n, CANDIDATES), -1, np.int32)
     count = np.zeros(n, np.int32)
     full = np.zeros(n, bool)
-    nearest = np.zeros(n, np.int32)
-    nearest_dist = np.full(n, np.inf, np.float32)
     for i, v in enumerate(volumes):
-        local = (source - np.array(v['origin'])) @ np.array(v['rotation'])
+        # only the cells near the volume can reach it
+        near = cells_near(volume_corners(v), lo, cell, dims)
+        local = (source[near] - np.array(v['origin'])) @ np.array(v['rotation'])
         below, above = np.array(v['mins']) - local, local - np.array(v['maxs'])
         dist = np.linalg.norm(np.maximum(np.maximum(below, above), 0), axis=1)
+        reach = (dist <= radius) & ~full[near] & (count[near] < CANDIDATES)
+        hit = near[reach]
+        cand[hit, count[hit]] = i
+        count[hit] += 1
+        full[hit[np.all(np.maximum(below, above)[reach] <= -radius, axis=1)]] = True
+    # outside every candidate the game takes the nearest volume; only the cells not yet covered need it
+    open_cells = np.flatnonzero(~full & (count < CANDIDATES))
+    nearest = np.zeros(len(open_cells), np.int32)
+    nearest_dist = np.full(len(open_cells), np.inf, np.float32)
+    for i, v in enumerate(volumes):
+        local = (source[open_cells] - np.array(v['origin'])) @ np.array(v['rotation'])
+        dist = np.linalg.norm(np.maximum(np.maximum(np.array(v['mins']) - local, local - np.array(v['maxs'])), 0),
+                              axis=1)
         closer = dist < nearest_dist
         nearest[closer], nearest_dist[closer] = i, dist[closer]
-        reach = (dist <= radius) & ~full & (count < CANDIDATES)
-        cand[reach, count[reach]] = i
-        count[reach] += 1
-        full |= reach & np.all(np.maximum(below, above) <= -radius, axis=1)
-    # outside every candidate the game takes the nearest volume
-    add = ~full & (count < CANDIDATES) & ~np.any(cand == nearest[:, None], axis=1)
-    cand[add, count[add]] = nearest[add]
-    count[add] += 1
+    add = ~np.any(cand[open_cells] == nearest[:, None], axis=1)
+    rows = open_cells[add]
+    cand[rows, count[rows]] = nearest[add]
+    count[rows] += 1
     for k in range(1, CANDIDATES):
         pad = count <= k
         cand[pad, k] = cand[pad, k - 1]

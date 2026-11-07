@@ -21,7 +21,7 @@ import re
 import bpy
 import numpy as np
 from map_lighting import UNIT, Graph
-from map_probes import SOURCE_FROM_BLENDER, save_image, tile_slices
+from map_probes import SOURCE_FROM_BLENDER, cells_near, save_image, tile_slices
 
 GROUP = 'Deadlock reflections'
 PARAM_TEXELS = 10
@@ -155,15 +155,18 @@ def index_grid(maps):
     count = np.zeros(n, np.int32)
     full = np.zeros(n, bool)
     for i, m in enumerate(maps):
-        local = (source - np.array(m['origin'])) @ np.array(m['rotation'])
+        # only the cells near the box can reach it: the rest of the grid is skipped
+        near = cells_near(corners[i], lo, cell, dims)
+        local = (source[near] - np.array(m['origin'])) @ np.array(m['rotation'])
         mins, maxs = np.array(m['mins']), np.array(m['maxs'])
         below, above = mins - local, local - maxs
         dist = np.linalg.norm(np.maximum(np.maximum(below, above), 0), axis=1)
-        reach = (dist <= radius) & ~full & (count < CANDIDATES)
-        cand[reach, count[reach]] = i
-        count[reach] += 1
+        reach = (dist <= radius) & ~full[near] & (count[near] < CANDIDATES)
+        hit = near[reach]
+        cand[hit, count[hit]] = i
+        count[hit] += 1
         inner = np.maximum(below, above) + np.maximum(np.array(m['fade']), 0)
-        full |= reach & np.all(inner <= -radius, axis=1)
+        full[hit[np.all(inner[reach] <= -radius, axis=1)]] = True
     outside = (wide + [len(maps)] * CANDIDATES)[:CANDIDATES]
     return cand.reshape(*dims[::-1], CANDIDATES), lo, cell, outside
 

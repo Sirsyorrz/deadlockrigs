@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import sys
+import time
 
 import bpy
 
@@ -25,6 +26,8 @@ import map_probes  # noqa: E402
 import map_reflections  # noqa: E402
 import map_textures  # noqa: E402
 
+# so the build log shows each line as it happens
+sys.stdout.reconfigure(line_buffering=True)
 args = sys.argv[sys.argv.index('--') + 1:]
 gltf, out_blend, slug, title, version = args[:5]
 lighting_dir = args[5] if len(args) > 5 else ''
@@ -44,6 +47,17 @@ PROGRESS = {'props': 0.23, 'materials': 0.47, 'paint': 0.48, 'lights': 0.485, 'b
 
 def progress(frac):
     print(f'PROGRESS {frac:.3f}', flush=True)
+
+
+_mark = [time.time()]
+
+
+def reached(part):
+    """Progress at the end of a part of the import, and how long it took (in the build log)."""
+    now = time.time()
+    print(f'  ({part}: {now - _mark[0]:.1f} s)')
+    _mark[0] = now
+    progress(PROGRESS[part])
 
 
 def tracked(items, start, end):
@@ -92,6 +106,8 @@ settings = load_settings() if lighting_dir else {}
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=gltf, import_pack_images=False)
+print(f'glTF import: {time.time() - _mark[0]:.1f} s')
+_mark[0] = time.time()
 
 coll = bpy.data.collections.new(title)
 bpy.context.scene.collection.children.link(coll)
@@ -103,7 +119,7 @@ coll['dlr_map_version'] = version
 if props_file and os.path.exists(props_file):
     props = map_anim.import_props(props_file, coll)
     print(f'animated props: {sum(ob.type == "ARMATURE" for ob in props)}')
-progress(PROGRESS['props'])
+reached('props')
 if settings.get('tonemap'):
     coll['dlr_tonemap'] = dict(settings['tonemap'], exposure_bias=settings['tonemap']['exposure_bias'] +
                                settings.get('exposure', 0.0), exposure=settings.get('exposure', 0.0))
@@ -120,7 +136,7 @@ print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '
       f'{kinds.count("self_illum")} self-illuminated, {kinds.count("overlay")} decals')
 print(f'blend layers: {map_blend.applied} materials, {len(layer_textures)} layer textures')
 print(f'vertex paint: decoded on {map_lighting.decode_paint(meshes)} meshes')
-progress(PROGRESS['paint'])
+reached('paint')
 
 runtime_lights = map_lighting.add_lights(coll, settings.get('lights') or [])
 meshes, split = map_lighting.unlight_before_barns(runtime_lights, meshes)
@@ -149,7 +165,7 @@ print(f'runtime lights: {len(runtime_lights)}, '
 # after unblock_own_light, which would take the masks for fixtures
 barn_masks = map_lighting.add_barn_masks(coll, runtime_lights, settings.get('lights') or [], title)
 print(f'barn masks: {len(barn_masks)}')
-progress(PROGRESS['lights'])
+reached('lights')
 
 probes = 0
 volumes = settings.get('probe_volumes')
@@ -157,7 +173,7 @@ if volumes:
     atlas = map_lighting.load_probe_atlas(lighting_dir)
     if atlas is not None and unlit:
         probes = map_lighting.bake_probes(unlit, atlas, volumes)
-    progress(PROGRESS['bake'])
+    reached('bake')
     map_probes.add_probe_light(coll, title, atlas, volumes, light_dir)
     del atlas
 lightmaps = lightmap_files() if lit else None
@@ -166,7 +182,7 @@ if settings.get('env_maps'):
     reflections = map_reflections.add_reflections(coll, title, settings['env_maps'],
                                                   os.path.join(lighting_dir, 'cubemaps'),
                                                   os.path.join(lighting_dir, 'brdf'), light_dir)
-progress(PROGRESS['probes'])
+reached('probes')
 if lightmaps or probes:
     group = map_lighting.baked_light_group(*(lightmaps or (None, ())), reflections=reflections)
     done = sum(map_lighting.add_baked_light(m, group) for m in tracked(mats, 'probes', 'baked'))
@@ -196,12 +212,12 @@ if (cube and sky_mips) or gradient:
     done = sum(map_lighting.add_fog(m, fog) for m in tracked(mats, 'baked', 'fog'))
     print(f'fog: {"cubemap " if cube and sky_mips else ""}{"gradient " if gradient else ""}on {done} materials')
 
-progress(PROGRESS['fog'])
+reached('fog')
 print(f'additive: {sum(map_lighting.make_additive(m) for m in mats)} lit materials')
 anim_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.get('anim_textures') or {}).items()}
 moving, moved = map_anim.animate(meshes, anim_textures)
 print(f'motion: {moving} scrolling or jittering materials, {moved} jittering meshes')
-progress(PROGRESS['motion'])
+reached('motion')
 
 fog_volume = settings.get('volumetric_fog')
 if fog_volume:
@@ -214,7 +230,7 @@ if fog_volume:
     else:
         print('volumetric fog: none')
 
-progress(PROGRESS['volumes'])
+reached('volumes')
 if install:
     import map_particles
     try:
@@ -227,7 +243,7 @@ if install:
         import traceback
         traceback.print_exc()
         print(f'WARNING: particle effects failed: {e}')
-progress(PROGRESS['particles'])
+reached('particles')
 os.makedirs(tex_dir, exist_ok=True)
 written = set()
 for img in tracked(bpy.data.images, 'volumes', 'textures'):
@@ -252,6 +268,6 @@ for size in map_textures.SIZES:
     shutil.rmtree(map_textures.tier_dir(out_dir, size), ignore_errors=True)
 print(f'smaller textures: {map_textures.make_tiers(out_dir)}')
 
-progress(PROGRESS['textures'])
+reached('textures')
 bpy.ops.wm.save_as_mainfile(filepath=out_blend, relative_remap=True)
 print(f'wrote {out_blend}: {len(meshes)} meshes, {len(bpy.data.images)} textures')

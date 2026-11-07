@@ -7,10 +7,8 @@ metalness stay layer 1's.
 UVs are worked in the game's convention (v down) and flipped back for Blender's image nodes; world positions are
 Source inches, from Blender metres and axes.
 """
-import bpy
-
-from map_lighting import (Graph, average_color, color_correct_matrix, color_tint_matrix, is_identity, node_group,
-                          srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
+from map_lighting import (Graph, average_color, cached_image, color_correct_matrix, color_tint_matrix, is_identity,
+                          node_group, srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
 import numpy as np
 
 from map_environment import BLEND_TEXTURES as TEXTURES
@@ -171,10 +169,7 @@ class Blend:
         path = self.paths.get(key)
         if not path:
             return None
-        img = bpy.data.images.load(path, check_existing=True)
-        img.colorspace_settings.name = 'sRGB' if color else 'Non-Color'
-        img.alpha_mode = 'CHANNEL_PACKED'
-        return img
+        return cached_image(path, 'sRGB' if color else 'Non-Color', 'CHANNEL_PACKED')
 
     # coordinates
 
