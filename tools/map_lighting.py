@@ -847,6 +847,100 @@ def own_blockers(meshes, light_ob):
     return [ob for ob, n in found.items() if n >= FIXTURE_RAYS * 0.01]
 
 
+def faces_only(mesh, keep):
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.faces.ensure_lookup_table()
+    bmesh.ops.delete(bm, geom=[f for f, k in zip(bm.faces, keep) if not k], context='FACES')
+    out = mesh.copy()
+    bm.to_mesh(out)
+    bm.free()
+    return out
+
+
+def split_object(ob, move):
+    """Moves the faces flagged in `move` to a copy of the object in the same collections, with the same light
+    linking states. Returns the copy."""
+    whole = ob.data
+    piece = ob.copy()
+    piece.data = faces_only(whole, move)
+    ob.data = faces_only(whole, ~move)
+    for c in ob.users_collection:
+        c.objects.link(piece)
+        states = {o: item.light_linking.link_state for o, item in zip(c.objects, c.collection_objects)}
+        if states.get(ob, 'INCLUDE') != 'INCLUDE':
+            item = next(i for o, i in zip(c.objects, c.collection_objects) if o == piece)
+            item.light_linking.link_state = states[ob]
+    if whole.users == 0:
+        bpy.data.meshes.remove(whole)
+    return piece
+
+
+def unlight_before_barns(lights, objects):
+    """A barn lights only past its near plane (the game's light frustum starts at the barn), but a Blender spot from
+    the frustum's eye lights all the way from there: a beam through a window lit the room in front of the window.
+    Each barn's receivers leave out the faces before its near plane in its cone; map meshes reaching across the
+    plane are split there by face. Returns the objects, with the pieces split off."""
+    objects = list(objects)
+    split = 0
+    for light in lights:
+        near = float(light.get('dlr_near', 0.0))
+        if near <= 0 or light.data.type != 'SPOT':
+            continue
+        mw = light.matrix_world
+        eye = np.array(mw.translation, np.float64)
+        rot = np.array(mw.to_quaternion().to_matrix(), np.float64)
+        scale = mw.to_scale()
+        t = math.tan(min(light.data.spot_size, math.pi - 1e-3) / 2)
+        tx, ty = t * scale.x / max(scale.x, scale.y), t * scale.y / max(scale.x, scale.y)
+        corners = eye + np.array([[sx * tx * near, sy * ty * near, -near] for sx in (-1, 1) for sy in (-1, 1)]) @ rot.T
+        lo, hi = np.minimum(corners.min(0), eye), np.maximum(corners.max(0), eye)
+        dark = []
+        for ob in list(objects):
+            box = np.array([ob.matrix_world @ Vector(c) for c in ob.bound_box])
+            if (box.min(0) > hi).any() or (box.max(0) < lo).any():
+                continue
+            mesh = ob.data
+            co = np.empty(len(mesh.vertices) * 3, np.float64)
+            mesh.vertices.foreach_get('co', co)
+            m = np.array(ob.matrix_world, np.float64)
+            local = (co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3] - eye) @ rot
+            depth = -local[:, 2]
+            code = ((depth > near).astype(np.uint8) | (depth < 0).astype(np.uint8) << 1
+                    | (local[:, 0] > tx * depth).astype(np.uint8) << 2
+                    | (local[:, 0] < -tx * depth).astype(np.uint8) << 3
+                    | (local[:, 1] > ty * depth).astype(np.uint8) << 4
+                    | (local[:, 1] < -ty * depth).astype(np.uint8) << 5)
+            starts = np.empty(len(mesh.polygons), np.int32)
+            mesh.polygons.foreach_get('loop_start', starts)
+            loops = np.empty(len(mesh.loops), np.int32)
+            mesh.loops.foreach_get('vertex_index', loops)
+            if not len(starts) or not (np.bitwise_and.reduceat(code[loops], starts) == 0).any():
+                continue
+            totals = np.empty(len(mesh.polygons), np.int32)
+            mesh.polygons.foreach_get('loop_total', totals)
+            before = np.add.reduceat(depth[loops], starts) / totals < near
+            if before.all():
+                dark.append(ob)
+            elif before.any():
+                piece = split_object(ob, before)
+                objects.append(piece)
+                dark.append(piece)
+                split += 1
+        if dark:
+            receivers = light.light_linking.receiver_collection
+            if receivers is None:
+                exclude_from_light(light, dark, f'{light.name} unlit')
+            else:
+                for ob in dark:
+                    receivers.objects.link(ob)
+                for ob, item in zip(receivers.objects, receivers.collection_objects):
+                    if ob in dark:
+                        item.light_linking.link_state = 'EXCLUDE'
+    return objects, split
+
+
 def unblock_own_light(lights, report=None):
     """Shadow links each light past the map objects that shadow it only in Blender (own_blockers). Returns the number
     of lights changed. report(fraction) is called as the lights are done."""

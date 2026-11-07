@@ -121,6 +121,12 @@ print(f'blend layers: {map_blend.applied} materials, {len(layer_textures)} layer
 print(f'vertex paint: decoded on {map_lighting.decode_paint(meshes)} meshes')
 progress(PROGRESS['paint'])
 
+runtime_lights = map_lighting.add_lights(coll, settings.get('lights') or [])
+meshes, split = map_lighting.unlight_before_barns(runtime_lights, meshes)
+print(f'barn lights: {split} meshes split at their near planes')
+lit = [ob for ob in meshes if '_LIGHTMAP_UV' in ob.data.attributes]
+unlit = [ob for ob in meshes if '_LIGHTMAP_UV' not in ob.data.attributes]
+
 sun = next((ob for ob in coll.objects if ob.type == 'LIGHT' and ob.data.type == 'SUN'), None)
 game_sun = settings.get('sun')
 if sun:
@@ -136,7 +142,6 @@ if sun:
         sun.data.energy = RIG_SUN_STRENGTH
         map_lighting.exclude_from_light(sun, meshes, f'{title} map meshes')
 
-runtime_lights = map_lighting.add_lights(coll, settings.get('lights') or [])
 print(f'runtime lights: {len(runtime_lights)}, '
       f'{map_lighting.unblock_own_light(runtime_lights, lambda f: between("paint", "lights", f))} '
       'shadow linked past their own fixtures')
