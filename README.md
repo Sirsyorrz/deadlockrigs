@@ -66,7 +66,7 @@ empty), an existing Source2Viewer-CLI, saving the model as `.glb`/`.fbx` too, an
 The Map section of the panel builds Midtown or the Hideout from your own install, so it matches your game version.
 Build Map exports the map with Source2Viewer and merges its ~30,000 objects into one mesh per 100 m cell and material
 (same triangles, material UVs and materials), then saves `Documents/DeadlockRigs/maps/<map>/<map>.blend` with
-`textures` and `lightmaps` folders next to it. Midtown takes about 11 minutes and needs about 12 GB free while
+`textures` and `lightmaps` folders next to it. Midtown takes about 18 minutes and needs about 12 GB free while
 building; the result is about 3.5 GB. The panel shows when a game update has made the map outdated, and building again
 skips an up-to-date map.
 
