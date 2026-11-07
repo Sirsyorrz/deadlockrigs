@@ -29,7 +29,10 @@ Each hero gets a rig with:
 NPCs are in the list too, under NPCs: the Guardian, Walker, Base Guardian, Mid-boss, Hidden King, Archmother and the
 ranged, melee and medic troopers of both teams (Amber and Sapphire). They get the same controls for whatever their
 skeleton has (the Mid-boss' five arms, the Walker's four legs, the patrons' lower body as a tail). The Base Guardian
-gets foot and knee controls that its pistons follow, and a turret aim target.
+gets foot and knee controls that its pistons follow, and a turret aim target. The Amber and Sapphire Base Guardians are
+the watchers standing at the base entrances. The Hidden King and Archmother have a Stage switch in the Parts panel for
+their second stage, the weakened core floating where the patron was (its own control can move it to a hand), with the
+core's clips (idle, charge, explode, death...) in Game Animations; loading one of those clips switches the stage.
 
 | | |
 |---|---|
@@ -112,6 +115,14 @@ room they stand in and follow it as they move. Linking or appending a map does t
 does appending a rig to a scene with a map; Light Rigs (Map section) does it by hand, next to its Strength. It is
 emission on top of the rig's materials, like the map's baked light. In Cycles the map's baked light also bounces onto
 rigs, so lower Strength there if they look too bright. Maps built before this need a rebuild.
+
+**NPCs.** With a map in the scene, the NPCs toggle (Map section, off by default) puts the game's NPCs where the
+game has them: the patrons over their bases, the Walkers, Lane Guardians, Base Guardians, the Mid-boss in its pit and a
+trooper wave at each lane's spawn (stood on the floor under the game's zipline points). The Which menu picks the
+groups. Rigs and animations that aren't built yet are built first, one after another, which takes a few minutes the
+first time. Each NPC is a full rig playing its game idle on repeat from its own point in the loop (Play Idles), in a
+`<map> NPCs` collection; the copies of an NPC share its meshes, so pose and animate them like any rig. Turning the
+toggle off removes them. Maps built before this get the NPC spots in a few seconds the first time.
 
 **Game look.** Adding a map puts the game's post-processing on the scene: its compositor gets the game's exposure,
 filmic curve, bloom and vignette, and the view transform is set to Standard. That is most of what makes a render look

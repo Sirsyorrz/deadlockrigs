@@ -12,7 +12,7 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
-from . import crop, look, particles, riglight, textures
+from . import crop, look, npcs, particles, riglight, textures
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -167,6 +167,7 @@ class Job:
         self.log = []
         self.done = False
         self.ok = False
+        self.quiet = False
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                      encoding='utf-8', errors='replace', env=env,
                                      creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -211,6 +212,7 @@ class Job:
                 self.error = line.split(':', 1)[-1].strip()
 
     def cancel(self):
+        _queue.clear()
         if not self.done:
             self.proc.kill()
             self.error = 'Cancelled'
@@ -234,6 +236,36 @@ def scipy_path():
     return os.path.dirname(os.path.dirname(scipy.__file__))
 
 
+# builds run one after another (the NPCs a map needs): what is still to run, how many there were, and what to call
+# with the outcome (True when all of them worked) once the last one is done
+_queue = []
+_queue_info = {'total': 0, 'done': None}
+
+
+def start_queue(context, jobs, done):
+    _queue[:] = jobs
+    _queue_info.update(total=len(jobs), done=done)
+    if not jobs:
+        _finish_queue(True)
+        return
+    start(context, *_queue.pop(0), quiet=True)
+
+
+def queue_position():
+    """(this job's number, how many) while a queue runs, else None."""
+    if _queue_info['done'] is None:
+        return None
+    return _queue_info['total'] - len(_queue), _queue_info['total']
+
+
+def _finish_queue(ok):
+    done = _queue_info['done']
+    _queue_info.update(total=0, done=None)
+    _queue.clear()
+    if done:
+        done(ok)
+
+
 def tick():
     global _job
     if _job is None:
@@ -243,6 +275,12 @@ def tick():
     if not _job.done:
         return 0.25
     _map_state.clear()
+    if _job.quiet:
+        if _job.ok and _queue:
+            start(bpy.context, *_queue.pop(0), quiet=True)
+        else:
+            _finish_queue(_job.ok)
+        return None
     if _job.ok and _job.kind == 'RIG':
         after = bpy.context.scene.dlr_after
         path = rig_path(_job.slug)
@@ -253,11 +291,14 @@ def tick():
     return None
 
 
-def start(context, slug, kind):
+def start(context, slug, kind, quiet=False):
+    """quiet: part of a queue, nothing is opened or appended when it is done."""
     global _job
     p = prefs(context)
     if kind == 'MAP':
         cmd = [sys.executable, os.path.join(tools_dir(), 'mapbuild.py'), slug, '--force']
+    elif kind == 'NPCS':
+        cmd = [sys.executable, os.path.join(tools_dir(), 'mapbuild.py'), slug, '--npcs']
     else:
         steps = ['export_anims'] if kind == 'ANIMS' else \
             ['extract', 'data', 'base', 'rig'] + ([] if p.keep_build_files else ['clean'])
@@ -268,7 +309,7 @@ def start(context, slug, kind):
         cmd += ['--pak', bpy.path.abspath(p.deadlock_dir)]
     if p.s2v_path:
         cmd += ['--s2v', bpy.path.abspath(p.s2v_path)]
-    if p.exports and kind != 'MAP':
+    if p.exports and kind not in ('MAP', 'NPCS'):
         cmd.append('--exports')
     if kind == 'MAP' and not p.map_mods:
         cmd.append('--no-mods')
@@ -281,6 +322,7 @@ def start(context, slug, kind):
     env['PYTHONUNBUFFERED'] = '1'
     env['DLRIG_ADDON'] = '1'
     _job = Job(slug, kind, cmd, env)
+    _job.quiet = quiet
     bpy.app.timers.register(tick, first_interval=0.25)
 
 
@@ -310,12 +352,19 @@ def open_rig(path):
 
 
 def append_rig(path, slug):
+    for c in load_rig(path, slug):
+        bpy.context.scene.collection.children.link(c)
+    register_rig_ui()
+    riglight.light_rigs(bpy.context.scene)
+
+
+def load_rig(path, slug):
+    """Appends the rig's collection without putting it in a scene."""
     name = hero_name(slug)
     with bpy.data.libraries.load(path) as (src, dst):
         dst.collections = [c for c in src.collections if c == name]
         dst.texts = [t for t in src.texts if t.startswith('dlrig_')]
     for c in dst.collections:
-        bpy.context.scene.collection.children.link(c)
         # the rig looks for its clip library next to the open file, which is no longer the rig's own
         for ob in c.all_objects:
             if ob.type == 'ARMATURE' and 'dlrig' in ob:
@@ -325,8 +374,7 @@ def append_rig(path, slug):
                     prop = next((p for p in ('dlrig_ui', 'dlrig_physics') if t.name.startswith(p)), None)
                     if prop and not isinstance(ob.get(prop), bpy.types.Text):
                         ob[prop] = t
-    register_rig_ui()
-    riglight.light_rigs(bpy.context.scene)
+    return dst.collections
 
 
 def append_map(path, slug, link=False):
@@ -508,7 +556,7 @@ class DLR_PT_main(bpy.types.Panel):
         sub.enabled = not busy
         sub.operator('dlr.build', text='Export Animations', icon='ACTION').kind = 'ANIMS'
 
-        if _job is not None and _job.kind != 'MAP' and _job.slug == sc.dlr_hero:
+        if _job is not None and _job.kind != 'MAP' and not _job.quiet and _job.slug == sc.dlr_hero:
             draw_job(layout, context, hero_name(_job.slug))
 
         path = rig_path(sc.dlr_hero, context)
@@ -579,6 +627,7 @@ class DLR_PT_map(bpy.types.Panel):
             row.operator('dlr.append_map', text='Append Map', icon='APPEND_BLEND').link = False
         look.draw(layout, context)
         if crop.any_map(sc):
+            npcs.draw(layout, context)
             riglight.draw(layout, context)
             textures.draw(layout, context)
             crop.draw(layout, context)
@@ -613,11 +662,13 @@ def register():
     textures.register()
     riglight.register()
     particles.register()
+    npcs.register()
 
 
 def unregister():
     if _job:
         _job.cancel()
+    npcs.unregister()
     particles.unregister()
     riglight.unregister()
     textures.unregister()

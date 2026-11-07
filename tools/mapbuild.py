@@ -23,6 +23,7 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 from pipeline import Builder, BuildError, find_pak, log  # noqa: E402
 import map_environment as env  # noqa: E402
+import map_npcs  # noqa: E402
 
 MAPS = {'dl_midtown': 'Midtown', 'dl_hideout': 'Hideout'}
 # the export, rebatched copy and saved scene of Midtown take about 11 GB together
@@ -49,6 +50,7 @@ class MapFiles:
         self.props_file = os.path.join(self.props, 'props.json')
         self.blend = os.path.join(self.out, slug + '.blend')
         self.stamp_file = os.path.join(self.out, 'map.json')
+        self.npcs_file = os.path.join(self.out, 'npcs.json')
 
 
 def install_dir(pak):
@@ -262,6 +264,7 @@ class MapBuilder(Builder):
         self.run([self.s2v, '-i', vpks[0], '-f', f'maps/{m.slug}/lightmaps/directional_irradiance_sh2_',
                   '-o', m.lighting, '-d'], m, show=False)
         ents = self.entities(m, vpks)
+        self.write_npcs(m, ents)
         settings = {'sun': env.sun(ents), 'lights': env.lights(ents), 'gradient_fog': env.gradient_fog(ents)}
         cube = env.cubemap_fog(ents)
         settings['cubemap_fog'] = cube
@@ -309,6 +312,22 @@ class MapBuilder(Builder):
             f'sky {"yes" if "sky" in settings else "no"}, fog {"cubemap " if cube else ""}'
             f'{"gradient " if settings["gradient_fog"] else ""}'
             f'{"volumetric" if settings.get("volumetric_fog") else ""}')
+
+    def write_npcs(self, m, ents):
+        os.makedirs(m.out, exist_ok=True)
+        npcs = map_npcs.spawns(ents)
+        json.dump({'npcs': npcs}, open(m.npcs_file, 'w', encoding='utf-8'), indent=1)
+        log(f'  npcs: {len(npcs)} spawns')
+
+    def npcs_only(self, slug):
+        """Just <map>/npcs.json, for a map built before the build wrote it."""
+        work = os.environ.get('DLRIG_WORK') or os.path.join(os.path.dirname(TOOLS), 'heroes')
+        out = os.environ.get('DLRIG_OUT') or os.path.join(work, 'out')
+        m = MapFiles(slug, work, out)
+        os.makedirs(m.dir, exist_ok=True)
+        self.write_npcs(m, self.entities(m, [map_vpk(self.pak, slug), self.pak]))
+        os.remove(os.path.join(m.dir, 'dump.txt'))
+        log(f'DONE {slug} {m.npcs_file}')
 
     def glass_masks(self, m, vpks):
         """The glass mask textures (g_tGlass) of F_GLASS materials that don't give it as a constant; the glTF export
@@ -435,13 +454,17 @@ def main(argv=None):
     ap.add_argument('--out', help='the map goes in <out>/maps/<map>/ (default: heroes/out/)')
     ap.add_argument('--keep', action='store_true', help='keep the export and the rebatched copy')
     ap.add_argument('--force', action='store_true', help='rebuild even if the map is up to date')
+    ap.add_argument('--npcs', action='store_true', help="only write the map's NPC spawns (npcs.json)")
     ap.add_argument('--no-mods', dest='mods', action='store_false',
                     help="leave out the mods in Deadlock's addons folders (they are in by default, as in the game)")
     args = ap.parse_args(argv)
     args.exports = False
     args.backup = False
     try:
-        MapBuilder(args).build_map(args.map, args.force)
+        if args.npcs:
+            MapBuilder(args).npcs_only(args.map)
+        else:
+            MapBuilder(args).build_map(args.map, args.force)
     except (BuildError, subprocess.CalledProcessError, OSError) as e:
         log(f'ERROR {args.map}: {e}')
         return 1
