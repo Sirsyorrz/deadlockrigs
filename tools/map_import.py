@@ -223,15 +223,25 @@ if install:
         print(f'WARNING: particle effects failed: {e}')
 progress(PROGRESS['particles'])
 os.makedirs(tex_dir, exist_ok=True)
+written = set()
 for img in tracked(bpy.data.images, 'volumes', 'textures'):
     src = bpy.path.abspath(img.filepath) if img.filepath else ''
     # the lighting files are already next to the map
-    if img.packed_file or not os.path.isfile(src) or os.path.abspath(src).startswith(out_dir + os.sep):
+    if img.packed_file or not os.path.isfile(src):
+        continue
+    if os.path.abspath(src).startswith(out_dir + os.sep):
+        written.add(os.path.abspath(src))
         continue
     dest = os.path.join(tex_dir, os.path.basename(src))
-    if not os.path.exists(dest):
+    # always overwritten: a texture left by an earlier build can be a mod's (Include Mods) or an older game's
+    if dest not in written:
         shutil.copyfile(src, dest)
+        written.add(dest)
     img.filepath = dest
+for name in os.listdir(tex_dir):
+    path = os.path.join(tex_dir, name)
+    if path not in written and os.path.isfile(path):
+        os.remove(path)
 
 progress(PROGRESS['textures'])
 bpy.ops.wm.save_as_mainfile(filepath=out_blend, relative_remap=True)
