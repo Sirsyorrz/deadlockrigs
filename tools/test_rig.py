@@ -513,6 +513,10 @@ for bone, opts in arm.get('parent_options', {}).items():
     jump = (pb[bone].matrix.translation - before.translation).length
     mch = 'MCH-weapon_space' if bone == 'weaponPivot' else 'MCH-parent_' + bone
     target = pb[mch].constraints['Parent'].targets[last].subtarget
+    if target.startswith('hand_'):
+        # a hand on IK would ignore the nudge (the patrons' core can ride either hand)
+        for p in IK_PROPS:
+            arm[p] = 0.0
     pb[target].location.z += 0.05 if target not in ('torso',) else 0.0
     if target == 'torso':
         pb[target].location.y += 0.05
@@ -982,6 +986,24 @@ for key, name in arm.get('extra_models', {}).items():
     reset()
     check(f'extra model {name} shows and follows its control', obs and hidden and shown and moved > 0.1,
           f'{len(obs)} meshes, hidden at first {hidden}, moved {moved * 1000:.0f} mm')
+
+# stages: each shows its own meshes only, and its controls
+for key, i in arm.get('stage_models', {}).items():
+    reset()
+    own = [o for o in bpy.data.objects if o.get('dlrig_extra') == key]
+    body = [o for o in bpy.data.objects if o.type == 'MESH' and o.find_armature() == arm and not o.get('dlrig_extra')
+            and not o.name.startswith('WGT-') and not o.hide_viewport]
+    at_first = all(o.hide_viewport for o in own) and all(not o.hide_viewport for o in body)
+    arm['stage'] = i
+    update()
+    swapped = all(not o.hide_viewport for o in own) and all(o.hide_viewport for o in body)
+    ctrl = not pb[f'{key}__root'].hide
+    arm['stage'] = 0
+    update()
+    back = all(o.hide_viewport for o in own) and all(not o.hide_viewport for o in body)
+    stage = arm['stages'][i]
+    check(f'stage {stage} swaps the meshes', own and body and at_first and swapped and ctrl and back,
+          f'{len(own)} own, {len(body)} body meshes; first {at_first}, swapped {swapped}, control {ctrl}, back {back}')
 
 # the bone face (facerig.py): the skin is where it was at rest, every face bone moves it, and the tweak controls ride
 # the skin through the shape keys

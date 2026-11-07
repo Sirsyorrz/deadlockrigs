@@ -251,11 +251,13 @@ for key, cfg, glb in hero.extra_models:
     for o in new:
         if o not in meshes and o != src_arm:
             bpy.data.objects.remove(o, do_unlink=True)
-    at = arm.data.bones[cfg['at']].matrix_local if cfg.get('at') in arm.data.bones else Matrix()
+    at = arm.data.bones[cfg['at']].matrix_local if cfg.get('at', '') in arm.data.bones else Matrix()
     if src_arm and cfg.get('align') and cfg['at'] in src_arm.data.bones:
         place = at @ (src_arm.matrix_world @ src_arm.data.bones[cfg['at']].matrix_local).inverted()
     else:
         place = Matrix.Translation(at.translation)
+    # "offset": metres from there (the core floats above the patron's feet, CoreVerticalOffset in npc_units.vdata)
+    place = Matrix.Translation(cfg.get('offset', (0, 0, 0))) @ place
     for o in meshes:
         mw = o.matrix_world.copy()
         o.parent = None

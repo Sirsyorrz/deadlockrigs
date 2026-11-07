@@ -1263,35 +1263,70 @@
   "name": "Guardian",
   "codename": "boss_tier_01_brazier_guardian",
   "model": "models/npc/boss_tier_01_brazier_guardian/boss_tier_01_brazier_guardian.vmdl",
-  "npc": true
+  "npc": true,
+  "idle": "game_boss_tier1_stand_idle"
  },
  {
   "slug": "hidden_king",
   "name": "Hidden King",
   "codename": "patron_amber",
   "model": "models/npc/patron_amber/patron_amber.vmdl",
-  "npc": true
+  "npc": true,
+  "extra_models": {
+   "Weakened": {
+    "model": "models/npc/core_amber/core_amber.vmdl",
+    "offset": [
+     0,
+     0,
+     8.89
+    ],
+    "clips": true
+   }
+  },
+  "stages": [
+   "Patron",
+   "Weakened"
+  ],
+  "idle": "game_idle"
  },
  {
   "slug": "archmother",
   "name": "Archmother",
   "codename": "patron_sapphire",
   "model": "models/npc/patron_sapphire/patron_sapphire.vmdl",
-  "npc": true
+  "npc": true,
+  "extra_models": {
+   "Weakened": {
+    "model": "models/npc/core_sapphire/core_sapphire.vmdl",
+    "offset": [
+     0,
+     0,
+     8.89
+    ],
+    "clips": true
+   }
+  },
+  "stages": [
+   "Patron",
+   "Weakened"
+  ],
+  "idle": "game_patron_sapphire_phase1_idle"
  },
  {
   "slug": "midboss",
   "name": "Mid-boss",
   "codename": "midboss",
   "model": "models/npc/midboss/midboss.vmdl",
-  "npc": true
+  "npc": true,
+  "idle": "game_idle"
  },
  {
   "slug": "walker",
   "name": "Walker",
   "codename": "boss_tier_02_sun_walker",
   "model": "models/npc/boss_tier_02_sun_walker_v2/boss_tier_02_sun_walker.vmdl",
-  "npc": true
+  "npc": true,
+  "idle": "game_unshielded_idle"
  },
  {
   "slug": "base_guardian",
@@ -1301,45 +1336,67 @@
   "npc": true
  },
  {
+  "slug": "amber_base_guardian",
+  "name": "Amber Base Guardian",
+  "codename": "t3_watcher_amber",
+  "model": "models/props_endgame/t3_watcher/t3_watcher_amber.vmdl",
+  "npc": true,
+  "idle": "game_idle"
+ },
+ {
+  "slug": "sapphire_base_guardian",
+  "name": "Sapphire Base Guardian",
+  "codename": "t3_watcher_sapphire",
+  "model": "models/props_endgame/t3_watcher/t3_watcher_sapphire.vmdl",
+  "npc": true,
+  "idle": "game_idle"
+ },
+ {
   "slug": "amber_trooper",
   "name": "Amber Trooper",
   "codename": "amber_trooper_01",
   "model": "models/npc_units/troopers/amber_trooper_01/amber_trooper_01.vmdl",
-  "npc": true
+  "npc": true,
+  "idle": "game_primary_idle_no_target"
  },
  {
   "slug": "amber_melee_trooper",
   "name": "Amber Melee Trooper",
   "codename": "amber_trooper_01_melee",
   "model": "models/npc_units/troopers/amber_trooper_01_melee/amber_trooper_01_melee.vmdl",
-  "npc": true
+  "npc": true,
+  "idle": "game_primary_idle"
  },
  {
   "slug": "amber_medic",
   "name": "Amber Medic",
   "codename": "amber_medic_01",
   "model": "models/npc_units/troopers/amber_medic_01/amber_medic_01.vmdl",
-  "npc": true
+  "npc": true,
+  "idle": "game_idle_no_target"
  },
  {
   "slug": "sapphire_trooper",
   "name": "Sapphire Trooper",
   "codename": "sapphire_trooper_01",
   "model": "models/npc_units/troopers/sapphire_trooper_01/sapphire_trooper_01.vmdl",
-  "npc": true
+  "npc": true,
+  "idle": "game_primary_idle_no_target"
  },
  {
   "slug": "sapphire_melee_trooper",
   "name": "Sapphire Melee Trooper",
   "codename": "sapphire_trooper_01_melee",
   "model": "models/npc_units/troopers/sapphire_trooper_01_melee/sapphire_trooper_01_melee.vmdl",
-  "npc": true
+  "npc": true,
+  "idle": "game_primary_idle"
  },
  {
   "slug": "sapphire_medic",
   "name": "Sapphire Medic",
   "codename": "sapphire_medic_01",
   "model": "models/npc_units/troopers/sapphire_medic_01/sapphire_medic_01.vmdl",
-  "npc": true
+  "npc": true,
+  "idle": "game_idle_no_target"
  }
 ]

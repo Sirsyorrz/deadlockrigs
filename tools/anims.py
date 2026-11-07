@@ -6,6 +6,7 @@ to one key. Each action gets a fake user and one slot named after the rig's arma
 out/<hero>_anims.blend."""
 import json
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -61,6 +62,27 @@ TURNS = mirror.turns({b.name: b.matrix_local for b in arm.data.bones})
 uneven = set()
 for a in keep_names.values():
     uneven.update(mirror.turn_keys(a.layers[0].strips[0].channelbags[0], TURNS))
+
+# an extra model's clips (the patrons' weakened core) key its bones as build.py named them in the hero's armature,
+# <key>__<bone>
+for key, glb in hero.extra_clips:
+    before = set(bpy.data.actions)
+    clip_glb = short_clip_glb(glb)
+    bpy.ops.import_scene.gltf(filepath=clip_glb)
+    os.remove(clip_glb)
+    own = next(o for o in bpy.data.objects if o.type == 'ARMATURE' and o != arm)
+    turns = mirror.turns({b.name: b.matrix_local for b in own.data.bones})
+    for a in [a for a in bpy.data.actions if a not in before]:
+        cb = a.layers[0].strips[0].channelbags[0]
+        uneven.update(f'{key}__{b}' for b in mirror.turn_keys(cb, turns))
+        for f in cb.fcurves:
+            if f.data_path.startswith('pose.bones["'):
+                f.data_path = f'pose.bones["{key}__' + f.data_path[len('pose.bones["'):]
+        for g in cb.groups:
+            g.name = f'{key}__{g.name}'
+        # Blender numbers a clip named like one of the hero's (the core's idle)
+        keep_names[f'game_{key}_' + re.sub(r'\.\d{3}$', '', a.name)] = a
+    bpy.data.objects.remove(own, do_unlink=True)
 if uneven:
     print('clips: non-uniform scale on turned bones, not exact:', sorted(uneven))
 

@@ -265,7 +265,13 @@ def sample_hold(key, bones, clips=HOLD_CLIPS):
             return None, None
         return saved['basis'], {b: Matrix(m) for b, m in saved['mats'].items()}
     with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
-        dst.actions = [next(n for n in clips if n in src.actions)]
+        # an NPC's stand idle has its own name (the Guardian's boss_tier1_stand_idle): heroes.json "idle"
+        name = next((n for n in clips + (hero.cfg.get('idle'),) if n in src.actions), None)
+        dst.actions = [name] if name else []
+    if not dst.actions:
+        print(f'WARNING: none of the clips {clips} for {key}, it stays at rest')
+        RIGDATA.setdefault('hold', {})[key] = None
+        return None, None
     a = dst.actions[0]
     arm.animation_data_create()
     arm.animation_data.action = a
@@ -764,9 +770,13 @@ for s, (lname, limb, a, b_, c, ik_name, _dist) in LIMBS:
         PARENTS[pole] = [('Foot', ctrl), ('Root', ROOT), ('Torso', BODY)]
 for key, cfg in EXTRA.items():
     at = cfg.get('at')
-    PARENTS[f'{key}__root'] = [({'hand_R': 'Hand R', 'hand_L': 'Hand L'}.get(at, 'Bone'), at if at in eb else None),
-                              ('Hand R', 'hand_R' if 'hand_R' in eb else None),
-                              ('Hand L', 'hand_L' if 'hand_L' in eb else None), ('Root', ROOT)]
+    by_hand = [('Hand R', 'hand_R' if 'hand_R' in eb else None), ('Hand L', 'hand_L' if 'hand_L' in eb else None)]
+    if at and at in eb:
+        PARENTS[f'{key}__root'] = [({'hand_R': 'Hand R', 'hand_L': 'Hand L'}.get(at, 'Bone'), at)] + by_hand + [
+            ('Root', ROOT)]
+    else:
+        # placed without a bone (the patrons' core): it stays where it is until moved to a hand
+        PARENTS[f'{key}__root'] = [('Root', ROOT)] + by_hand
 PARENTS = {k: [(lbl, b) for lbl, b in v if b] for k, v in PARENTS.items()}
 PARENTS = {k: [o for i, o in enumerate(v) if o[1] not in [b for _, b in v[:i]]] for k, v in PARENTS.items()}
 PARENTS = {k: v for k, v in PARENTS.items() if len(v) > 1}
@@ -2153,23 +2163,54 @@ for sname, deltas in SLIDERS.items():
 
 # extra models: show_<key> shows the model (hidden by default); with "follow" its bones named like the hero's (the
 # hook hand's fingers) copy those bones' rotation, so hand poses carry over, and can still be posed on top
-arm['extra_models'] = {key: cfg['name'] for key, cfg in EXTRA.items()}
+# heroes.json "stages": the forms an NPC turns into, the first its own model and the others extra models (the patrons'
+# weakened core). stage n shows that form only; an extra model that is a stage shows with its stage, not show_<key>
+STAGES = list(hero.cfg.get('stages', []))
+STAGE_OF = {key: i for i, name in enumerate(STAGES) for key, cfg in EXTRA.items() if cfg['name'] == name}
+arm['extra_models'] = {key: cfg['name'] for key, cfg in EXTRA.items() if key not in STAGE_OF}
+if len(STAGE_OF) + 1 == len(STAGES) > 1:
+    arm['stages'] = STAGES
+    arm['stage_models'] = STAGE_OF
+    arm['stage'] = 0
+    arm.id_properties_ui('stage').update(min=0, max=len(STAGES) - 1, description=' / '.join(STAGES))
+    for o in bpy.data.objects:
+        if o.type != 'MESH' or o.name.startswith('WGT-') or o.get('dlrig_extra') or o.find_armature() != arm:
+            continue
+        o.hide_set(False)
+        for path in ('hide_viewport', 'hide_render'):
+            fc = o.animation_data and o.animation_data.drivers.find(path)
+            if fc:
+                # bodygroup drivers: hidden by its group or by another stage
+                d = fc.driver
+                prop_var(d, 'stage', '["stage"]')
+                d.expression = f'max({d.expression}, stage != 0)'
+                assert d.is_simple_expression, d.expression
+            else:
+                expr_driver(o, path, None, 'stage != 0', props=[('stage', '["stage"]')])
+elif STAGES:
+    print('WARNING: stages', STAGES, 'need an extra model for each after the first')
+    STAGE_OF = {}
+    arm['extra_models'] = {key: cfg['name'] for key, cfg in EXTRA.items()}
 for key, cfg in EXTRA.items():
-    arm[f'show_{key}'] = 0
-    arm.id_properties_ui(f'show_{key}').update(min=0, max=1, description=f"Show {cfg['name']}")
+    if key in STAGE_OF:
+        prop, hidden = 'stage', f'v != {STAGE_OF[key]}'
+    else:
+        prop, hidden = f'show_{key}', 'v < 0.5'
+        arm[prop] = 0
+        arm.id_properties_ui(prop).update(min=0, max=1, description=f"Show {cfg['name']}")
     for o in bpy.data.objects:
         if o.get('dlrig_extra') == key:
             o.hide_set(False)
             for path in ('hide_viewport', 'hide_render'):
-                expr_driver(o, path, None, '1 - v', props=[('v', f'["show_{key}"]')])
+                expr_driver(o, path, None, hidden, props=[('v', f'["{prop}"]')])
     for pbone in arm.pose.bones:
         if pbone.name.startswith(key + '__'):
             # its controls show with it
             d = (arm.driver_add(f'pose.bones["{pbone.name}"].hide') if POSE_HIDE else
                  arm.data.driver_add(f'bones["{pbone.name}"].hide')).driver
             d.type = 'SCRIPTED'
-            prop_var(d, 'v', f'["show_{key}"]')
-            d.expression = 'v < 0.5'
+            prop_var(d, 'v', f'["{prop}"]')
+            d.expression = hidden
         own = pbone.name[len(key) + 2:]
         if not pbone.name.startswith(key + '__') or own == 'root' or own not in arm.pose.bones or not cfg.get('follow'):
             continue

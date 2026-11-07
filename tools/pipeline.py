@@ -397,11 +397,17 @@ class Builder:
                 os.remove(f)
 
     def anim_glb(self, h):
+        flags = ['--gltf_export_format', 'glb', '--gltf_export_animations', '--gltf_compose_additive']
         if not os.path.exists(h.anim_glb):
-            self.s2v_export(h, h.path('anim'), '--gltf_export_format', 'glb', '--gltf_export_animations',
-                            '--gltf_compose_additive')
+            self.s2v_export(h, h.path('anim'), *flags)
         if not os.path.exists(h.anim_glb):
             raise BuildError('Source2Viewer wrote no ' + h.anim_glb)
+        for key, glb in h.extra_clips:
+            if not os.path.exists(glb):
+                model = next(cfg['model'] for k, cfg, _g in h.extra_models if k == key)
+                self.run([self.s2v, '-i', self.pak, '-f', model + '_c', '-o', h.path('anim'), *flags], h, show=False)
+            if not os.path.exists(glb):
+                raise BuildError('Source2Viewer wrote no ' + glb)
 
     def anims(self, h):
         self.anim_glb(h)

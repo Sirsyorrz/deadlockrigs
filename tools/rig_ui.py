@@ -757,6 +757,13 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
         for p in ob.get('clip_off', ['weapon_hold']):
             if p in ob:
                 ob[p] = 0.0
+        if ob.get('stages'):
+            # a stage's clips move its own bones only (the patrons' weakened core): show that stage
+            stage = next((i for key, i in ob.get('stage_models', {}).items()
+                          if self.clip.startswith(f'game_{key}_')), 0)
+            if ob.get('stage', 0) != stage:
+                ob['stage'] = stage
+                ob.update_tag()
         start = clip.frame_range[0]
         if self.mode == 'NEW':
             clip.name = self.clip[5:] if self.clip.startswith('game_') else self.clip
@@ -1764,10 +1771,18 @@ class DLRIG_PT_parts(bpy.types.Panel):
     def poll(cls, context):
         ob = rig(context)
         return ob is not None and bool(ob.get('body_groups') or ob.get('sliders') or ob.get('extra_models')
-                                       or 'glow' in ob)
+                                       or ob.get('stages') or 'glow' in ob)
 
     def draw(self, context):
         ob = rig(context)
+        if ob.get('stages'):
+            row = self.layout.row(align=True)
+            row.label(text='Stage')
+            for i, name in enumerate(ob['stages']):
+                row.operator('dlrig.stage', text=name, depress=ob.get('stage', 0) == i).index = i
+            for key, i in ob.get('stage_models', {}).items():
+                if ob.get('stage', 0) == i:
+                    parent_row(self.layout, ob, f'{key}__root', 'Follows')
         sets = ob.get('part_sets', {})
         for sname, options in sets.items():
             row = self.layout.row(align=True)
@@ -1827,6 +1842,22 @@ class DLRIG_OT_part_set(bpy.types.Operator):
             if autokey(context):
                 ob.keyframe_insert(f'["bodygroup_{g}"]', group='Parts')
         ob.update_tag()
+        return {'FINISHED'}
+
+
+class DLRIG_OT_stage(bpy.types.Operator):
+    """Show this form of the NPC (the patrons turn into their weakened core); its controls show with it"""
+    bl_idname = 'dlrig.stage'
+    bl_label = 'Stage'
+    bl_options = {'REGISTER', 'UNDO'}
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        ob = rig(context)
+        ob['stage'] = self.index
+        ob.update_tag()
+        if autokey(context):
+            ob.keyframe_insert('["stage"]', group='Parts')
         return {'FINISHED'}
 
 
@@ -1920,7 +1951,8 @@ def make_group_panel(title):
 classes = [DLRIG_OT_expression, DLRIG_OT_reset_face, DLRIG_OT_key_face, DLRIG_OT_hand, DLRIG_OT_reset_pose,
            DLRIG_OT_snap, DLRIG_OT_mech_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
            DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
-           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_OT_body_group, DLRIG_OT_part_set, DLRIG_OT_show_extra,
+           DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_OT_body_group, DLRIG_OT_part_set, DLRIG_OT_stage,
+           DLRIG_OT_show_extra,
            DLRIG_PT_main, DLRIG_PT_layers, DLRIG_PT_body, DLRIG_PT_ik, DLRIG_PT_follow, DLRIG_PT_riders,
            DLRIG_PT_expressions, DLRIG_PT_hands, DLRIG_PT_weapon, DLRIG_PT_parts, DLRIG_PT_game, DLRIG_PT_physics]
 # a panel per slider group of any rig in the file; the add-on runs this again after appending another rig

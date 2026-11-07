@@ -51,6 +51,13 @@ class Hero:
         return out
 
     @property
+    def extra_clips(self):
+        """Extra models with clips of their own ("clips": true, the patrons' weakened cores) -> [(key, anim glb)];
+        their clips join the hero's action library on the model's bones."""
+        return [(key, os.path.join(self.dir, 'anim', cfg['model'][:-len('.vmdl')] + '.glb'))
+                for key, cfg, _glb in self.extra_models if cfg.get('clips')]
+
+    @property
     def base_blend(self):
         return os.path.join(self.dir, 'build', f'{self.slug}.blend')
 
