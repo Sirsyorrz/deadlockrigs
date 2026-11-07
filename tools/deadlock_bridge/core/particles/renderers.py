@@ -239,8 +239,10 @@ class Renderer:
     def _lit_colors(self, sim, color, alpha, ambient):
         """Linear vertex colours lit as the game lights particles (self illumination plus diffuse times the light
         at the particle), with alpha: (n, 4)."""
-        rgb = srgb_to_linear(np.clip(color, 0.0, None)) if self.gamma_correct else np.asarray(color, np.float64)
-        rgb = rgb * np.asarray(self.color_scale(sim), np.float64)
+        # The colour scale goes into the vertex colour on the CPU; the spritecard vertex shader decodes COLOR0 from
+        # sRGB with no scale after it, so a CP tint scaled by 1/256 (street lamp glows) is gamma decoded too.
+        rgb = np.asarray(color, np.float64) * np.asarray(self.color_scale(sim), np.float64)
+        rgb = srgb_to_linear(np.clip(rgb, 0.0, None)) if self.gamma_correct else rgb
         light = float(self.self_illum(sim)) + float(self.diffuse(sim)) * np.asarray(ambient, np.float64)
         out = np.empty((len(rgb), 4))
         out[:, :3] = rgb * light
