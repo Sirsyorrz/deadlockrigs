@@ -24,6 +24,7 @@ import map_fog  # noqa: E402
 import map_lighting  # noqa: E402
 import map_probes  # noqa: E402
 import map_reflections  # noqa: E402
+import map_parallax  # noqa: E402
 import map_textures  # noqa: E402
 
 # so the build log shows each line as it happens
@@ -131,6 +132,7 @@ mats = {slot.material for ob in meshes for slot in ob.material_slots if slot.mat
 
 glass_masks = {path: found[0] for path, name in (settings.get('glass_masks') or {}).items() if (found := find(name))}
 layer_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.get('layer_textures') or {}).items()}
+print(f'parallax windows: UV maps on {map_parallax.add_uv_maps(meshes)} meshes')
 kinds = [map_lighting.apply_vmat(m, glass_masks, layer_textures) for m in tracked(mats, 'props', 'materials')]
 print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '
       f'{kinds.count("self_illum")} self-illuminated, {kinds.count("overlay")} decals')

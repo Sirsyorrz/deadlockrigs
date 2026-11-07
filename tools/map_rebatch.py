@@ -38,7 +38,8 @@ BLEND = '_BLEND'
 UV2 = '_UV2'
 SECONDARY_UV_FLAGS = ('g_bUseSecondaryUvForOverlay', 'g_bRevealUseSecondaryUv2', 'g_bRevealUseSecondaryUv3',
                       'g_bUseSecondaryUvForJitterMask', 'g_bUseSecondaryUvForTranslucency',
-                      'g_bUseSecondaryUvForAltTranslucency', 'g_bUseSecondaryUvForSelfIllum1')
+                      'g_bUseSecondaryUvForAltTranslucency', 'g_bUseSecondaryUvForSelfIllum1',
+                      'g_bLayer2UseSecondaryUV', 'g_bLayer3UseSecondaryUV')
 JITTER_POS = '_JITTER_POS'
 JITTER_AXES = ('_JITTER_X', '_JITTER_Y', '_JITTER_Z')
 GAME_UNIT = 0.0254

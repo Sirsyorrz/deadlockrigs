@@ -362,7 +362,8 @@ def set_vertex_paint(mat, bsdf, strength):
         mix.inputs['Factor'].default_value = min(max(strength, 0.0), 1.0)
 
 
-LUMINANCE = np.array([0.2125, 0.7154, 0.0721]) / np.linalg.norm([0.2125, 0.7154, 0.0721])
+LUMINANCE_WEIGHTS = np.array([0.2125, 0.7154, 0.0721])
+LUMINANCE = LUMINANCE_WEIGHTS / np.linalg.norm(LUMINANCE_WEIGHTS)
 TINT_STRENGTH = 0.85
 TINTED_SHADERS = ('pbr.vfx', 'environment_layer.vfx', 'environment_blend.vfx')
 CORRECTED_SHADERS = TINTED_SHADERS + ('environment_parallax_layered.vfx',)
@@ -581,6 +582,10 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
         import map_blend
         map_blend.apply_blend(mat, bsdf, ints, floats, dict(vmat_dict(mat).get('VectorParams') or {}),
                               layer_textures or {})
+    if vmat_dict(mat).get('ShaderName') == 'environment_parallax_layered.vfx':
+        import map_parallax
+        map_parallax.apply_parallax(mat, bsdf, ints, floats, dict(vmat_dict(mat).get('VectorParams') or {}),
+                                    layer_textures or {})
     if vmat_dict(mat).get('ShaderName') == 'citadel_overlay.vfx':
         apply_overlay(mat, bsdf, floats, dict(vmat_dict(mat).get('VectorParams') or {}))
         return 'overlay'

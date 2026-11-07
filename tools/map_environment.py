@@ -10,6 +10,8 @@ UNIT = 0.0254
 # environment_blend textures beyond layer 1's, which the glTF export leaves out (map_blend.py uses them)
 BLEND_TEXTURES = ('g_tColor2', 'g_tColor3', 'g_tRevealMask2', 'g_tRevealMask3', 'g_tColorWorldOverlay',
                   'g_tColorWorldOverlay2', 'g_tColorOverlay', 'g_tRevealOverlay')
+# environment_parallax_layered's interior layers and masks (map_parallax.py)
+PARALLAX_TEXTURES = ('g_tColor2', 'g_tColor3', 'g_tMask', 'g_tMask2')
 
 _ENTITY = re.compile(r'keyValues3Data\s*=\s*\{\s*version\s*=\s*\d+\s*values\s*=\s*\{(.*?)\n\t*\}', re.S)
 _PAIR = re.compile(r'^\s*([\w.]+) = (.+?)\s*$', re.M)

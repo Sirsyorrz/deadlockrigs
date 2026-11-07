@@ -84,7 +84,8 @@ appends (about 5 for Midtown).
 
 **Lighting.** The map is lit the way the game lights it, from its own files: surfaces with lightmaps get the baked
 lightmap, props get the map's light probe volumes (sampled per vertex when the map is built), unlit materials show
-their colour as is, and signs and windows glow at the game's self-illumination strength. The baked light is emission
+their colour as is, and signs and windows glow at the game's self-illumination strength. Lit windows show the
+curtains and rooms the game draws behind the glass, shifting with the view as in the game. The baked light is emission
 on top of each material, so lights you add still light the map; its strength is the Baked light strength value in the
 `Deadlock baked light` node group. The map's sun comes in at the game's strength (the Hideout's); where the game has
 none (Midtown), a Sun light from the game's sun direction lights only the rigs. The map's distance and height fog
