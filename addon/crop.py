@@ -235,8 +235,10 @@ def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
         inside = keep[tp]
         if not inside.any():
             continue
-        points = world_vertices(ob, mesh).astype(np.float64)
         tv = tv.reshape(-1, 3)[inside]
+        used, tv = np.unique(tv, return_inverse=True)
+        tv = tv.reshape(-1, 3).astype(np.int32)
+        points = world_vertices(ob, mesh)[used].astype(np.float32)
         mats = [see_through(slot.material) for slot in ob.material_slots] or [False]
         verts.append(points)
         tris.append(tv + base)
@@ -249,7 +251,8 @@ def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
         return keeps
     verts, tris = np.concatenate(verts), np.concatenate(tris)
     owner, face, clear, cells = map(np.concatenate, (owner, face, clear, cells))
-    tree = BVHTree.FromPolygons(verts.tolist(), tris.tolist(), all_triangles=True)
+    # numpy arrays rather than lists: lists of a street shot's millions of triangles took gigabytes more
+    tree = BVHTree.FromPolygons(verts, tris, all_triangles=True)
     del verts, tris
     hit = np.zeros(len(owner), bool)
     for clip_from_world in views:
