@@ -137,7 +137,13 @@ def prop_nodes(j, model, origin):
 
 
 def idle_anim(ent):
-    return ent.get('model') and (ent.get('idleanim') or ent.get('defaultanim'))
+    """The clip a prop loops in game: its starting clip when that loops (fans, bounce pads, the shops' keepers; it
+    never hands over to the idle), else its idle."""
+    if not ent.get('model'):
+        return None
+    if ent.get('startinganim') and ent.get('startinganimationloopmode') == 'ANIM_LOOP_MODE_LOOPING':
+        return ent['startinganim']
+    return ent.get('idleanim') or ent.get('defaultanim')
 
 
 def built_stamp(out, slug):
@@ -304,6 +310,8 @@ class MapBuilder(Builder):
         settings['glass_masks'] = self.glass_masks(m, vpks)
         settings['layer_textures'] = self.layer_textures(m, vpks)
         settings['anim_textures'] = self.anim_textures(m, vpks)
+        colors = env.lane_colors(self.dump(m, 'scripts/generic_data.vdata', [self.pak]))
+        settings['ziplines'] = env.ziplines(ents, colors)
         os.remove(os.path.join(m.dir, 'dump.txt'))
         json.dump(settings, open(os.path.join(m.lighting, 'settings.json'), 'w', encoding='utf-8'), indent=1)
         log(f'  lighting: sun {"baked" if settings["sun"] and settings["sun"]["baked"] else "live"}, '
