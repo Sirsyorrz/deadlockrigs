@@ -156,6 +156,51 @@ def lights(ents):
     return out
 
 
+def lane_colors(generic_data_dump):
+    """Lane number -> colour (sRGB 0-255) from scripts/generic_data.vdata's m_LaneInfo, which the game's ziplines
+    use (the zipline entities' color_tint are from before the lanes were renamed)."""
+    m = re.search(r'm_LaneInfo\s*=\s*\[(.*?)\n\t\]', generic_data_dump, re.S)
+    if not m:
+        return {}
+    out = {}
+    for i, body in enumerate(re.findall(r'\{(.*?)\}', m.group(1), re.S)):
+        rgb = re.search(r'm_Color = \[([^\]]+)\]', body)
+        if rgb and 'm_bIsEnemyLane' not in body:
+            out[i] = [float(c) for c in rgb.group(1).split(',')[:3]]
+    return out
+
+
+def ziplines(ents, colors=None):
+    """The lanes' zipline paths: Bezier segments (start, start handle, end handle, end) in Blender metres and the
+    lane's linear colour. Node tangents are relative to the node."""
+    colors = colors or {}
+    nodes = {}
+    for e in ents:
+        if e.get('classname') == 'citadel_zipline_path_node' and e.get('path_uniqueid'):
+            nodes.setdefault(e['path_uniqueid'], []).append(e)
+    out = []
+    for path in ents:
+        if path.get('classname') != 'citadel_zipline_path' or path.get('hammeruniqueid') not in nodes:
+            continue
+        chain = sorted(nodes[path['hammeruniqueid']], key=lambda n: num(n, 'path_index'))
+        if len(chain) < 2:
+            continue
+
+        def at(n, key=None):
+            o = [float(c) for c in n['origin']]
+            if key:
+                o = [a + float(b) for a, b in zip(o, str(n.get(key) or '0 0 0').split())]
+            return to_blender(o)
+        segments = [[at(a), at(a, 'out_tangent_local'), at(b, 'in_tangent_local'), at(b)]
+                    for a, b in zip(chain, chain[1:])]
+        lane = int(num(path, 'lane_number'))
+        rgb = colors.get(lane) or list(path.get('color_tint') or (255, 255, 255))[:3]
+        out.append({'name': str(path.get('targetname') or path['hammeruniqueid']).replace('[PR#]', ''),
+                    'lane': lane, 'color': [srgb_to_linear(float(c)) for c in rgb],
+                    'radius': num(path, 'radius', 1.0), 'segments': segments})
+    return out
+
+
 def sky(ents, name=None):
     pred = (lambda e: e.get('targetname') == name) if name else (lambda e: True)
     e = first(ents, 'env_sky', pred) or first(ents, 'env_sky')
