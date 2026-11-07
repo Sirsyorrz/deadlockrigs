@@ -182,20 +182,123 @@ def restore(ob):
         set_hidden(ob, False)
 
 
-def faces_kept(ob, mesh, region_codes, whole_objects, keep_re):
-    """Per face, whether the crop keeps it, and the faces' corner counts."""
+def faces_kept(ob, mesh, region_codes, keep_re):
+    """Per face, whether it is inside the crop's regions."""
     starts, totals, loops = face_vertices(mesh)
     if is_kept(ob, keep_re):
-        return np.ones(len(starts), bool), totals
+        return np.ones(len(starts), bool)
     points = world_vertices(ob, mesh)
     keep = np.zeros(len(starts), bool)
     for codes in region_codes(points):
         keep |= faces_inside(codes, starts, loops)
         if keep.all():
             break
-    if whole_objects and keep.any():
-        keep[:] = True
-    return keep, totals
+    return keep
+
+
+def see_through(mat):
+    """Whether a map material lets what is behind it show (glass, decals, cutout leaves, additive glows)."""
+    vmat = mat.get('vmat') if mat else None
+    if vmat is None:
+        return False
+    vmat = vmat.to_dict() if hasattr(vmat, 'to_dict') else dict(vmat)
+    ints = vmat.get('IntParams') or {}
+    return vmat.get('ShaderName') == 'citadel_overlay.vfx' or \
+        any(ints.get(k) for k in ('F_TRANSLUCENT', 'F_ALPHA_TEST', 'F_ADDITIVE_BLEND', 'F_GLASS', 'F_BLEND'))
+
+
+# what the occlusion test keeps or drops together, in metres; a visible cell also keeps its neighbours, which
+# covers the gaps between rays
+OCCLUSION_CELL = 2.0
+
+
+def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
+    """Narrows each object's kept faces to the parts of the map the camera actually sees, past what is in front of
+    them: `rays` across each sampled view (`aspect` its height over width) hit the kept faces, through see-through materials, and only map cells
+    (OCCLUSION_CELL) a ray reaches stay, with their neighbours. Objects in `never` aren't narrowed (they still hide
+    what is behind them)."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    verts, tris, owner, face, clear, cells = [], [], [], [], [], []
+    base = 0
+    for i, (ob, mesh, keep) in enumerate(keeps):
+        if not keep.any():
+            continue
+        mesh.calc_loop_triangles()
+        n = len(mesh.loop_triangles)
+        tv = np.empty(n * 3, np.int32)
+        mesh.loop_triangles.foreach_get('vertices', tv)
+        tp = np.empty(n, np.int32)
+        mesh.loop_triangles.foreach_get('polygon_index', tp)
+        tm = np.empty(n, np.int32)
+        mesh.loop_triangles.foreach_get('material_index', tm)
+        inside = keep[tp]
+        if not inside.any():
+            continue
+        points = world_vertices(ob, mesh).astype(np.float64)
+        tv = tv.reshape(-1, 3)[inside]
+        mats = [see_through(slot.material) for slot in ob.material_slots] or [False]
+        verts.append(points)
+        tris.append(tv + base)
+        base += len(points)
+        owner.append(np.full(len(tv), i, np.int32))
+        face.append(tp[inside])
+        clear.append(np.array(mats, bool)[np.minimum(tm[inside], len(mats) - 1)])
+        cells.append(np.floor(points[tv].mean(1) / OCCLUSION_CELL).astype(np.int64))
+    if not tris:
+        return keeps
+    verts, tris = np.concatenate(verts), np.concatenate(tris)
+    owner, face, clear, cells = map(np.concatenate, (owner, face, clear, cells))
+    tree = BVHTree.FromPolygons(verts.tolist(), tris.tolist(), all_triangles=True)
+    del verts, tris
+    hit = np.zeros(len(owner), bool)
+    for clip_from_world in views:
+        inverse = np.linalg.inv(clip_from_world.astype(np.float64))
+        wide = 1 + fov_margin
+        nx = rays
+        ny = max(2, int(round(rays * aspect)))
+        x, y = np.meshgrid(np.linspace(-wide, wide, nx), np.linspace(-wide, wide, ny))
+        ends = []
+        for z in (-1.0, 1.0):
+            h = np.stack([x.ravel(), y.ravel(), np.full(x.size, z), np.ones(x.size)], 1) @ inverse.T
+            ends.append(h[:, :3] / h[:, 3:])
+        for start, end in zip(*ends):
+            direction = Vector(end - start)
+            distance = direction.length
+            direction.normalize()
+            origin = Vector(start)
+            while distance > 0:
+                loc, _, index, d = tree.ray_cast(origin, direction, distance)
+                if index is None:
+                    break
+                hit[index] = True
+                if not clear[index]:
+                    break
+                origin = loc + direction * 1e-3
+                distance -= d + 1e-3
+    seen = cells[hit]
+    if not len(seen):
+        return [(ob, mesh, np.zeros_like(keep)) for ob, mesh, keep in keeps]
+    offset = cells.min(0) - 1
+    span = cells.max(0) - offset + 2
+
+    def key(c):
+        c = c - offset
+        return (c[:, 0] * span[1] + c[:, 1]) * span[2] + c[:, 2]
+    near = np.array([(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0, 1)])
+    seen = np.unique(seen, axis=0)
+    visible = np.unique(key((seen[:, None, :] + near[None]).reshape(-1, 3)))
+    shown = np.isin(key(cells), visible)
+    out = []
+    for i, (ob, mesh, keep) in enumerate(keeps):
+        if ob in never or not keep.any():
+            out.append((ob, mesh, keep))
+            continue
+        mine = owner == i
+        narrowed = np.zeros_like(keep)
+        narrowed[face[mine & shown]] = True
+        out.append((ob, mesh, keep & narrowed))
+    return out
 
 
 def particle_kept(ob, region_codes):
@@ -247,8 +350,7 @@ def mirror_links(src, cuts):
     return dst
 
 
-def crop_linked(scene, coll, region_codes, whole_objects, keep_re):
-    restore_linked(scene, coll)
+def crop_linked(scene, coll, keeps, effects):
     view = bpy.data.collections.new(coll.name + ' (cropped)')
     view[CROP_OF] = coll.name_full
     scene.collection.children.link(view)
@@ -263,10 +365,11 @@ def crop_linked(scene, coll, region_codes, whole_objects, keep_re):
             view.objects.link(ob)
             continue
         if 'dl_effect' in ob:
-            if particle_kept(ob, region_codes):
+            if effects[ob]:
                 view.objects.link(ob)
             continue
-        keep, totals = faces_kept(ob, ob.data, region_codes, whole_objects, keep_re)
+        keep = keeps[ob]
+        totals = face_vertices(ob.data)[1]
         total += int((totals - 2).sum())
         if not keep.any():
             continue
@@ -291,17 +394,36 @@ def crop_linked(scene, coll, region_codes, whole_objects, keep_re):
     return kept, total
 
 
-def crop(scene, region_codes, whole_objects, keep):
+def crop(scene, region_codes, whole_objects, keep, occlusion=None):
     """region_codes(points) -> list of outcode arrays, one per region; a face stays if it is inside any.
+    occlusion: (views, rays across, aspect, fov margin) to also drop what the camera can't see past the map (unseen_dropped).
     Returns (triangles kept, triangles before)."""
-    kept = total = 0
     keep_re = keep_pattern(keep)
-    for ob in list(map_meshes(scene)):
+    appended = list(map_meshes(scene))
+    for ob in appended:
         restore(ob)
-        if 'dl_effect' in ob:
-            set_hidden(ob, not particle_kept(ob, region_codes))
+    linked = map_collections(scene, linked=True)
+    for coll in linked:
+        restore_linked(scene, coll)
+    obs = appended + [ob for coll in linked for ob in coll.all_objects if ob.type == 'MESH' and BARN_MASK not in ob]
+    effects = {ob: particle_kept(ob, region_codes) for ob in obs if 'dl_effect' in ob}
+    keeps = [(ob, ob.data, faces_kept(ob, ob.data, region_codes, keep_re)) for ob in dict.fromkeys(obs)
+             if 'dl_effect' not in ob]
+    if occlusion:
+        never = {ob for ob, _, _ in keeps if is_kept(ob, keep_re)}
+        keeps = unseen_dropped(keeps, *occlusion, never)
+    keeps = {ob: k for ob, _, k in keeps}
+    if whole_objects:
+        for k in keeps.values():
+            if k.any():
+                k[:] = True
+    kept = total = 0
+    for ob in appended:
+        if ob in effects:
+            set_hidden(ob, not effects[ob])
             continue
-        keep, totals = faces_kept(ob, ob.data, region_codes, whole_objects, keep_re)
+        keep = keeps[ob]
+        totals = face_vertices(ob.data)[1]
         total += int((totals - 2).sum())
         if not keep.any():
             set_hidden(ob, True)
@@ -309,8 +431,8 @@ def crop(scene, region_codes, whole_objects, keep):
         kept += int((totals[keep] - 2).sum())
         if not keep.all():
             cut(ob, keep)
-    for coll in map_collections(scene, linked=True):
-        k, t = crop_linked(scene, coll, region_codes, whole_objects, keep_re)
+    for coll in linked:
+        k, t = crop_linked(scene, coll, keeps, effects)
         kept += k
         total += t
     return kept, total
@@ -395,7 +517,7 @@ class DLR_OT_crop_camera(CropOperator):
     bl_idname = 'dlr.crop_camera'
     bl_label = 'Crop to Camera'
     bl_description = ("Hide the map the scene camera never sees over the frame range (sampled every few frames, with "
-                      'a margin around the frame)')
+                      'a margin around the frame). With Hidden Behind on, also what other map parts hide from it')
 
     def execute(self, context):
         sc = context.scene
@@ -408,7 +530,10 @@ class DLR_OT_crop_camera(CropOperator):
         def regions(points):
             return [outcodes_camera(points, v, fov) for v in views]
 
-        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', keep_kinds(sc)))
+        res = sc.render
+        aspect = (res.resolution_y * res.pixel_aspect_y) / (res.resolution_x * res.pixel_aspect_x)
+        occlusion = (views, sc.dlr_crop_rays, aspect, fov) if sc.dlr_crop_hidden else None
+        self.report_result(*crop(sc, regions, sc.dlr_crop_mode == 'OBJECTS', keep_kinds(sc), occlusion))
         return {'FINISHED'}
 
 
@@ -473,6 +598,11 @@ def draw(layout, context):
     col.prop(sc, 'dlr_crop_fov_margin')
     col.prop(sc, 'dlr_crop_step')
     row = col.row(align=True)
+    row.prop(sc, 'dlr_crop_hidden')
+    sub = row.row(align=True)
+    sub.active = sc.dlr_crop_hidden
+    sub.prop(sc, 'dlr_crop_rays', text='Rays')
+    row = col.row(align=True)
     row.label(text='Keep:')
     row.popover('DLR_PT_crop_keep', text=keep_summary(sc))
     row = box.row(align=True)
@@ -500,13 +630,23 @@ def register():
     S.dlr_crop_step = bpy.props.IntProperty(
         name='Frame Step', default=5, min=1, soft_max=50,
         description='Sample the camera every this many frames')
+    S.dlr_crop_hidden = bpy.props.BoolProperty(
+        name='Hidden Behind',
+        description=('Crop to Camera also hides the parts of the map the camera never sees because other map parts '
+                     'are in front (a building behind another one). Rays are cast over each sampled frame; parts '
+                     "out of sight can still cast shadows or show in reflections, which they then won't"))
+    S.dlr_crop_rays = bpy.props.IntProperty(
+        name='Rays Across', default=480, min=32, soft_max=1920,
+        description=('Rays across the frame for Hidden Behind, per sampled frame. More catch thin gaps (fences, '
+                     'windows) but take longer'))
     for ident, name, desc, _ in KEEP_KINDS:
         setattr(S, keep_prop(ident), bpy.props.BoolProperty(name=name, description=desc))
 
 
 def unregister():
     keep = [keep_prop(ident) for ident, *_ in KEEP_KINDS]
-    for name in ('dlr_crop_mode', 'dlr_crop_margin', 'dlr_crop_fov_margin', 'dlr_crop_step', *keep):
+    for name in ('dlr_crop_mode', 'dlr_crop_margin', 'dlr_crop_fov_margin', 'dlr_crop_step', 'dlr_crop_hidden',
+                 'dlr_crop_rays', *keep):
         delattr(bpy.types.Scene, name)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
