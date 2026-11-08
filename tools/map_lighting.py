@@ -611,6 +611,8 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
     strength = paint_strength(mat, ints, floats)
     set_vertex_paint(mat, bsdf, strength)
     apply_albedo_correction(mat, bsdf, ints, floats, strength)
+    if is_environment(mat):
+        apply_layer_contrast(mat, bsdf, dict(vmat_dict(mat).get('VectorParams') or {}))
     if vmat_dict(mat).get('ShaderName') == 'environment_blend.vfx':
         import map_blend
         map_blend.apply_blend(mat, bsdf, ints, floats, dict(vmat_dict(mat).get('VectorParams') or {}),
@@ -658,6 +660,28 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
         apply_self_illum(mat, bsdf, floats, dict(vmat_dict(mat).get('VectorParams') or {}))
         return 'self_illum'
     return None
+
+
+def apply_layer_contrast(mat, bsdf, vectors):
+    """The environment shaders' layer 1 roughness and metalness contrast and brightness, which the glTF export leaves
+    out: saturate((x - 0.5 + brightness) * contrast + 0.5). Midtown's asphalt is 0.5 metal through it."""
+    for name, key in (('Roughness', 'g_vLayerRoughnessContrastBrightness1'),
+                      ('Metallic', 'g_vLayerMetalnessContrastBrightness1')):
+        contrast, brightness = (list(vectors.get(key) or (1.0, 0.0)) + [0.0])[:2]
+        if (contrast, brightness) == (1.0, 0.0):
+            continue
+        offset = (brightness - 0.5) * contrast + 0.5
+        socket = bsdf.inputs[name]
+        src = source_of(socket)
+        if src is None:
+            socket.default_value = min(max(socket.default_value * contrast + offset, 0.0), 1.0)
+            continue
+        node = mat.node_tree.nodes.new('ShaderNodeMath')
+        node.operation, node.use_clamp = 'MULTIPLY_ADD', True
+        node.inputs[1].default_value, node.inputs[2].default_value = contrast, offset
+        node.location = bsdf.location.x - 200, bsdf.location.y - 400
+        mat.node_tree.links.new(src, node.inputs[0])
+        mat.node_tree.links.new(node.outputs[0], socket)
 
 
 def apply_self_illum(mat, bsdf, floats, vectors):

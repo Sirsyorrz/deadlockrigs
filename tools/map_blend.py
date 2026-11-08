@@ -1,8 +1,9 @@
 """Deadlock's environment_blend albedo in Blender (used by map_lighting.apply_vmat). The glTF export only has the
 first layer; this lays layers 2 and 3, their reveal masks, border tints, the world overlay and the UV overlay over
 it, following ValveResourceFormat (Renderer/Shaders/citadel/environment_blend.frag.slang,
-common/surface_environment_layers.slang and common/planar_projection.slang, MIT licence). Normals, roughness and
-metalness stay layer 1's.
+common/surface_environment_layers.slang and common/planar_projection.slang, MIT licence). Roughness (with the
+border roughness) and metalness are blended the same way, after the game's environment_blend pixel shader; normals
+stay layer 1's.
 
 UVs are worked in the game's convention (v down) and flipped back for Blender's image nodes; world positions are
 Source inches, from Blender metres and axes.
@@ -225,13 +226,34 @@ class Blend:
         contrast, brightness = self.v(f'g_vLayerTintMaskContrastBrightness{n}', (1.0, 0.0))
         return tint_mask(self.g, alpha, contrast, brightness)
 
-    def layer(self, n):
-        """SampleLayer for layer 2 or 3: albedo and tint mask sockets, or None without its colour texture."""
+    def contrast(self, x, key):
+        """saturate((x - 0.5 + brightness) * contrast + 0.5)."""
+        c, b = (list(self.v(key, (1.0, 0.0))) + [0.0])[:2]
+        if (c, b) == (1.0, 0.0):
+            return x
+        out = self.g.math('MULTIPLY_ADD', x, c, clamp=True)
+        self.g.put(out.node.inputs[2], (b - 0.5) * c + 0.5)
+        return out
+
+    def surface(self, n, coords, fallback):
+        """Layer n's roughness and metalness: g_tNormalRoughness's roughness (alpha, as decompiled) and g_tPacked's
+        green, through their contrast and brightness; fallback's where the texture wasn't extracted."""
+        normal, packed = self.image(f'g_tNormalRoughness{n}', False), self.image(f'g_tPacked{n}', False)
+        rough = self.contrast(self.sample(normal, coords)[1], f'g_vLayerRoughnessContrastBrightness{n}') \
+            if normal is not None else fallback[0]
+        metal = self.contrast(self.g.split(self.sample(packed, coords)[0])[1], f'g_vLayerMetalnessContrastBrightness{n}') \
+            if packed is not None else fallback[1]
+        return rough, metal
+
+    def layer(self, n, fallback):
+        """SampleLayer for layer 2 or 3: albedo, tint mask, roughness and metalness, or None without its colour
+        texture."""
         img = self.image(f'g_tColor{n}', True)
         if img is None:
             return None
         g = self.g
-        color, alpha = self.sample(img, self.layer_coords(n))
+        coords = self.layer_coords(n)
+        color, alpha = self.sample(img, coords)
         mask = self.tint_mask(alpha, n)
         correct = color_correct_matrix(self.v(f'g_vAlbedoContrastSaturationBrightness{n}', (1, 1, 1)),
                                        average_color(img))
@@ -245,7 +267,7 @@ class Blend:
             strength = self.f(f'g_fVertexColorStrength{n}', 1.0)
             amount = g.math('MULTIPLY', mask, strength) if self.i(f'g_bMaskVertexColorTint{n}', 1) else strength
             albedo = g.mix('MIX', albedo, g.mix('MULTIPLY', albedo, self.paint()), amount)
-        return albedo, mask
+        return (albedo, mask) + self.surface(n, coords, fallback)
 
     def reveal_threshold(self, n):
         img = self.image(f'g_tRevealMask{n}', False)
@@ -320,8 +342,18 @@ class Blend:
         return self.transform(self.uv(bool(self.i('g_bUseSecondaryUvForOverlay', 1))),
                               self.v('g_vOverlayScaleRotationTranslation', NO_TRANSFORM))
 
-    def build(self, layer1, mask1):
-        """The composited albedo socket, from layer 1's (already corrected, tinted and painted) albedo."""
+    def border_roughness(self, rough, amount, n):
+        strength = self.f(f'g_flBorderRoughnessStrength{n}', 0.0)
+        if not strength:
+            return rough
+        g = self.g
+        target = self.f(f'g_flBorderRoughness{n}', 1.0)
+        return g.math('ADD', rough, g.math('MULTIPLY', g.math('SUBTRACT', target, rough),
+                                           g.math('MULTIPLY', amount, strength)))
+
+    def build(self, layer1, mask1, rough1, metal1):
+        """The composited albedo, roughness and metalness, from layer 1's (albedo already corrected, tinted and
+        painted)."""
         g = self.g
         three = bool(self.i('F_LAYER_COUNT'))
         blend = g.split(g.attribute('_BLEND'))
@@ -339,12 +371,12 @@ class Blend:
                 blend2 = g.math('ADD', blend2, g.math('MULTIPLY', reveal, self.f('g_flRevealOverlayStrength2', 1.0)),
                                 clamp=True)
 
-        layers = [(layer1, mask1)]
+        layers = [(layer1, mask1, rough1, metal1)]
         weights = []
         for n, b in ((2, blend2), (3, blend3)):
             if n == 3 and not three:
                 break
-            sampled = self.layer(n)
+            sampled = self.layer(n, (rough1, metal1))
             if sampled is None:
                 continue
             threshold = self.reveal_threshold(n)
@@ -354,15 +386,17 @@ class Blend:
                 if n == 2:
                     amounts = amounts[:2] + [0.0]
                 touched = layers + [sampled]
-                layers = [(self.border_tint(alb, g.math('MULTIPLY', amount, amounts[k]), n), m)
-                          for k, (alb, m) in enumerate(touched)]
+                layers = []
+                for k, (alb, m, r, mt) in enumerate(touched):
+                    each = g.math('MULTIPLY', amount, amounts[k])
+                    layers.append((self.border_tint(alb, each, n), m, self.border_roughness(r, each, n), mt))
                 sampled = layers.pop()
             layers.append(sampled)
             weights.append((len(layers) - 1, self.weight(b, threshold, self.f(f'g_flRevealSoftness{n}', 0.125))))
 
         for factor, strengths in self.world_overlays():
             layers = [(self.overlay_layer(alb, m, factor, self.i(f'g_nWorldOverlayTintMask{k + 1}', 1),
-                                          strengths[k]), m) for k, (alb, m) in enumerate(layers)]
+                                          strengths[k]), m, r, mt) for k, (alb, m, r, mt) in enumerate(layers)]
         if self.i('F_UV_OVERLAY'):
             img = self.image('g_tColorOverlay', True)
             if img is not None:
@@ -370,13 +404,21 @@ class Blend:
                                              self.f('g_flOverlayDarknessContrast', 1.0),
                                              self.f('g_flOverlayBrightnessContrast', 1.0))
                 layers = [(self.overlay_layer(alb, m, factor, self.i(f'g_nOverlayTintMask{k + 1}'),
-                                              self.f(f'g_flOverlayStrength{k + 1}', 1.0)), m)
-                          for k, (alb, m) in enumerate(layers)]
+                                              self.f(f'g_flOverlayStrength{k + 1}', 1.0)), m, r, mt)
+                          for k, (alb, m, r, mt) in enumerate(layers)]
 
-        result = layers[0][0]
+        result, rough, metal = layers[0][0], layers[0][2], layers[0][3]
         for index, w in weights:
             result = g.mix('MIX', result, layers[index][0], w)
-        return result
+            rough = fmix(g, rough, layers[index][2], w)
+            metal = fmix(g, metal, layers[index][3], w)
+        return result, rough, metal
+
+
+def fmix(g, a, b, t):
+    if a is b:
+        return a
+    return g.math('ADD', a, g.math('MULTIPLY', g.math('SUBTRACT', b, a), t))
 
 
 def layer1_coords(blend, mat):
@@ -444,8 +486,13 @@ def apply_blend(mat, bsdf, ints, floats, vectors, textures):
         return False
     image = upstream_image(source)
     mask1 = blend.tint_mask(image.outputs['Alpha'], 1) if image else 1.0
-    result = blend.build(source, mask1)
+    surface1 = [bsdf.inputs[s].links[0].from_socket if bsdf.inputs[s].is_linked else bsdf.inputs[s].default_value
+                for s in ('Roughness', 'Metallic')]
+    result, rough, metal = blend.build(source, mask1, *surface1)
     blend.g.links.new(result, bsdf.inputs['Base Color'])
+    for name, value, before in (('Roughness', rough, surface1[0]), ('Metallic', metal, surface1[1])):
+        if value is not before:
+            blend.g.put(bsdf.inputs[name], value)
     global applied
     applied += 1
     return True
