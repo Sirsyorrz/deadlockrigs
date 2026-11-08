@@ -207,7 +207,7 @@ if sky_files:
     world.use_fake_user = True
     coll['dlr_world'] = world.name
     bpy.context.scene.world = world
-    sky_mips = [(4, map_lighting.downsample(sky_img, 16)), (7, map_lighting.downsample(sky_img, 128))]
+    sky_mips = [(lod, map_lighting.downsample(sky_img, 2 ** lod, light_dir)) for lod in (4, 7)]
 cube, gradient = settings.get('cubemap_fog'), settings.get('gradient_fog')
 fog = None
 if (cube and sky_mips) or gradient:

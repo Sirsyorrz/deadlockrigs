@@ -1374,17 +1374,27 @@ def bake_probes(objects, atlas, volumes):
 
 # ---------------------------------------------------------------- sky and fog
 
-def downsample(img, factor):
-    """A box-filtered copy of an image, a stand-in for the cubemap's blurred mips."""
+def downsample(img, factor, folder):
+    """A box-filtered copy of an image, a stand-in for the cubemap's blurred mips, saved as an EXR in folder. (A
+    packed generated float image came back black from the saved .blend: the cubemap fog faded to black.)"""
     w, h = img.size
     px = np.empty(w * h * 4, np.float32)
     img.pixels.foreach_get(px)
     px = px.reshape(h // factor, factor, w // factor, factor, 4).mean(axis=(1, 3))
-    small = bpy.data.images.new(f'{img.name} mip{int(math.log2(factor))}', w // factor, h // factor, alpha=True,
-                                float_buffer=True)
+    stem = f'{os.path.splitext(os.path.basename(img.filepath))[0] or img.name}_mip{int(math.log2(factor))}'
+    path = os.path.join(folder, stem + '.exr')
+    small = bpy.data.images.new(stem, w // factor, h // factor, alpha=True, float_buffer=True)
+    # a generated image is colour managed on save unless it is Non-Color
+    small.colorspace_settings.name = 'Non-Color'
     small.pixels.foreach_set(px.reshape(-1))
+    scene = bpy.context.scene
+    s = scene.render.image_settings
+    s.file_format, s.color_mode, s.exr_codec, s.color_depth = 'OPEN_EXR', 'RGB', 'ZIP', '16'
+    small.save_render(path, scene=scene)
+    bpy.data.images.remove(small)
+    small = bpy.data.images.load(path)
+    small.name = stem
     small.colorspace_settings.name = img.colorspace_settings.name
-    small.pack()
     return small
 
 
