@@ -26,6 +26,8 @@ BLOOM_AOV = 'dl_bloom'
 SQRT3 = math.sqrt(3)
 ZONAL = 0.25 * math.sqrt(5 / (16 * math.pi))
 UNIT = 0.0254
+NORMALIZATION_MAX = 32.0
+NORMALIZATION_ROUGHNESS_BEGIN = 0.1
 # Source2Viewer writes cubemaps as equirectangular images whose centre is Source +X, Blender -Y
 SKY_ROTATION = (0.0, 0.0, -math.pi / 2)
 
@@ -193,7 +195,7 @@ def dominant_reflection(g, normal, rough):
 
 def add_env_specular(g, reflections, albedo, metallic, roughness, normal, irradiance, diffuse, lightmap=None):
     """The game's indirect specular on top of a baked diffuse: the cubemaps through the split sum, scaled by the env
-    map normalization (the irradiance's luminance over what the cubemaps saw, capped at 2 roughness + 1), plus the
+    map normalization (the irradiance's luminance over what the cubemaps saw, capped by roughness), plus the
     multiple scattering lit by the irradiance; the diffuse loses the energy both take. Returns the sum.
 
     lightmap(direction) -> the lightmap's irradiance around a direction, and its weight (0 off lightmaps): rough
@@ -205,7 +207,9 @@ def add_env_specular(g, reflections, albedo, metallic, roughness, normal, irradi
         g.put(node.inputs[name], value)
     single, multi = node.outputs['Single Scatter'], node.outputs['Multi Scatter']
     luma = g.vec('DOT_PRODUCT', irradiance, (0.2125, 0.7154, 0.0721))
-    ceiling = g.math('ADD', g.math('MULTIPLY', rough, 2.0), 1.0)
+    # scenesystem.dll: lb_cubemap_normalization_max 32 at roughness 1, roughness_begin 0.1 (cap 1 below it)
+    slope = (NORMALIZATION_MAX - 1.0) / (1.0 - NORMALIZATION_ROUGHNESS_BEGIN)
+    ceiling = g.math('MAXIMUM', g.math('ADD', g.math('MULTIPLY', rough, slope), NORMALIZATION_MAX - slope), 1.0)
     radiance, baked = node.outputs['Radiance'], node.outputs['Baked Luma']
     if lightmap is not None:
         seen, on_lightmap = lightmap(dominant_reflection(g, normal, rough))
