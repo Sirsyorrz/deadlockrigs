@@ -11,7 +11,9 @@ Bloom (downsample_bloomthreshold.vfx and gaussian_bloom_blur.vfx, core): the une
 luminance passes the threshold, times the bloom strength, blurred down a chain of mips from quarter resolution and
 summed with the blur weights, added after exposure without being exposed itself. Each mip is a Gaussian here with
 the chain's accumulated width. The chain is in pixels, so the game's bloom is relatively narrower at higher
-resolutions; the widths are for BLOOM_REFERENCE_WIDTH.
+resolutions; the widths are for BLOOM_REFERENCE_WIDTH. Pixels of materials with g_flOverrideBloomAmount (lit windows,
+signs, lamps; the BLOOM_AOV pass the map build writes) skip the threshold and bloom by their colour times the amount,
+as citadel's bloom_downsample.vfx does; the scale is fitted to a game screenshot.
 
 Vignette: from the shader, the radius is where it starts and radius + feather where it is full, over a superellipse in
 [-1, 1] screen space; strength below 0 darkens toward 1 + strength. The roundness to superellipse exponent mapping is
@@ -30,6 +32,8 @@ BLOOM = {'strength': 0.5, 'threshold': 1.0, 'threshold_width': 0.999,
          'blur_weights': (0.0, 0.070259, 0.181076, 0.300013, 0.448652)}
 VIGNETTE = {'strength': -0.5982, 'center': (0.0, 0.0), 'radius': 0.4386, 'roundness': 0.2134, 'feather': 0.6098}
 BLOOM_LUMA = (0.3, 0.59, 0.11)
+# tools/map_lighting.py writes this pass
+BLOOM_AOV = 'dl_bloom'
 # the game's screenshots are 4K
 BLOOM_REFERENCE_WIDTH = 3840.0
 # the blur pass's 4 bilinear taps, a Gaussian of this variance in texels of its mip, and the downsamples between mips
@@ -68,6 +72,8 @@ def build_group(p):
     if not tree.interface.items_tree:
         tree.interface.new_socket('Image', in_out='INPUT', socket_type='NodeSocketColor')
         tree.interface.new_socket('Image', in_out='OUTPUT', socket_type='NodeSocketColor')
+    if not any(i.name == 'Bloom Amount' for i in tree.interface.items_tree):
+        tree.interface.new_socket('Bloom Amount', in_out='INPUT', socket_type='NodeSocketFloat')
     nodes, links = tree.nodes, tree.links
     inp, out = nodes.new('NodeGroupInput'), nodes.new('NodeGroupOutput')
     inp.location, out.location = (-1400, 0), (900, 0)
@@ -127,7 +133,10 @@ def build_group(p):
     # threshold on the exposure without the bias, as the game's tonemap scalar
     luma = vec('DOT_PRODUCT', scene, BLOOM_LUMA, -2600, -600)
     width = BLOOM['threshold_width']
-    weight = mad(luma, 2.0 ** p['exposure'] / width, -BLOOM['threshold'] / width, -2400, -600, clamp=True)
+    threshold = mad(luma, 2.0 ** p['exposure'] / width, -BLOOM['threshold'] / width, -2400, -600, clamp=True)
+    amount = inp.outputs['Bloom Amount']
+    overridden = math('GREATER_THAN', amount, 0.0, -2400, -800)
+    weight = mad(overridden, math('SUBTRACT', amount, threshold, -2400, -1000), threshold, -2300, -700)
     source = vec('SCALE', scene, math('MULTIPLY', weight, BLOOM['strength'], -2200, -600), -2000, -600)
     bloom_on = value('Bloom', 1.0, -2000, -900)
     bloom = None
@@ -222,8 +231,23 @@ def enable(scene):
         if target.is_linked:
             tree.links.new(target.links[0].from_socket, node.inputs[0])
         tree.links.new(node.outputs[0], target)
+    link_bloom_amount(scene, tree)
     vs = scene.view_settings
     vs.view_transform, vs.look, vs.exposure, vs.gamma = 'Standard', 'None', 0.0, 1.0
+
+
+def link_bloom_amount(scene, tree):
+    for layer in scene.view_layers:
+        if BLOOM_AOV not in layer.aovs:
+            aov = layer.aovs.add()
+            aov.name, aov.type = BLOOM_AOV, 'VALUE'
+    node = look_node(tree)
+    layers = next((n for n in tree.nodes if n.type == 'R_LAYERS'), None)
+    if layers is None or 'Bloom Amount' not in node.inputs or node.inputs['Bloom Amount'].is_linked:
+        return
+    source = layers.outputs.get(BLOOM_AOV)
+    if source is not None:
+        tree.links.new(source, node.inputs['Bloom Amount'])
 
 
 def is_enabled(scene):

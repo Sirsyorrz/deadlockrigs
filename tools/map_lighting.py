@@ -21,6 +21,8 @@ from mathutils import Vector
 GROUP = 'Deadlock baked light'
 FOG_GROUP = 'Deadlock fog'
 PROBE_ATTR = '_PROBE_LIGHT'
+# addon/look.py reads this pass
+BLOOM_AOV = 'dl_bloom'
 SQRT3 = math.sqrt(3)
 ZONAL = 0.25 * math.sqrt(5 / (16 * math.pi))
 UNIT = 0.0254
@@ -597,6 +599,17 @@ def apply_overlay(mat, bsdf, floats, vectors):
     image.image.alpha_mode = 'STRAIGHT'
 
 
+def add_bloom_amount(mat, floats):
+    """g_flOverrideBloomAmount1 as the BLOOM_AOV pass. The game writes it to the G-buffer and its bloom downsample
+    (bloom_downsample.vfx, citadel) blooms those pixels by their colour times the amount, past the threshold."""
+    amount = float(floats.get('g_flOverrideBloomAmount1', 0.0))
+    if amount <= 0:
+        return
+    node = mat.node_tree.nodes.new('ShaderNodeOutputAOV')
+    node.aov_name = BLOOM_AOV
+    node.inputs['Value'].default_value = amount
+
+
 def apply_vmat(mat, glass_masks=None, layer_textures=None):
     """What the glTF export loses of the game's shading: unlit and additive materials show their colour as it is,
     glass lets the scene through, and self-illumination is scaled by g_flSelfIllumScale. Returns 'unlit', 'glass',
@@ -608,6 +621,7 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
         return None
     bsdf = surface.node
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    add_bloom_amount(mat, floats)
     strength = paint_strength(mat, ints, floats)
     set_vertex_paint(mat, bsdf, strength)
     apply_albedo_correction(mat, bsdf, ints, floats, strength)
