@@ -170,10 +170,32 @@ def specular_color(g, albedo, metallic):
     return g.vec('SCALE', f0, g.math('MULTIPLY', peak, 25.0, clamp=True))
 
 
-def add_env_specular(g, reflections, albedo, metallic, roughness, normal, irradiance, diffuse):
+def lightmap_reflection_weight(g, rough, metallic):
+    """How much a lightmapped surface reflects its lightmap instead of the cubemaps: none below roughness 0.2, all
+    from 0.3, none on metals (deferred_lighting.vfx; the range is a CPU constant, VRF's
+    LightmapReflectionRoughnessRange)."""
+    ramp = g.math('MULTIPLY_ADD', rough, 10.0, clamp=True)
+    g.put(ramp.node.inputs[2], -2.0)
+    return g.math('MULTIPLY', ramp, g.math('SUBTRACT', 1.0, metallic))
+
+
+def dominant_reflection(g, normal, rough):
+    """deferred_lighting.vfx: mix(N, reflect(view ray, N), s (sqrt s + r^2)) with s = 1 - r^2, not normalized."""
+    ray = g.vec('SCALE', g.node('ShaderNodeNewGeometry').outputs['Incoming'], -1.0)
+    r2 = g.math('MULTIPLY', rough, rough)
+    s = g.math('SUBTRACT', 1.0, r2, clamp=True)
+    t = g.math('MULTIPLY', s, g.math('ADD', g.math('SQRT', s), r2))
+    reflected = g.vec('REFLECT', ray, normal)
+    return g.vec('ADD', normal, g.vec('SCALE', g.vec('SUBTRACT', reflected, normal), t))
+
+
+def add_env_specular(g, reflections, albedo, metallic, roughness, normal, irradiance, diffuse, lightmap=None):
     """The game's indirect specular on top of a baked diffuse: the cubemaps through the split sum, scaled by the env
     map normalization (the irradiance's luminance over what the cubemaps saw, capped at 2 roughness + 1), plus the
-    multiple scattering lit by the irradiance; the diffuse loses the energy both take. Returns the sum."""
+    multiple scattering lit by the irradiance; the diffuse loses the energy both take. Returns the sum.
+
+    lightmap(direction) -> the lightmap's irradiance around a direction, and its weight (0 off lightmaps): rough
+    lightmapped surfaces reflect that, at the dominant reflection direction, in place of the cubemaps."""
     rough = g.math('MAXIMUM', roughness, 0.05)
     node = g.node('ShaderNodeGroup', node_tree=reflections)
     for name, value in (('Normal', normal), ('Roughness', rough),
@@ -182,12 +204,18 @@ def add_env_specular(g, reflections, albedo, metallic, roughness, normal, irradi
     single, multi = node.outputs['Single Scatter'], node.outputs['Multi Scatter']
     luma = g.vec('DOT_PRODUCT', irradiance, (0.2125, 0.7154, 0.0721))
     ceiling = g.math('ADD', g.math('MULTIPLY', rough, 2.0), 1.0)
-    baked = node.outputs['Baked Luma']
+    radiance, baked = node.outputs['Radiance'], node.outputs['Baked Luma']
+    if lightmap is not None:
+        seen, on_lightmap = lightmap(dominant_reflection(g, normal, rough))
+        weight = g.math('MULTIPLY', lightmap_reflection_weight(g, rough, metallic), on_lightmap)
+        radiance = g.mix('MIX', radiance, seen, weight)
+        seen_luma = g.vec('DOT_PRODUCT', seen, (0.2125, 0.7154, 0.0721))
+        baked = g.math('ADD', baked, g.math('MULTIPLY', g.math('SUBTRACT', seen_luma, baked), weight))
     norm = g.math('MINIMUM', g.math('DIVIDE', luma, g.math('MAXIMUM', baked, 1e-6)), ceiling)
     # no cubemap baked here: the game skips the division
     norm = g.math('ADD', g.math('MULTIPLY', norm, g.math('GREATER_THAN', baked, 0.0)),
                   g.math('LESS_THAN', baked, 1e-9))
-    specular = g.vec('ADD', g.vec('MULTIPLY', g.vec('SCALE', node.outputs['Radiance'], norm), single),
+    specular = g.vec('ADD', g.vec('MULTIPLY', g.vec('SCALE', radiance, norm), single),
                      g.vec('MULTIPLY', multi, irradiance))
     keep = g.vec('MAXIMUM', g.vec('SUBTRACT', (1.0, 1.0, 1.0), g.vec('ADD', single, multi)), (0.0, 0.0, 0.0))
     return g.vec('ADD', g.vec('MULTIPLY', diffuse, keep), specular)
@@ -208,20 +236,25 @@ def baked_light_group(dc_path=None, band_paths=(), reflections=None):
 
     # missing attributes read as zero: _LIGHTMAP_UV.z is 1 only on lightmapped surfaces, _PROBE_LIGHT only on the rest
     irradiance = g.attribute(PROBE_ATTR, 'Color')
+    lightmap_at = None
     if dc_path:
         uvw = g.split(g.attribute('_LIGHTMAP_UV'))
         uv = g.combine(uvw[0], uvw[1], 0.0)
         normal = g.vec('NORMALIZE', inp.outputs['Normal'])
         dc = g.split(g.image(load_image(dc_path), uv))
         bands = [band_in_blender_axes(g, g.image(load_image(p), uv)) for p in band_paths]
-        if len(bands) == 1:
-            f = sh_factor(g, bands[0], normal)
-            lightmap = g.combine(*(g.math('MULTIPLY', dc[i], f) for i in range(3)))
-        else:
+
+        def evaluate(direction):
+            if len(bands) == 1:
+                f = sh_factor(g, bands[0], direction)
+                return g.combine(*(g.math('MULTIPLY', dc[i], f) for i in range(3)))
             # 8.3/8.4: one band per channel; the zonal axis is their luminance-weighted sum, which this
             # approximates with each channel's own axis
-            lightmap = g.combine(*(g.math('MULTIPLY', dc[i], sh_factor(g, bands[i], normal)) for i in range(3)))
-        irradiance = g.vec('ADD', irradiance, g.vec('SCALE', lightmap, uvw[2]))
+            return g.combine(*(g.math('MULTIPLY', dc[i], sh_factor(g, bands[i], direction)) for i in range(3)))
+
+        def lightmap_at(direction):
+            return evaluate(direction), uvw[2]
+        irradiance = g.vec('ADD', irradiance, g.vec('SCALE', evaluate(normal), uvw[2]))
 
     strength = g.node('ShaderNodeValue', label='Baked light strength', name='Strength')
     strength.outputs[0].default_value = 1.0
@@ -232,7 +265,7 @@ def baked_light_group(dc_path=None, band_paths=(), reflections=None):
         diffuse_albedo = g.vec('SCALE', inp.outputs['Base Color'], g.math('SUBTRACT', 1.0, metallic))
         albedo_light = add_env_specular(g, reflections, inp.outputs['Base Color'], metallic,
                                         inp.outputs['Roughness'], g.vec('NORMALIZE', inp.outputs['Normal']),
-                                        irradiance, g.vec('MULTIPLY', diffuse_albedo, irradiance))
+                                        irradiance, g.vec('MULTIPLY', diffuse_albedo, irradiance), lightmap_at)
     g.links.new(g.vec('SCALE', albedo_light, scale), out.inputs['Emission'])
     return tree
 
