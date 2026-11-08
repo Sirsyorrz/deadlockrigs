@@ -121,6 +121,8 @@ if props_file and os.path.exists(props_file):
     props = map_anim.import_props(props_file, coll)
     print(f'animated props: {sum(ob.type == "ARMATURE" for ob in props)}')
 reached('props')
+if settings.get('skins'):
+    print(f'skins: {map_lighting.apply_skins(list(coll.all_objects), settings["skins"])} material slots')
 if settings.get('tonemap'):
     coll['dlr_tonemap'] = dict(settings['tonemap'], exposure_bias=settings['tonemap']['exposure_bias'] +
                                settings.get('exposure', 0.0), exposure=settings.get('exposure', 0.0))

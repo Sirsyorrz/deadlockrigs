@@ -4,6 +4,7 @@ mapbuild.py): the sun, sky, fog, light probe volumes and the post-processing's t
 Source units are inches; Blender gets metres (the glTF export's scale) and Source (x, y, z) at Blender (y, -x, z).
 """
 import math
+import os
 import re
 
 UNIT = 0.0254
@@ -155,6 +156,37 @@ def lights(ents):
                 light['type'] = 'POINT'
         out.append(light)
     return out
+
+
+def prop_skins(ents):
+    """Model entities shown with a material group other than the first: model, origin (Source units), skin. The
+    world export draws every entity model with its default group (Midtown's sapphire storm cloud came out amber)."""
+    out = []
+    for e in ents:
+        skin = str(e.get('skin', 'default'))
+        if e.get('model') and skin not in ('default', '0', '0.0', ''):
+            out.append({'model': e['model'], 'origin': [float(v) for v in e['origin']], 'skin': skin})
+    return out
+
+
+def material_groups(vmdl_dump):
+    """A model's m_materialGroups as [(name, [vmat paths])]."""
+    block = re.search(r'm_materialGroups\s*=\s*\[(.*?)\n\t\]', vmdl_dump, re.S)
+    if not block:
+        return []
+    return [(name, re.findall(r'resource:"([^"]+)"', mats))
+            for name, mats in re.findall(r'm_name = "([^"]*)"\s*m_materials\s*=\s*\[(.*?)\]', block.group(1), re.S)]
+
+
+def skin_materials(groups, skin):
+    """Default material name -> the skin's, by position in the groups (names without folder or extension)."""
+    if not groups:
+        return {}
+    chosen = next((mats for name, mats in groups if name == skin), None)
+    if chosen is None and skin.replace('.0', '').isdigit() and int(float(skin)) < len(groups):
+        chosen = groups[int(float(skin))][1]
+    base = lambda p: os.path.splitext(os.path.basename(p))[0]
+    return {base(a): base(b) for a, b in zip(groups[0][1], chosen or ()) if base(a) != base(b)}
 
 
 def lane_colors(generic_data_dump):

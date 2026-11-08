@@ -308,6 +308,7 @@ class MapBuilder(Builder):
         fog = env.volumetric_fog(ents)
         if fog and self.decompile(m, fog['texture'], vpks[:1], os.path.join(m.lighting, 'volumetric_fog')):
             settings['volumetric_fog'] = fog
+        settings['skins'] = self.skins(m, ents, vpks)
         settings['glass_masks'] = self.glass_masks(m, vpks)
         settings['layer_textures'] = self.layer_textures(m, vpks)
         settings['anim_textures'] = self.anim_textures(m, vpks)
@@ -319,6 +320,14 @@ class MapBuilder(Builder):
             f'sky {"yes" if "sky" in settings else "no"}, fog {"cubemap " if cube else ""}'
             f'{"gradient " if settings["gradient_fog"] else ""}'
             f'{"volumetric" if settings.get("volumetric_fog") else ""}')
+
+    def skins(self, m, ents, vpks):
+        out = []
+        for e in env.prop_skins(ents):
+            swap = env.skin_materials(env.material_groups(self.dump(m, e['model'], vpks)), e['skin'])
+            if swap:
+                out.append({'model': e['model'], 'origin': e['origin'], 'materials': swap})
+        return out
 
     def write_npcs(self, m, ents):
         os.makedirs(m.out, exist_ok=True)

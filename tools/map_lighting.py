@@ -599,6 +599,36 @@ def apply_overlay(mat, bsdf, floats, vectors):
     image.image.alpha_mode = 'STRAIGHT'
 
 
+def base_name(mat):
+    """A material's name without Blender's .001 suffix."""
+    name = mat.name
+    return name[:-4] if len(name) > 4 and name[-4] == '.' and name[-3:].isdigit() else name
+
+
+def apply_skins(objects, skins):
+    """Puts the material group each entity model is shown with on its objects (the build's settings 'skins': model,
+    origin in Source units, default -> skin material names), using the map's own copies of those materials.
+    Returns how many material slots changed."""
+    by_name = {}
+    for mat in bpy.data.materials:
+        by_name.setdefault(base_name(mat), mat)
+    changed = 0
+    for skin in skins:
+        x, y, z = skin['origin']
+        at = Vector((y, -x, z)) * UNIT
+        roots = [ob for ob in objects if ob.name.startswith(skin['model'] + '_c')
+                 and (ob.matrix_world.translation - at).length < 0.05]
+        for ob in {o for root in roots for o in [root, *root.children_recursive]}:
+            for slot in ob.material_slots:
+                target = slot.material and by_name.get(skin['materials'].get(base_name(slot.material)))
+                if target:
+                    # the mesh may be shared with instances on their default skin
+                    slot.link = 'OBJECT'
+                    slot.material = target
+                    changed += 1
+    return changed
+
+
 def add_bloom_amount(mat, floats):
     """g_flOverrideBloomAmount1 as the BLOOM_AOV pass. The game writes it to the G-buffer and its bloom downsample
     (bloom_downsample.vfx, citadel) blooms those pixels by their colour times the amount, past the threshold."""
