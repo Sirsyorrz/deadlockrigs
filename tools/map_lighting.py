@@ -1485,7 +1485,9 @@ def fog_group(cube=None, gradient=None, sky_mips=None, sky_strength=1.0, sky_fac
         amount = ramp(g, distance, f['start'], f['end'], f['falloff'])
         if f['height_width'] > 0:
             hs, he = f['height_start'], f['height_start'] + f['height_width']
-            amount = g.math('MULTIPLY', amount, ramp(g, height, he, hs, f['height_exponent']))
+            # Deadlock's deferred_fogging.vfx takes the larger of distance and height fog and fogs pixels above the
+            # height start at any distance, so its height term rises above it (VRF multiplies by a falling one)
+            amount = g.math('MAXIMUM', amount, ramp(g, height, hs, he, f['height_exponent']))
         # the game blurs nearer fog more: mip (1 - amount * lod bias) * (log2(face size) - 3)
         lod = g.math('MULTIPLY', g.math('SUBTRACT', 1.0, g.math('MULTIPLY', amount, f['lod_bias']), clamp=True),
                      math.log2(sky_face) - 3)
