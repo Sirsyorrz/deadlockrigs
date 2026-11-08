@@ -78,7 +78,7 @@ def game_version(pak):
 
 
 # raised when a change to the build makes earlier builds wrong, so they show as needing a rebuild
-BUILDER = 20
+BUILDER = 21
 
 
 def game_stamp(pak, slug, mods=True):
@@ -305,6 +305,9 @@ class MapBuilder(Builder):
             if self.decompile(m, texture, vpks[:1], os.path.join(m.lighting, 'cubemaps')) and \
                     self.decompile(m, 'textures/dev/brdf_lut.vtex', [core, self.pak], os.path.join(m.lighting, 'brdf')):
                 settings['env_maps'] = env_maps
+                # Source2Viewer decompiles only the top mip; the reflections read the game's blurred mips from this
+                self.run([self.s2v, '-i', vpks[0], '-f', texture + '_c', '-o', os.path.join(m.lighting, 'cubemaps')],
+                         m, show=False)
         fog = env.volumetric_fog(ents)
         if fog and self.decompile(m, fog['texture'], vpks[:1], os.path.join(m.lighting, 'volumetric_fog')):
             settings['volumetric_fog'] = fog

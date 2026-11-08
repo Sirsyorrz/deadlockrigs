@@ -5,9 +5,9 @@ BRDF lookup table. Callers scale the radiance by the env map normalization, the 
 the luminance the cubemaps saw there, so reflections follow the local light.
 
 Blender has no cube arrays or mips, so images stand in:
-  reflection_atlas_<k>.exr  every cubemap as an equirect tile, at three sizes standing in for the mips (box
-                            filtered from the top mip, not the game's GGX prefilter); one texel of padding,
-                            wrapped across the seam
+  reflection_atlas_<k>.exr  every cubemap as an equirect tile, at three sizes standing in for the mips: the game's
+                            own GGX prefiltered mips of that face size, read from the raw .vtex_c (box filtered
+                            from the top mip when it can't be read); one texel of padding, wrapped across the seam
   reflection_maps.exr       per cubemap a row of PARAM_TEXELS texels, see map_params
   reflection_index.png      a coarse map space grid with up to CANDIDATES cubemaps per cell in blending order;
                             unused slots point at an empty row. Outside the grid the map-wide cubemaps apply
@@ -17,6 +17,7 @@ import glob
 import math
 import os
 import re
+import struct
 
 import bpy
 import numpy as np
@@ -72,6 +73,107 @@ def luma_harmonic(rgb):
     return l1 * Y1 * 2 / 3, l00 * Y00
 
 
+VTEX_BC6H = 19
+VTEX_CUBE, VTEX_ARRAY = 0x10, 0x40
+# OpenImageIO's DDS reader refuses taller images
+DDS_MAX_ROWS = 32768
+
+
+def vtex_header(raw):
+    """(mip data offset, width, depth, format, mip count, flags) of a .vtex_c, or None."""
+    size, _, _, block_offset, blocks = struct.unpack_from('<IHHII', raw, 0)
+    at = 8 + block_offset
+    for i in range(blocks):
+        kind, offset, _ = struct.unpack_from('<4sII', raw, at + 12 * i)
+        if kind == b'DATA':
+            q = at + 12 * i + 4 + offset
+            flags = struct.unpack_from('<H', raw, q + 2)[0]
+            width, _, depth, fmt, mips = struct.unpack_from('<HHHBB', raw, q + 20)
+            return size, width, depth, fmt, mips, flags
+    return None
+
+
+def bc6h_dds(path, data, w, h):
+    header = struct.pack('<4sIIIIIII44xII4sIIIIIIIIII', b'DDS ', 124, 0x1 | 0x2 | 0x4 | 0x1000 | 0x80000, h, w,
+                         len(data), 0, 1, 32, 0x4, b'DX10', 0, 0, 0, 0, 0, 0x1000, 0, 0, 0, 0)
+    # DXGI_FORMAT_BC6H_UF16, 2D
+    open(path, 'wb').write(header + struct.pack('<IIIII', 95, 3, 0, 1, 0) + data)
+
+
+def game_mips(vtex, faces, scratch):
+    """The cube array's prefiltered mips with the given face sizes: {face: (slices, 6, face, face, 3)}, faces in
+    D3D order (+X -X +Y -Y +Z -Z). Only BC6H cube arrays (Source 2's baked cubemaps); {} otherwise. Decoded by
+    OpenImageIO through a DDS wrapper, the faces stacked into one tall image (BC blocks are independent)."""
+    try:
+        import OpenImageIO as oiio
+    except ImportError:
+        return {}
+    raw = open(vtex, 'rb').read()
+    head = vtex_header(raw)
+    if head is None:
+        return {}
+    offset, width, depth, fmt, mips, flags = head
+    if fmt != VTEX_BC6H or flags & (VTEX_CUBE | VTEX_ARRAY) != VTEX_CUBE | VTEX_ARRAY:
+        return {}
+    sizes = [max(width >> m, 4) ** 2 * 6 * depth for m in range(mips)]
+    if offset + sum(sizes) != len(raw):
+        return {}
+    starts, at = {}, offset
+    # smallest mip first
+    for m in reversed(range(mips)):
+        starts[m] = at
+        at += sizes[m]
+    out = {}
+    tmp = os.path.join(scratch, 'cubemap_mip.dds')
+    for m in range(mips):
+        face = width >> m
+        if face not in faces or face < 4:
+            continue
+        per = face * face * 6
+        chunk = max(1, DDS_MAX_ROWS // (face * 6))
+        parts = []
+        for s in range(0, depth, chunk):
+            n = min(chunk, depth - s)
+            bc6h_dds(tmp, raw[starts[m] + s * per:starts[m] + (s + n) * per], face, face * 6 * n)
+            img = oiio.ImageInput.open(tmp)
+            px = img.read_image('float') if img else None
+            if img:
+                img.close()
+            if px is None:
+                break
+            parts.append(np.asarray(px, np.float32)[..., :3].reshape(n, 6, face, face, 3))
+        if len(parts) * chunk >= depth:
+            out[face] = np.concatenate(parts)
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    return out
+
+
+def cube_to_equirect(cube, w):
+    """One cubemap's faces (D3D order) as an equirect of width w, as equirect_directions addresses it; bilinear
+    within a face."""
+    d, _ = equirect_directions(w // 2, w)
+    x, y, z = d[..., 0], d[..., 1], d[..., 2]
+    ax, ay, az = np.abs(x), np.abs(y), np.abs(z)
+    xm = (ax >= ay) & (ax >= az)
+    ym = ~xm & (ay >= az)
+    zm = ~xm & ~ym
+    masks = [xm & (x > 0), xm & (x <= 0), ym & (y > 0), ym & (y <= 0), zm & (z > 0), zm & (z <= 0)]
+    # per face: the texture's s and t axes and the major axis
+    rules = [(-z, -y, ax), (z, -y, ax), (x, z, ay), (x, -z, ay), (x, -y, az), (-x, -y, az)]
+    n = cube.shape[1]
+    out = np.zeros((w // 2, w, 3), np.float32)
+    for f, ((sc, tc, ma), mask) in enumerate(zip(rules, masks)):
+        u = np.clip((sc[mask] / ma[mask] + 1) / 2 * n - 0.5, 0, n - 1)
+        v = np.clip((tc[mask] / ma[mask] + 1) / 2 * n - 0.5, 0, n - 1)
+        u0, v0 = np.minimum(u.astype(int), n - 2), np.minimum(v.astype(int), n - 2)
+        fu, fv = (u - u0)[:, None], (v - v0)[:, None]
+        t = cube[f]
+        out[mask] = ((t[v0, u0] * (1 - fu) + t[v0, u0 + 1] * fu) * (1 - fv) +
+                     (t[v0 + 1, u0] * (1 - fu) + t[v0 + 1, u0 + 1] * fu) * fv)
+    return out
+
+
 def downsample(rgb, w):
     h0, w0 = rgb.shape[:2]
     f = w0 // w
@@ -88,17 +190,22 @@ def level_widths(count):
     return (512 if count <= 48 else 256, 64, 16)
 
 
-def build_atlases(slices, widths, cols):
-    """slices: equirects in tile order. Returns per level the atlas (rows bottom up)."""
+def build_atlases(slices, widths, cols, prefiltered=None):
+    """slices: equirects in tile order; prefiltered: {face size: per tile its cube faces} from the game's mips,
+    used for the levels of that face size (an equirect of width w spans 4 faces). Returns per level the atlas
+    (rows bottom up)."""
+    prefiltered = prefiltered or {}
     rows = math.ceil(len(slices) / cols)
     atlases = []
     for w in widths:
         th, tw = w // 2 + 2, w + 2
         out = np.zeros((rows * th, cols * tw, 4), np.float32)
         out[..., 3] = 1
+        cubes = prefiltered.get(w // 4)
         for k, rgb in enumerate(slices):
             y, x = (k // cols) * th, (k % cols) * tw
-            out[y:y + th, x:x + tw, :3] = pad(downsample(rgb, w))
+            tile = cube_to_equirect(cubes[k], w) if cubes is not None else downsample(rgb, w)
+            out[y:y + th, x:x + tw, :3] = pad(tile)
         atlases.append(out)
     return atlases
 
@@ -358,8 +465,14 @@ def add_reflections(coll, title, maps, cube_dir, lut_dir, light_dir):
         harmonics.append(luma_harmonic(rgb))
     widths = level_widths(len(slices))
     cols = max(1, math.ceil(math.sqrt(len(slices) / 2)))
+    vtex = glob.glob(os.path.join(cube_dir, '**', '*.vtex_c'), recursive=True)
+    mips = game_mips(vtex[0], {w // 4 for w in widths}, light_dir) if vtex else {}
+    prefiltered = {face: [cubes[s] for s in order] for face, cubes in mips.items()
+                   if cubes.shape[0] > max(order)}
     atlases = [save_half(f'reflection_atlas_{k}', a, os.path.join(light_dir, f'reflection_atlas_{k}.exr'))
-               for k, a in enumerate(build_atlases(slices, widths, cols))]
+               for k, a in enumerate(build_atlases(slices, widths, cols, prefiltered))]
+    prefiltered_faces = sorted(prefiltered)
+    del mips, prefiltered
     del slices
     params_img = save_image('reflection_maps', map_params(maps, [tile_of[m['index']] for m in maps], harmonics,
                                                              cols), os.path.join(light_dir, 'reflection_maps.exr'))
@@ -375,7 +488,7 @@ def add_reflections(coll, title, maps, cube_dir, lut_dir, light_dir):
         coll.objects.link(anchor)
         coll['dlr_anchor'] = anchor.name
     dims = grid.shape[:3][::-1]
-    print(f'reflections: {len(maps)} cubemaps, tiles {widths}, index {dims[0]}x{dims[1]}x{dims[2]} cells of '
-          f'{cell:.2f} m')
+    print(f'reflections: {len(maps)} cubemaps, tiles {widths} ({len(prefiltered_faces)} from the game\'s mips), '
+          f'index {dims[0]}x{dims[1]}x{dims[2]} cells of {cell:.2f} m')
     return reflection_group(anchor, atlases, widths, cols, params_img, index_img, index_scale,
                             (origin, cell, dims, grid_cols, outside), lut_img)
