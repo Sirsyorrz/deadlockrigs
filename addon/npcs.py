@@ -385,7 +385,7 @@ def draw(layout, context):
     busy = _job is not None and not _job.done
     row.enabled = not busy or pos is not None
     row.prop(sc, 'dlr_npcs', text='NPCs', icon='COMMUNITY')
-    row.prop_menu_enum(sc, 'dlr_npc_groups', text='Which', icon='DOWNARROW_HLT')
+    row.popover('DLR_PT_npc_groups', text=f'Which ({len(sc.dlr_npc_groups)}/{len(GROUP_IDS)})')
     row = box.row()
     row.enabled = not busy
     row.prop(sc, 'dlr_npc_anims')
@@ -407,10 +407,27 @@ def draw(layout, context):
         box.operator('dlr.show_log', icon='TEXT')
 
 
+GROUP_IDS = []
+
+
+class DLR_PT_npc_groups(bpy.types.Panel):
+    # a popover rather than a menu: a menu closes on the first click, this stays open for picking several
+    bl_label = 'Which NPCs'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+
+    def draw(self, context):
+        col = self.layout.column(align=True)
+        for g in GROUP_IDS:
+            col.prop_enum(context.scene, 'dlr_npc_groups', g)
+
+
 def register():
     from . import tools_module
     S, P = bpy.types.Scene, bpy.props
     groups = tools_module('map_npcs').GROUPS
+    GROUP_IDS[:] = [g[0] for g in groups]
+    bpy.utils.register_class(DLR_PT_npc_groups)
     S.dlr_npcs = P.BoolProperty(
         name='NPCs', default=False, update=toggle,
         description=("Put the game's NPCs on the map where the game has them, as rigs playing their idle. "
@@ -428,3 +445,4 @@ def unregister():
     stop_placing()
     for p in ('dlr_npcs', 'dlr_npc_groups', 'dlr_npc_anims', 'dlr_npcs_status'):
         delattr(bpy.types.Scene, p)
+    bpy.utils.unregister_class(DLR_PT_npc_groups)
