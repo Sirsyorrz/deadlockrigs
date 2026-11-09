@@ -130,17 +130,22 @@ def lights(ents):
             shear = [float(v) for v in (e.get('shear') or (0, 0))]
             cx, cy = shear[0] / rng * near, shear[1] / rng * near
             eye = [o - near * f - cx * s - cy * u for o, f, s, u in zip(origin, forward, side, up)]
-            # an elliptical cone through the opening's corners: sqrt 2 times the half sizes
             reach = [size[0] + abs(cx), size[1] + abs(cy)]
-            half = [math.atan2(reach[0] * math.sqrt(2), near), math.atan2(reach[1] * math.sqrt(2), near)]
             # the game's shape exponent (VRF SceneLight.GetShapeExponent); a cookie's shape is the cookie's
             shape = 0.0 if e.get('lightcookie') else min(max(num(e, 'shape'), 0.0), 1.0)
+            exponent = 2 / (0.875 * shape + 0.125) if shape > 0 else 0.0
+            # an elliptical cone through the opening's widest points: sqrt 2 times the half sizes for a rectangle's
+            # corners, the half sizes themselves for an ellipse. Wider than the opening, the volume copies
+            # (map_fog.light_fog, unshadowed so the mask can't cut them) lit fog all round the Archmother's shaft
+            corner = math.sqrt(2) if exponent == 0 else max(2 ** (0.5 - 1 / exponent), 1.0)
+            half = [math.atan2(reach[0] * corner, near), math.atan2(reach[1] * corner, near)]
             light['mask'] = {'origin': to_blender(origin), 'half': [size[0] * UNIT, size[1] * UNIT],
-                             'reach': [r * UNIT for r in reach],
-                             'exponent': 2 / (0.875 * shape + 0.125) if shape > 0 else 0.0}
+                             'reach': [r * UNIT for r in reach], 'exponent': exponent}
             light.update(type='SPOT', position=to_blender(eye), watts=WATTS * linear * ((near + REFERENCE) / REFERENCE) ** 2,
                          cone=2 * max(half), aspect=math.tan(half[0]) / max(math.tan(half[1]), 1e-6),
-                         blend=min(max(num(e, 'softx'), num(e, 'softy')), 1.0), distance=(near + rng) * UNIT,
+                         # the game fades from 1 - soft of the way out to the edge (VRF GetBarnLightSoftEdge)
+                         blend=min(max(num(e, 'soft_x', 0.25), num(e, 'soft_y', 0.25)), 1.0),
+                         distance=(near + rng) * UNIT,
                          near=near * UNIT,
                          radius=num(e, 'luminaire_size', 4.0) * UNIT / 2)
         elif kind == 'light_rect':
