@@ -1034,6 +1034,19 @@ for key, i in arm.get('stage_models', {}).items():
     check(f'stage {stage} swaps the meshes', own and body and at_first and swapped and ctrl and back,
           f'{len(own)} own, {len(body)} body meshes; first {at_first}, swapped {swapped}, control {ctrl}, back {back}')
 
+# extras that belong to a stage (the patrons' effigies) show with it only
+for key, i in arm.get('stage_extras', {}).items():
+    reset()
+    own = [o for o in bpy.data.objects if o.get('dlrig_extra') == key]
+    seen = []
+    for s in range(len(arm['stages'])):
+        arm['stage'] = s
+        update()
+        seen.append(all(not o.hide_viewport for o in own) if s == i else all(o.hide_viewport for o in own))
+    arm['stage'] = 0
+    update()
+    check(f'{key} shows with stage {arm["stages"][i]} only', own and all(seen), f'{len(own)} meshes, {seen}')
+
 # the bone face (facerig.py): the skin is where it was at rest, every face bone moves it, and the tweak controls ride
 # the skin through the shape keys
 if arm.get('face_bones'):

@@ -1800,7 +1800,18 @@
      0,
      8.89
     ],
-    "clips": true
+    "clips": true,
+    "particles": [
+     "particles/npc/patron_amber/patron_amber_core_energy.vpcf"
+    ]
+   },
+   "Effigy": {
+    "model": "models/npc/effigy_amber/effigy_amber_model.vmdl",
+    "stage": "Patron",
+    "vmat_shading": true,
+    "particles": [
+     "particles/npc/patron_amber/patron_amber_flame.vpcf"
+    ]
    }
   },
   "stages": [
@@ -1823,7 +1834,18 @@
      0,
      8.89
     ],
-    "clips": true
+    "clips": true,
+    "particles": [
+     "particles/npc/patron_sapphire/patron_sapphire_ambient.vpcf"
+    ]
+   },
+   "Effigy": {
+    "model": "models/npc/effigy_sapphire/effigy_sapphire_model.vmdl",
+    "stage": "Patron",
+    "vmat_shading": true,
+    "particles": [
+     "particles/npc/mother/mother_obelisk.vpcf"
+    ]
    }
   },
   "stages": [

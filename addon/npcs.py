@@ -178,6 +178,77 @@ def load_idle(arm, slug):
     return act
 
 
+def npc_effects(slug):
+    """The particle effects that play on an NPC's extra models (heroes.json extra_models "particles": the patrons'
+    effigy flames, the cores' glow) -> [(extra key, effect path, offset from the rig)]."""
+    from . import heroes
+    cfg = next((h for h in heroes() if h['slug'] == slug), {})
+    out = []
+    for name, extra in cfg.get('extra_models', {}).items():
+        key = ''.join(c if c.isalnum() else '_' for c in name.lower()).strip('_')
+        out += [(key, path, Vector(extra.get('offset', (0, 0, 0)))) for path in extra.get('particles', [])]
+    return out
+
+
+def add_effects(arm, slug, cache):
+    """The NPC's effects at its spot, parented to the rig and shown with what they belong to (the effigy's flames
+    with the patron, the core's glow once it's weakened). Simulated once per kind (cache: effect path -> holder) and copied for the other
+    spots. Skipped quietly without the game's files."""
+    from . import particles
+    for key, path, offset in npc_effects(slug):
+        try:
+            if path not in cache:
+                bridge = particles.bridge_particles()
+                cache[path] = bridge.spawn_particle_system(bpy.context, path, Matrix(), time=2.0,
+                                                           playback={'loop': True, 'length': None, 'start': 0.0})
+            source = cache[path]
+        except Exception as e:
+            print(f'NPC effect {path}: {e}')
+            cache[path] = None
+            continue
+        if source is None:
+            continue
+        holder = source if source.parent is None and source.get('dlr_npc_effect') is None else copy_tree(source)
+        holder['dlr_npc_effect'] = key
+        holder.parent = arm
+        holder.matrix_parent_inverse = Matrix()
+        holder.matrix_basis = Matrix.Translation(offset)
+        coll = arm.users_collection[0]
+        stages = {**arm.get('stage_models', {}), **arm.get('stage_extras', {})}
+        prop, hidden = ('stage', f'v != {stages[key]}') if key in stages else (f'show_{key}', 'v < 0.5')
+        for ob in [holder] + list(holder.children_recursive):
+            for c in list(ob.users_collection):
+                c.objects.unlink(ob)
+            coll.objects.link(ob)
+            if prop not in arm:
+                continue
+            for path in ('hide_viewport', 'hide_render'):
+                d = ob.driver_add(path).driver
+                d.type = 'SCRIPTED'
+                v = d.variables.new()
+                v.name = 'v'
+                v.targets[0].id = arm
+                v.targets[0].data_path = f'["{prop}"]'
+                d.expression = hidden
+
+
+def copy_tree(root):
+    """A copy of an effect's empty and its objects (data shared)."""
+    copies = {}
+    for ob in [root] + list(root.children_recursive):
+        copies[ob] = ob.copy()
+        for c in ob.users_collection:
+            c.objects.link(copies[ob])
+    for ob, new in copies.items():
+        if ob.parent in copies:
+            new.parent = copies[ob.parent]
+        for mod in getattr(new, 'modifiers', ()):
+            for attr in ('object', 'target'):
+                if getattr(mod, attr, None) in copies:
+                    setattr(mod, attr, copies[getattr(mod, attr)])
+    return copies[root]
+
+
 def play(arm, act, offset):
     """The clip on repeat from the scene's start, offset frames into its loop; arms and legs go to FK for it."""
     for p in arm.get('clip_off', ['weapon_hold']):
@@ -272,6 +343,7 @@ def placing(context):
     root[ROOT] = slug
     scene.collection.children.link(root)
     rnd = random.Random(SEED)
+    effects = {}
     kinds = [n for n in dict.fromkeys(s['slug'] for s in spawns) if os.path.exists(rig_path(n, context))]
     for k, npc in enumerate(kinds):
         yield k, len(kinds), hero_name(npc)
@@ -293,6 +365,7 @@ def placing(context):
             arm.matrix_world = Matrix.LocRotScale(spot['location'], Euler((0, 0, spot['yaw'])), None)
             if act:
                 play(arm, act, rnd.random())
+            add_effects(arm, npc, effects)
     register_rig_ui()
     riglight.light_rigs(scene)
 

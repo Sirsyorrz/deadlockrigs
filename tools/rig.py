@@ -2202,13 +2202,18 @@ for sname, deltas in SLIDERS.items():
 # extra models: show_<key> shows the model (hidden by default); with "follow" its bones named like the hero's (the
 # hook hand's fingers) copy those bones' rotation, so hand poses carry over, and can still be posed on top
 # heroes.json "stages": the forms an NPC turns into, the first its own model and the others extra models (the patrons'
-# weakened core). stage n shows that form only; an extra model that is a stage shows with its stage, not show_<key>
+# weakened core). stage n shows that form only; an extra model that is a stage shows with its stage, not show_<key>.
+# An extra model with "stage": <name> isn't a form but belongs to one (the patrons' effigies stand in the pit while
+# the patron is up) and shows with it
 STAGES = list(hero.cfg.get('stages', []))
 STAGE_OF = {key: i for i, name in enumerate(STAGES) for key, cfg in EXTRA.items() if cfg['name'] == name}
-arm['extra_models'] = {key: cfg['name'] for key, cfg in EXTRA.items() if key not in STAGE_OF}
+WITH_STAGE = {key: STAGES.index(cfg['stage']) for key, cfg in EXTRA.items() if cfg.get('stage') in STAGES}
+arm['extra_models'] = {key: cfg['name'] for key, cfg in EXTRA.items() if key not in STAGE_OF and key not in WITH_STAGE}
 if len(STAGE_OF) + 1 == len(STAGES) > 1:
     arm['stages'] = STAGES
     arm['stage_models'] = STAGE_OF
+    if WITH_STAGE:
+        arm['stage_extras'] = WITH_STAGE
     arm['stage'] = 0
     arm.id_properties_ui('stage').update(min=0, max=len(STAGES) - 1, description=' / '.join(STAGES))
     for o in bpy.data.objects:
@@ -2227,11 +2232,11 @@ if len(STAGE_OF) + 1 == len(STAGES) > 1:
                 expr_driver(o, path, None, 'stage != 0', props=[('stage', '["stage"]')])
 elif STAGES:
     print('WARNING: stages', STAGES, 'need an extra model for each after the first')
-    STAGE_OF = {}
+    STAGE_OF, WITH_STAGE = {}, {}
     arm['extra_models'] = {key: cfg['name'] for key, cfg in EXTRA.items()}
 for key, cfg in EXTRA.items():
-    if key in STAGE_OF:
-        prop, hidden = 'stage', f'v != {STAGE_OF[key]}'
+    if key in STAGE_OF or key in WITH_STAGE:
+        prop, hidden = 'stage', f'v != {STAGE_OF.get(key, WITH_STAGE.get(key))}'
     else:
         prop, hidden = f'show_{key}', 'v < 0.5'
         arm[prop] = 0
@@ -2257,6 +2262,36 @@ for key, cfg in EXTRA.items():
         c.target, c.subtarget = arm, own
         c.owner_space = c.target_space = 'LOCAL'
         c.mix_mode = 'BEFORE'
+
+# extra models with "vmat_shading" (the patrons' effigies: the burning wood, the Archmother's flame cone) shade as
+# map props do: self-illum by its tint and scale, alpha test at the material's reference, faded by the view angle
+VMAT_SHADED = {key for key, cfg in EXTRA.items() if cfg.get('vmat_shading')}
+if VMAT_SHADED:
+    import map_lighting
+    for m in {s.material for o in bpy.data.objects if o.get('dlrig_extra') in VMAT_SHADED
+              for s in o.material_slots if s.material and s.material.use_nodes}:
+        ints, floats = map_lighting.vmat_params(m)
+        bsdf = next((n for n in m.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+        if bsdf is None:
+            continue
+        alpha = map_lighting.source_of(bsdf.inputs['Alpha'])
+        cut = alpha.node if alpha and alpha.node.type == 'MATH' and alpha.node.operation == 'SUBTRACT' else None
+        test = cut and map_lighting.source_of(cut.inputs[1])
+        if ints.get('F_ALPHA_TEST') and test and test.node.operation == 'LESS_THAN':
+            # the import cuts at the glTF default 0.5
+            test.node.inputs[1].default_value = map_lighting.param(floats, 'g_flAlphaTestReference', 0.5)
+            power = map_lighting.param(floats, 'g_flAlphaAnglePower', 0.0)
+            if power:
+                g = map_lighting.Graph(m.node_tree)
+                geo = g.node('ShaderNodeNewGeometry')
+                facing = g.math('ABSOLUTE', g.vec('DOT_PRODUCT', geo.outputs['Incoming'], geo.outputs['Normal']))
+                fade = g.math('POWER', g.math('MAXIMUM', facing, 0.001), abs(power))
+                if power < 0:
+                    fade = g.math('POWER', g.math('MAXIMUM', g.math('SUBTRACT', 1.0, facing), 0.001), -power)
+                opacity = test.node.inputs[0].links[0].from_socket
+                g.links.new(g.math('MULTIPLY', opacity, fade), test.node.inputs[0])
+        if ints.get('F_SELF_ILLUM'):
+            map_lighting.apply_self_illum(m, bsdf, floats, dict(map_lighting.vmat_dict(m).get('VectorParams') or {}))
 
 # glow: the game lights a material by its self-illum mask in the albedo's colour (Bebop's green eyes); the import
 # plugs the bare mask into Emission Color at strength 0. Masked albedo instead, its strength on the rig's glow
