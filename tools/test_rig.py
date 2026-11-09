@@ -1047,6 +1047,30 @@ for key, i in arm.get('stage_extras', {}).items():
     update()
     check(f'{key} shows with stage {arm["stages"][i]} only', own and all(seen), f'{len(own)} meshes, {seen}')
 
+# a stage's size (stage_scale) scales the body about the root, not the extras
+if 'MCH-stage_scale' in pb and arm.get('stages'):
+    reset()
+    root = arm.matrix_world @ pb['MCH-stage_scale'].head
+    top = max((b for b in arm.data.bones if b.use_deform and not b.name.startswith(tuple(f'{k}__' for k in
+               arm.get('stage_extras', {})) + tuple(f'{k}__' for k in arm.get('stage_models', {})))),
+              key=lambda b: b.head_local.z).name
+    extras = [f'{k}__root' for k in list(arm.get('stage_extras', {})) + list(arm.get('stage_models', {}))
+              if f'{k}__root' in pb]
+    sizes, kept = [], True
+    arm['game_size'] = 1
+    for s in range(len(arm['stages'])):
+        arm['stage'] = s
+        update()
+        sizes.append(round(((arm.matrix_world @ pb[top].head) - root).length, 3))
+        if s == 0:
+            first = [(arm.matrix_world @ pb[e].head).copy() for e in extras]
+        else:
+            kept &= all(((arm.matrix_world @ pb[e].head) - p).length < 1e-4 for e, p in zip(extras, first))
+    arm['stage'] = 0
+    arm['game_size'] = 0
+    update()
+    check('stage scale sizes the body only', len(set(sizes)) > 1 and kept, f'{top} {sizes}, extras kept {kept}')
+
 # the bone face (facerig.py): the skin is where it was at rest, every face bone moves it, and the tweak controls ride
 # the skin through the shape keys
 if arm.get('face_bones'):

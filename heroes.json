@@ -1852,6 +1852,9 @@
    "Patron",
    "Weakened"
   ],
+  "stage_scale": {
+   "Patron": 0.8
+  },
   "idle": "game_patron_sapphire_phase1_idle"
  },
  {

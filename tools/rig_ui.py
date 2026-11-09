@@ -1786,6 +1786,8 @@ class DLRIG_PT_parts(bpy.types.Panel):
             row.label(text='Stage')
             for i, name in enumerate(ob['stages']):
                 row.operator('dlrig.stage', text=name, depress=ob.get('stage', 0) == i).index = i
+            if 'game_size' in ob:
+                self.layout.prop(ob, '["game_size"]', text='Game Size', slider=True)
             for key, i in ob.get('stage_models', {}).items():
                 if ob.get('stage', 0) == i:
                     parent_row(self.layout, ob, f'{key}__root', 'Follows')

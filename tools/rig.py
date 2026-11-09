@@ -780,6 +780,14 @@ EXTRA_SPACE = None
 if EXTRA and ROOT:
     EXTRA_SPACE = 'MCH-extra_space'
     new_bone(EXTRA_SPACE, eb[ROOT].head.copy(), eb[ROOT].head + UP * 0.1, None, roll_to=FWD)
+# heroes.json "stage_scale": a stage's size in the game, as npc_units.vdata m_flPhase1BossScale (the Archmother stands
+# at 0.8 until weakened). With the rig's game_size on (map NPCs turn it on) the body scales under MCH-stage_scale; the
+# extras (the effigy, the core) keep their size. Off by default, so the rig's rest is the model's
+STAGE_SCALE = {name: float(s) for name, s in hero.cfg.get('stage_scale', {}).items()
+               if name in hero.cfg.get('stages', [])}
+if STAGE_SCALE and ROOT:
+    new_bone('MCH-stage_scale', None, None, None, copy=ROOT)
+    eb[ROOT].parent = eb['MCH-stage_scale']
 for key, cfg in EXTRA.items():
     at = cfg.get('at')
     by_hand = [('Hand R', 'hand_R' if 'hand_R' in eb else None), ('Hand L', 'hand_L' if 'hand_L' in eb else None)]
@@ -2230,6 +2238,15 @@ if len(STAGE_OF) + 1 == len(STAGES) > 1:
                 assert d.is_simple_expression, d.expression
             else:
                 expr_driver(o, path, None, 'stage != 0', props=[('stage', '["stage"]')])
+    if STAGE_SCALE and ROOT:
+        arm['game_size'] = 0
+        arm.id_properties_ui('game_size').update(
+            min=0, max=1, description='Each stage at its size in the game: ' + ', '.join(
+                f'{name} {s:g}' for name, s in STAGE_SCALE.items()))
+        terms = ' + '.join(f'{s - 1:g} * (stage == {STAGES.index(name)})' for name, s in STAGE_SCALE.items())
+        for axis in range(3):
+            expr_driver(arm, 'pose.bones["MCH-stage_scale"].scale', axis, f'1 + size * ({terms})',
+                        props=[('stage', '["stage"]'), ('size', '["game_size"]')])
 elif STAGES:
     print('WARNING: stages', STAGES, 'need an extra model for each after the first')
     STAGE_OF, WITH_STAGE = {}, {}

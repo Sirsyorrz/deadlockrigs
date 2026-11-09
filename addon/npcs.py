@@ -363,6 +363,8 @@ def placing(context):
             group.children.link(coll)
             arm = rig_of(coll)
             arm.matrix_world = Matrix.LocRotScale(spot['location'], Euler((0, 0, spot['yaw'])), None)
+            if 'game_size' in arm:
+                arm['game_size'] = 1
             if act:
                 play(arm, act, rnd.random())
             add_effects(arm, npc, effects)
