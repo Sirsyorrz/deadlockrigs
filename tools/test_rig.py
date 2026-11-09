@@ -640,7 +640,15 @@ for name in [c for c in (RUN, POSE) if c] if tw else []:
     arm.animation_data.action = clip
     arm.animation_data.action_slot = clip.slots[0]
     cb = clip.layers[0].strips[0].channelbags[0]
-    keyed = {fc.data_path.split('"')[1] for fc in cb.fcurves if '_TWIST' in fc.data_path}
+    # bones the clip keys at rest aren't baked (rig.py baked_twists)
+    rest_keyed = {}
+    for fc in cb.fcurves:
+        if '_TWIST' in fc.data_path and fc.data_path.endswith('rotation_quaternion'):
+            b = fc.data_path.split('"')[1]
+            want = 1.0 if fc.array_index == 0 else 0.0
+            rest_keyed[b] = rest_keyed.get(b, True) and all(abs(k.co[1] - want) < 1e-5 for k in fc.keyframe_points)
+    keyed = {fc.data_path.split('"')[1] for fc in cb.fcurves if '_TWIST' in fc.data_path} - {
+        b for b, r in rest_keyed.items() if r}
     worst, wb = 0, None
     for f in (0, 4, 9, 20):
         sc.frame_set(f)

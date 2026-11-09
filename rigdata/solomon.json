@@ -3610,11 +3610,11 @@
   "leg_upper_R_TWIST"
  ],
  "twists": {
-  "arm_lower_L_TWIST": 0.0,
-  "arm_lower_R_TWIST": 0.0,
-  "arm_upper_L_TWIST": 0.0,
-  "arm_upper_R_TWIST": 0.0,
-  "leg_upper_L_TWIST": 0.0,
-  "leg_upper_R_TWIST": 0.0
+  "arm_lower_L_TWIST": 1.0,
+  "arm_lower_R_TWIST": 1.0,
+  "arm_upper_L_TWIST": -0.5,
+  "arm_upper_R_TWIST": -0.5,
+  "leg_upper_L_TWIST": -0.375,
+  "leg_upper_R_TWIST": -0.375
  }
 }

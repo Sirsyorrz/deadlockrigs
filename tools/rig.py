@@ -1684,6 +1684,18 @@ for tw, w, src, frame, a, b_ in TWISTS:
     c.mix_mode_rot = 'BEFORE'
     c.to_euler_order = 'YXZ'
 
+def baked_twists(cb):
+    """Twist bones a clip bakes a twist into. Since the 2026-11-06 update most of Solomon's and Sinclair's clips key
+    their twist bones at rest (the game twists them at runtime), which isn't a twist to fit to."""
+    rest = {}
+    for fc in cb.fcurves:
+        if '_TWIST' in fc.data_path and fc.data_path.endswith('rotation_quaternion'):
+            b = fc.data_path.split('"')[1]
+            want = 1.0 if fc.array_index == 0 else 0.0
+            rest[b] = rest.get(b, True) and all(abs(k.co[1] - want) < 1e-5 for k in fc.keyframe_points)
+    return {fc.data_path.split('"')[1] for fc in cb.fcurves if '_TWIST' in fc.data_path} - {b for b, r in rest.items() if r}
+
+
 def fit_twists():
     """Twist bones with a TiltTwist constraint in the vmdl use its weight: the game evaluates it at runtime, over
     whatever the clips have baked (which for some heroes is not twisted at all). The others get the weight that
@@ -1718,6 +1730,17 @@ def fit_twists():
                 'game_out_of_combat_sprint_n', 'game_primary_run_n', 'game_weapon_run_n', 'game_item_run_n']
         dst.actions = [n for n in pref if n in src.actions] or sorted(src.actions)[:4]
     clips = list(dst.actions)
+    baked = lambda a: baked_twists(a.layers[0].strips[0].channelbags[0]) & set(tws)
+    if not any(baked(a) for a in clips):
+        # none of the usual clips bake a twist (Yamato's): look through the rest for a few that do
+        for a in clips:
+            bpy.data.actions.remove(a)
+        with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
+            dst.actions = list(src.actions)
+        clips = [a for a in dst.actions if baked(a)][:6]
+        for a in [a for a in dst.actions if a not in clips]:
+            bpy.data.actions.remove(a)
+        print('twist fit clips', [a.name for a in clips])
     pbs = arm.pose.bones
     mods = [m for o in bpy.data.objects if o.type == 'MESH' for m in o.modifiers if m.type == 'ARMATURE' and m.show_viewport]
     for m in mods:
@@ -1731,7 +1754,7 @@ def fit_twists():
     for a in clips:
         f0, f1 = a.frame_range
         cb = a.layers[0].strips[0].channelbags[0]
-        keyed = {fc.data_path.split('"')[1] for fc in cb.fcurves if '_TWIST' in fc.data_path}
+        keyed = baked_twists(cb)
         for k in range(6):
             samples.append((a, f0 + (f1 - f0) * k / 5, keyed))
     game = []
