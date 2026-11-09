@@ -326,8 +326,9 @@ def probe_volumes(ents):
 
 def env_maps(ents):
     """Box projected reflection cubemaps (env_combined_light_probe_volume, env_cubemap_box) in the order the game
-    blends them: highest indoor/outdoor level first, then by array index. Source units. Sphere cubemaps are left out
-    (neither map has any)."""
+    blends them: highest indoor/outdoor level first, then the smaller box, then by array index (as Source 2 Viewer's
+    renderer has it since 16fc2fa2b, "Match baked lighting of lightmap versions 8.1 to 8.4"). Source units. Sphere
+    cubemaps are left out (neither map has any)."""
     maps = []
     for e in ents:
         if e.get('classname') not in ('env_combined_light_probe_volume', 'env_cubemap_box') or not enabled(e):
@@ -339,7 +340,7 @@ def env_maps(ents):
                      'fade': [float(v) for v in e.get('edge_fade_dists') or (0, 0, 0)],
                      'level': int(num(e, 'indoor_outdoor_level')), 'index': int(num(e, 'array_index')),
                      'texture': e['cubemaptexture']})
-    maps.sort(key=lambda m: (-m['level'], m['index']))
+    maps.sort(key=lambda m: (-m['level'], math.prod(b - a for a, b in zip(m['mins'], m['maxs'])), m['index']))
     return maps
 
 
