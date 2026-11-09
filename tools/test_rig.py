@@ -729,8 +729,10 @@ if RUN and (phys['chains'] or cloth):
         check('physics moves the vertex cloth', 0.005 < moved_cloth < 1.0, f'{moved_cloth * 1000:.1f} mm')
 
 # copy pose from a game clip with IK on
-ends = [n for n in ('hand_L', 'hand_R', 'ankle_L', 'ankle_R', 'head', 'pelvis') if n in pb]
-if POSE:
+# a form without a plain body (Calico's cat) checks its own limbs' ends
+ends = [n for n in ('hand_L', 'hand_R', 'ankle_L', 'ankle_R', 'head', 'pelvis') if n in pb] or \
+    [names(limb, s)[2] for limb, s in limbs]
+if POSE and ends:
     reset()
     bpy.ops.dlrig.game_anim(clip=POSE, mode='POSE')
     update()
@@ -816,7 +818,8 @@ if IDLE:
     if hand_poses['Fist']:
         bpy.ops.dlrig.hand(name='Fist', side='B')
     r = bpy.ops.dlrig.idle_layer()
-    top = next(n for n in ('head', 'pelvis', 'up_body_0') if n in pb)
+    top = next((n for n in ('head', 'pelvis', 'up_body_0') if n in pb), None) or next(
+        b.name for b in pb if b.name.endswith('_pelvis'))
     heads = []
     for f in (1, 30, 60, 90):
         sc.frame_set(f)
@@ -986,6 +989,24 @@ for key, name in arm.get('extra_models', {}).items():
     reset()
     check(f'extra model {name} shows and follows its control', obs and hidden and shown and moved > 0.1,
           f'{len(obs)} meshes, hidden at first {hidden}, moved {moved * 1000:.0f} mm')
+
+# a model left at the root stays upright while one of the hero's clips plays (they key root_motion on its side)
+placed = [k for k in arm.get('extra_models', {}) if arm.get(f'{k}__root_parent', 0) == 0
+          and arm.get('parent_options', {}).get(f'{k}__root', ['Root'])[0] == 'Root']
+if placed and RUN:
+    reset()
+    key = placed[0]
+    arm[f'show_{key}'] = 1
+    update()
+    up = pb[f'{key}__root'].matrix.col[1].xyz.normalized()
+    bpy.ops.dlrig.game_anim(clip=RUN, mode='NEW')
+    sc.frame_set(sc.frame_start + 5)
+    update()
+    tilt = math.degrees(up.angle(pb[f'{key}__root'].matrix.col[1].xyz.normalized()))
+    arm.animation_data.action = None
+    arm[f'show_{key}'] = 0
+    reset()
+    check(f'extra model {arm["extra_models"][key]} stays upright in a clip', tilt < 1, f'{tilt:.1f} deg')
 
 # stages: each shows its own meshes only, and its controls
 for key, i in arm.get('stage_models', {}).items():

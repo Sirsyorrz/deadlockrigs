@@ -764,6 +764,12 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
             if ob.get('stage', 0) != stage:
                 ob['stage'] = stage
                 ob.update_tag()
+        # an extra model's clips key its own <key>__ bones only (the hero's clips can share its name prefix)
+        keyed = {f.data_path.split('"')[1] for f in cb_src.fcurves if f.data_path.startswith('pose.bones["')}
+        for key in ob.get('extra_models', {}):
+            if keyed and all(b.startswith(key + '__') for b in keyed) and not ob.get(f'show_{key}', 0):
+                ob[f'show_{key}'] = 1
+                ob.update_tag()
         start = clip.frame_range[0]
         if self.mode == 'NEW':
             clip.name = self.clip[5:] if self.clip.startswith('game_') else self.clip

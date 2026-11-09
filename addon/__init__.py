@@ -39,11 +39,12 @@ def heroes():
 def hero_items(self, context):
     # kept in a module list: Blender reads the item strings after the callback returns
     if not _hero_items:
-        _hero_items.extend((h['slug'], h['name'], '') for h in heroes() if not h.get('npc'))
-        npcs = [(h['slug'], h['name'], '') for h in heroes() if h.get('npc')]
-        if npcs:
-            # an empty identifier is a heading in the menu
-            _hero_items.extend([None, ('', 'NPCs', '')] + npcs)
+        _hero_items.extend((h['slug'], h['name'], '') for h in heroes() if not h.get('npc') and not h.get('form'))
+        # an empty identifier is a heading in the menu
+        for heading, key in (('Forms', 'form'), ('NPCs', 'npc')):
+            group = [(h['slug'], h['name'], '') for h in heroes() if h.get(key)]
+            if group:
+                _hero_items.extend([None, ('', heading, '')] + group)
     return _hero_items
 
 

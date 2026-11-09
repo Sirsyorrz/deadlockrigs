@@ -292,6 +292,16 @@
    "part": "punkgoat_model",
    "mesh": "punkgoat_model",
    "builder": "morphs.py"
+  },
+  "extra_models": {
+   "Chain": {
+    "model": "models/heroes_wip/punkgoat/punkgoat_chain.vmdl",
+    "at": "hand_L"
+   },
+   "Nail": {
+    "model": "models/heroes_wip/punkgoat/punkgoat_nail.vmdl",
+    "at": "hand_L"
+   }
   }
  },
  {
@@ -312,6 +322,20 @@
     -0.082,
     2.15
    ]
+  },
+  "extra_models": {
+   "Gloom Bomb": {
+    "model": "models/heroes_staging/nano/roller/calico_clawball_bomb.vmdl",
+    "at": "hand_L"
+   },
+   "Cat Statue": {
+    "model": "models/heroes_staging/nano/cat_statue/cat_statue.vmdl",
+    "offset": [
+     0.0,
+     -2,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -328,6 +352,16 @@
   "face": {
    "part": "Head",
    "mesh": "Head"
+  },
+  "extra_models": {
+   "Star Dagger": {
+    "model": "models/abilities/unicorn_star_dagger.vmdl",
+    "offset": [
+     1,
+     -1.5,
+     0
+    ]
+   }
   }
  },
  {
@@ -366,6 +400,35 @@
   "face": {
    "part": "head",
    "mesh": "head"
+  },
+  "extra_models": {
+   "Grasping Hand": {
+    "model": "models/heroes_wip/necro/hand/necro_hand.vmdl",
+    "clips": true,
+    "offset": [
+     1,
+     -2,
+     0.0
+    ]
+   },
+   "Zombie": {
+    "model": "models/heroes_wip/necro/necro_shambler.vmdl",
+    "clips": true,
+    "offset": [
+     -1,
+     -2,
+     0.0
+    ]
+   },
+   "Gravestone": {
+    "model": "models/particle/blend/necro_gravestone.vmdl",
+    "clips": true,
+    "offset": [
+     0.0,
+     -3,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -386,6 +449,17 @@
     -0.19,
     1.932
    ]
+  },
+  "extra_models": {
+   "Spirit Owl": {
+    "model": "models/heroes_staging/grey_talon/grey_talon_owl.vmdl",
+    "clips": true,
+    "offset": [
+     0,
+     -2,
+     1
+    ]
+   }
   }
  },
  {
@@ -413,6 +487,12 @@
     2.14,
     12
    ]
+  },
+  "extra_models": {
+   "Sleep Dagger": {
+    "model": "models/abilities/haze_dagger_model.vmdl",
+    "at": "hand_L"
+   }
   }
  },
  {
@@ -438,6 +518,29 @@
     -0.113,
     2.123
    ]
+  },
+  "extra_models": {
+   "Bounce Pad": {
+    "model": "models/particle/cowboy_launchpad.vmdl",
+    "clips": true,
+    "offset": [
+     0.0,
+     -2,
+     0.0
+    ]
+   },
+   "Powder Keg": {
+    "model": "models/abilities/astro_explosive.vmdl",
+    "offset": [
+     1,
+     -1.5,
+     0.45
+    ]
+   },
+   "Hat": {
+    "model": "models/heroes_staging/astro/astro_hat.vmdl",
+    "at": "hand_L"
+   }
   }
  },
  {
@@ -516,6 +619,22 @@
    "pin": {
     "NoseRing": "snout_1"
    }
+  },
+  "extra_models": {
+   "Bramble": {
+    "model": "models/abilities/ivy_bramble_model_fx.vmdl",
+    "clips": true,
+    "offset": [
+     0.0,
+     -2,
+     0.0
+    ]
+   },
+   "Kudzu Bomb": {
+    "model": "models/abilities/ivy_thornbomb_model.vmdl",
+    "clips": true,
+    "at": "hand_L"
+   }
   }
  },
  {
@@ -533,6 +652,19 @@
    "part": "Head",
    "mesh": "Head",
    "eyes": "kelvin_explorer_eye"
+  },
+  "extra_models": {
+   "Ice Dome": {
+    "model": "models/abilities/ice_dome.vmdl"
+   },
+   "Ice Path": {
+    "model": "models/props_gameplay/ice_path_body.vmdl",
+    "offset": [
+     0.0,
+     -2,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -548,6 +680,17 @@
   "face": {
    "part": "Head",
    "mesh": "Head"
+  },
+  "extra_models": {
+   "Spectre Hand": {
+    "model": "models/heroes_staging/ghost/ghost_spectre_hand.vmdl",
+    "clips": true,
+    "offset": [
+     0.0,
+     -1.5,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -605,6 +748,13 @@
     "mouthLowerDown": 1.5,
     "mouthStretch": 1.3
    }
+  },
+  "extra_models": {
+   "Flog Whip": {
+    "model": "models/abilities/lash_flog_whip_fx.vmdl",
+    "clips": true,
+    "at": "hand_R"
+   }
   }
  },
  {
@@ -616,6 +766,34 @@
    "part": "face",
    "mesh": "face",
    "builder": "bonekeys.py"
+  },
+  "extra_models": {
+   "Turret": {
+    "model": "models/heroes_wip/mcginnis/turret/turret.vmdl",
+    "clips": true,
+    "offset": [
+     1,
+     -1.5,
+     0.0
+    ]
+   },
+   "Healing Canister": {
+    "model": "models/heroes_wip/mcginnis/healing_canister/healing_canister.vmdl",
+    "clips": true,
+    "offset": [
+     -1,
+     -1.5,
+     0.0
+    ]
+   },
+   "Spectral Wall": {
+    "model": "models/abilities/engineer_wall.vmdl",
+    "offset": [
+     0.0,
+     -4,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -632,7 +810,13 @@
     "bone": "umbrella",
     "follow": "clavicle_R"
    }
-  ]
+  ],
+  "extra_models": {
+   "Dagger": {
+    "model": "models/abilities/haze_dagger_model.vmdl",
+    "at": "hand_L"
+   }
+  }
  },
  {
   "slug": "mirage",
@@ -665,6 +849,17 @@
      2.2625
     ]
    ]
+  },
+  "extra_models": {
+   "Fire Beetle": {
+    "model": "models/weapons/hornet/hornet_drone.vmdl",
+    "clips": true,
+    "offset": [
+     0,
+     -1.5,
+     1.2
+    ]
+   }
   }
  },
  {
@@ -710,7 +905,18 @@
     "bone": "bag_0",
     "follow": "pelvis"
    }
-  ]
+  ],
+  "extra_models": {
+   "Leech": {
+    "model": "models/heroes_wip/nurse/nurse_leech.vmdl",
+    "clips": true,
+    "offset": [
+     0.6,
+     -1,
+     0.0
+    ]
+   }
+  }
  },
  {
   "slug": "paige",
@@ -720,6 +926,58 @@
   "face": {
    "part": "head",
    "mesh": "head"
+  },
+  "extra_models": {
+   "Dragon": {
+    "model": "models/heroes_wip/bookworm/bookworm_dragon_fullbody.vmdl",
+    "clips": true,
+    "offset": [
+     0,
+     -3,
+     1
+    ]
+   },
+   "Horse Knight": {
+    "model": "models/particle/bookworm_horse_knight.vmdl",
+    "clips": true,
+    "offset": [
+     1.5,
+     -2.5,
+     0.0
+    ]
+   },
+   "Knight Shield": {
+    "model": "models/heroes_wip/bookworm/bookworm_shield.vmdl",
+    "offset": [
+     0,
+     -1.2,
+     0.8
+    ]
+   },
+   "Knight Sword": {
+    "model": "models/heroes_wip/bookworm/bookworm_sword.vmdl",
+    "offset": [
+     0.6,
+     -1.2,
+     0.58
+    ]
+   },
+   "Large Sword": {
+    "model": "models/heroes_wip/bookworm/bookworm_sword_large.vmdl",
+    "offset": [
+     -1.5,
+     -2,
+     0.0
+    ]
+   },
+   "Stone": {
+    "model": "models/heroes_wip/bookworm/bookworm_stone.vmdl",
+    "offset": [
+     -1.5,
+     -2,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -772,6 +1030,26 @@
     -0.12,
     2.17
    ]
+  },
+  "extra_models": {
+   "Frog": {
+    "model": "models/abilities/pocket_frog_small.vmdl",
+    "clips": true,
+    "offset": [
+     0.6,
+     -1,
+     0.0
+    ]
+   },
+   "Satchel": {
+    "model": "models/abilities/pocket_briefcase_model.vmdl",
+    "clips": true,
+    "offset": [
+     0,
+     -1.5,
+     0.3
+    ]
+   }
   }
  },
  {
@@ -801,7 +1079,31 @@
    "scale": 2.1,
    "clear": 0.18
   },
-  "hold_arm": true
+  "hold_arm": true,
+  "extra_models": {
+   "Ult Diorama": {
+    "model": "models/heroes_wip/ratking/ratking_ult_diorama.vmdl",
+    "clips": true,
+    "offset": [
+     0.0,
+     -3.05,
+     0.0
+    ]
+   },
+   "Rat": {
+    "model": "models/heroes_wip/ratking/ratking_minion.vmdl",
+    "clips": true,
+    "offset": [
+     0.6,
+     -1,
+     0.0
+    ]
+   },
+   "Scrap Grenade": {
+    "model": "models/heroes_wip/ratking/ratking_grenade.vmdl",
+    "at": "hand_L"
+   }
+  }
  },
  {
   "slug": "rem",
@@ -812,6 +1114,17 @@
    "part": "head",
    "mesh": "head",
    "builder": "morphs.py"
+  },
+  "extra_models": {
+   "Helper": {
+    "model": "models/abilities/familiar/familiar_helper_npc.vmdl",
+    "clips": true,
+    "offset": [
+     0.6,
+     -1,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -848,6 +1161,12 @@
     2.372,
     8
    ]
+  },
+  "extra_models": {
+   "Serrated Knife": {
+    "model": "models/heroes_staging/shiv/shiv_dagger_model.vmdl",
+    "at": "hand_L"
+   }
   }
  },
  {
@@ -865,13 +1184,30 @@
   "face": {
    "part": "Head",
    "mesh": "Head"
+  },
+  "extra_models": {
+   "Bola": {
+    "model": "models/heroes_wip/werewolf/werewolf_bola.vmdl",
+    "at": "hand_L"
+   }
   }
  },
  {
   "slug": "sinclair",
   "name": "Sinclair",
   "codename": "magician",
-  "model": "models/heroes_staging/magician_v2/magician.vmdl"
+  "model": "models/heroes_staging/magician_v2/magician.vmdl",
+  "extra_models": {
+   "Rabbit": {
+    "model": "models/abilities/rabbit/rabbit.vmdl",
+    "clips": true,
+    "offset": [
+     0.6,
+     -1.2,
+     0.0
+    ]
+   }
+  }
  },
  {
   "slug": "solomon",
@@ -894,6 +1230,65 @@
    "part": "Head",
    "mesh": "Head",
    "eyes": "chessmaster_eyes"
+  },
+  "extra_models": {
+   "Hand": {
+    "model": "models/heroes_wip/chessmaster/chessmaster_hand.vmdl",
+    "clips": true,
+    "offset": [
+     0.0,
+     -3,
+     0.0
+    ]
+   },
+   "Queen": {
+    "model": "models/particle/blend/chessmaster_queen.vmdl",
+    "offset": [
+     2,
+     -3,
+     0.0
+    ]
+   },
+   "Rook": {
+    "model": "models/particle/blend/chessmaster_chesspiece_rook.vmdl",
+    "offset": [
+     -1.5,
+     -2,
+     0.0
+    ]
+   },
+   "Knight": {
+    "model": "models/particle/blend/chessmaster_chesspiece_knight.vmdl",
+    "offset": [
+     1.5,
+     -2,
+     0.0
+    ]
+   },
+   "Bishop": {
+    "model": "models/particle/blend/chessmaster_chesspiece_bishop.vmdl",
+    "offset": [
+     -3,
+     -3,
+     0
+    ]
+   },
+   "Knight Shield": {
+    "model": "models/heroes_wip/chessmaster/chessmaster_knightshield.vmdl",
+    "offset": [
+     0.0,
+     -1,
+     0.0
+    ]
+   },
+   "Tile": {
+    "model": "models/abilities/chessmaster_tile_model.vmdl",
+    "offset": [
+     0.0,
+     -2,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -909,6 +1304,37 @@
      "head"
     ]
    }
+  },
+  "extra_models": {
+   "Door": {
+    "model": "models/heroes_wip/doorman/doorman_door.vmdl",
+    "clips": true,
+    "offset": [
+     0.0,
+     -2,
+     0.0
+    ]
+   },
+   "Luggage Cart": {
+    "model": "models/heroes_wip/doorman/doorman_luggagetrolley.vmdl",
+    "offset": [
+     1.5,
+     -2,
+     0.0
+    ]
+   },
+   "Bell": {
+    "model": "models/heroes_wip/doorman/doorman_bell.vmdl",
+    "at": "hand_L"
+   },
+   "Ult Key": {
+    "model": "models/heroes_wip/doorman/blender/doorman_ult_key.vmdl",
+    "offset": [
+     -1.5,
+     -2,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -922,6 +1348,17 @@
    "ride": [
     "cigar"
    ]
+  },
+  "extra_models": {
+   "Snap Trap": {
+    "model": "models/particle/blend/priest_snaptrap.vmdl",
+    "clips": true,
+    "offset": [
+     0.0,
+     -1.5,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -953,6 +1390,17 @@
     -0.086,
     2.155
    ]
+  },
+  "extra_models": {
+   "Crow": {
+    "model": "models/heroes_staging/vindicta/crow/crow_open_wing.vmdl",
+    "clips": true,
+    "offset": [
+     0,
+     -1.5,
+     1.5
+    ]
+   }
   }
  },
  {
@@ -1099,6 +1547,16 @@
     2.199
    ],
    "builder": "handkeys.py"
+  },
+  "extra_models": {
+   "Goo Cube": {
+    "model": "models/abilities/viscous_cube.vmdl",
+    "offset": [
+     0.0,
+     -2,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -1125,6 +1583,12 @@
     2.441
    ],
    "builder": "handkeys.py"
+  },
+  "extra_models": {
+   "Dagger": {
+    "model": "models/abilities/haze_dagger_model.vmdl",
+    "at": "hand_L"
+   }
   }
  },
  {
@@ -1196,6 +1660,17 @@
      2.3294
     ]
    ]
+  },
+  "extra_models": {
+   "Ghost": {
+    "model": "models/abilities/warden_ghost_model.vmdl",
+    "clips": true,
+    "offset": [
+     0.0,
+     -2,
+     0.0
+    ]
+   }
   }
  },
  {
@@ -1257,6 +1732,40 @@
     35
    ]
   }
+ },
+ {
+  "slug": "silver_wolf",
+  "name": "Silver (Wolf)",
+  "codename": "werewolf",
+  "model": "models/heroes_wip/werewolf/transform/werewolf_transform.vmdl",
+  "form": "silver"
+ },
+ {
+  "slug": "calico_cat",
+  "name": "Calico (Cat)",
+  "codename": "nano",
+  "model": "models/abilities/nano_catform_model.vmdl",
+  "form": "calico"
+ },
+ {
+  "slug": "baba_pigeon",
+  "name": "Baba (Pigeon)",
+  "codename": "baba",
+  "model": "models/heroes_wip/baba/baba_pigeon_transform.vmdl",
+  "form": "baba",
+  "limb_prefixes": {
+   "leg": [
+    "pigeon_"
+   ]
+  }
+ },
+ {
+  "slug": "ivy_stone",
+  "name": "Ivy (Stone Form)",
+  "codename": "tengu",
+  "model": "models/particle/tengu_stone_form_model_fx.vmdl",
+  "form": "ivy",
+  "material": "materials/particle/abilities/tengu/tengu_stone_form_model.vmat"
  },
  {
   "slug": "guardian",

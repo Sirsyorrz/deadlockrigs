@@ -558,10 +558,16 @@ ROOT = 'root_motion' if 'root_motion' in eb else None
 SCALE = eb['head'].head.z / 2.094 if 'head' in eb else max(b.head.z for b in eb) / 2.3
 # extra limbs carry a prefix: the Mid-boss' up_/mid_/lo_ arms, the Walker's front_/back_ legs
 LIMB_PREFIXES = {'leg': ('', 'front_', 'back_'), 'arm': ('', 'up_', 'mid_', 'lo_')}
+# heroes.json "limb_prefixes": a form's own limb names (Calico's cat_front_leg, Baba's pigeon_leg)
+for _k, _v in hero.cfg.get('limb_prefixes', {}).items():
+    LIMB_PREFIXES[_k] += tuple(_v)
 LIMB_SCALE = {p: SCALE for k in LIMB_PREFIXES for p in LIMB_PREFIXES[k]}
+BASE_PREFIXES = sorted({p for v in LIMB_PREFIXES.values() for p in v if p}, key=len, reverse=True)
+# a rider's limbs take its prefix in front (minion0_leg, Calico's cat form: cat_front_leg)
+_base = dict(LIMB_PREFIXES)
 for _r, _v in RIDERS.items():
-    LIMB_PREFIXES = {k: v + (_r + '_',) for k, v in LIMB_PREFIXES.items()}
-    LIMB_SCALE[_r + '_'] = _v['scale']
+    LIMB_PREFIXES = {k: v + tuple(_r + '_' + p for p in _base[k]) for k, v in LIMB_PREFIXES.items()}
+    LIMB_SCALE.update({_r + '_' + p: _v['scale'] for k in _base for p in _base[k]})
 LIMB_DEFS = tuple((p + 'leg', p + 'knee', p + 'leg_upper', p + 'leg_lower', p + 'ankle', 'IK_' + p + 'foot',
                    0.55 * LIMB_SCALE[p]) for p in LIMB_PREFIXES['leg']) + \
     tuple((p + 'arm', p + 'elbow', p + 'arm_upper', p + 'arm_lower', p + 'hand', 'IK_' + p + 'hand',
@@ -572,8 +578,8 @@ LIMBS = [(s, d) for s in 'LR' for d in LIMB_DEFS if all(f'{n}_{s}' in eb for n i
 def unprefixed(name):
     r = rider_of(name)
     if r and name.startswith(r + '_'):
-        return name[len(r) + 1:]
-    return next((name[len(p):] for p in ('up_', 'mid_', 'lo_', 'front_', 'back_') if name.startswith(p)), name)
+        name = name[len(r) + 1:]
+    return next((name[len(p):] for p in BASE_PREFIXES if name.startswith(p)), name)
 
 
 def limb_scale(lname):
@@ -768,15 +774,21 @@ for s, (lname, limb, a, b_, c, ik_name, _dist) in LIMBS:
     else:
         PARENTS[ctrl] = [('Root', ROOT), ('Torso', BODY)]
         PARENTS[pole] = [('Foot', ctrl), ('Root', ROOT), ('Torso', BODY)]
+# the game's clips key root_motion turned onto its side (the hero's bones undo it), so a model riding root_motion
+# lay down whenever a clip played: extras follow MCH-extra_space, which takes root_motion's position only
+EXTRA_SPACE = None
+if EXTRA and ROOT:
+    EXTRA_SPACE = 'MCH-extra_space'
+    new_bone(EXTRA_SPACE, eb[ROOT].head.copy(), eb[ROOT].head + UP * 0.1, None, roll_to=FWD)
 for key, cfg in EXTRA.items():
     at = cfg.get('at')
     by_hand = [('Hand R', 'hand_R' if 'hand_R' in eb else None), ('Hand L', 'hand_L' if 'hand_L' in eb else None)]
     if at and at in eb:
         PARENTS[f'{key}__root'] = [({'hand_R': 'Hand R', 'hand_L': 'Hand L'}.get(at, 'Bone'), at)] + by_hand + [
-            ('Root', ROOT)]
+            ('Root', EXTRA_SPACE)]
     else:
         # placed without a bone (the patrons' core): it stays where it is until moved to a hand
-        PARENTS[f'{key}__root'] = [('Root', ROOT)] + by_hand
+        PARENTS[f'{key}__root'] = [('Root', EXTRA_SPACE)] + by_hand
 PARENTS = {k: [(lbl, b) for lbl, b in v if b] for k, v in PARENTS.items()}
 PARENTS = {k: [o for i, o in enumerate(v) if o[1] not in [b for _, b in v[:i]]] for k, v in PARENTS.items()}
 PARENTS = {k: v for k, v in PARENTS.items() if len(v) > 1}
@@ -1621,6 +1633,9 @@ for prop, n in ISOLATE.items():
     c.target, c.subtarget = arm, f'MCH-{n}_iso'
     expr_driver(c, 'influence', None, '1 - f', props=[('f', f'["{prop}"]')])
     arm.pose.bones[n].constraints.move(len(arm.pose.bones[n].constraints) - 1, 0)
+if EXTRA_SPACE:
+    c = arm.pose.bones[EXTRA_SPACE].constraints.new('COPY_LOCATION')
+    c.target, c.subtarget = arm, ROOT
 for ctrl, opts in PARENTS.items():
     prop = ctrl + '_parent'
     arm[prop] = 0

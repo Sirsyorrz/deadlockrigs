@@ -327,6 +327,9 @@ class Builder:
         for f in (h.raw_glb, h.vmdl):
             if not os.path.exists(f):
                 raise BuildError(f'Source2Viewer wrote no {f}')
+        vmat = h.cfg.get('material')
+        if vmat and not os.path.exists(h.path('raw', vmat)):
+            self.run([self.s2v, '-i', self.pak, '-f', vmat + '_c', '-o', h.path('raw'), '-d'], h, show=False)
         for _key, cfg, glb in h.extra_models:
             if not os.path.exists(glb):
                 cmd = [self.s2v, '-i', self.pak, '-f', cfg['model'] + '_c', '-o', h.path('raw'),

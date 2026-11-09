@@ -6,6 +6,7 @@ hero has a face config, and writes build/<hero>.blend (the rig step's input). DL
 out/<hero>.glb and .fbx.
 """
 import os
+import re
 import sys
 
 import bmesh
@@ -235,6 +236,31 @@ if hero.face and os.path.exists(bag_path):
             continue
         if all(bag[v] for v in poly.vertices) and any(bag[v] == 2 for v in poly.vertices):
             poly.material_index = mi
+
+# heroes.json "material": the game swaps in a material of its own (Ivy's stone form is her model in a particle with a
+# stone override), decompiled next to the raw export: its colour texture in its tint on every mesh
+if hero.cfg.get('material'):
+    vmat = hero.path('raw', hero.cfg['material'])
+    params = dict(re.findall(r'^\s*"(\w+)"\s*"([^"]*)"', open(vmat).read(), re.M))
+    mat = bpy.data.materials.new(os.path.basename(vmat)[:-len('.vmat')])
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes['Principled BSDF']
+    tex = nt.nodes.new('ShaderNodeTexImage')
+    tex.image = bpy.data.images.load(os.path.join(os.path.dirname(vmat), os.path.basename(params['TextureColor1'])))
+    tint = nt.nodes.new('ShaderNodeMix')
+    tint.data_type, tint.blend_type = 'RGBA', 'MULTIPLY'
+    tint.inputs['Factor'].default_value = 1
+    rgb = [float(x) for x in params.get('g_vColorTint1', '[1 1 1 0]').strip('[]').split()[:3]]
+    tint.inputs['B'].default_value = (*rgb, 1)
+    nt.links.new(tex.outputs['Color'], tint.inputs['A'])
+    nt.links.new(tint.outputs['Result'], bsdf.inputs['Base Color'])
+    bsdf.inputs['Roughness'].default_value = 1.0
+    for o in bpy.data.objects:
+        if o.type == 'MESH':
+            o.data.materials.clear()
+            o.data.materials.append(mat)
+    print('material', mat.name, 'on every mesh')
 
 # extra models (heroes.json "extra_models": Bebop's fired hook hand, his sticky bomb): each one's bones join the
 # hero's armature as <key>__<bone> under a <key>__root bone (a static model gets just that), hidden until shown.

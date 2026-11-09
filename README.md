@@ -19,12 +19,17 @@ Each hero gets a rig with:
 - an FK jaw (and eyes) for heroes without a face rig whose jaw is skinned (Deadman Danny)
 - a Parts panel with the game's mesh switches (Rat King's banner, ammo and guard rats, Bebop's arm as hand, gun or
   forearm), sliders for animated parts (Bebop's gun folding open and its hyperbeam mode) and extra models the hero
-  uses (Bebop's fired hook hand and sticky bomb), each with its own control, and a Glow slider for self-lit parts
+  uses (Bebop's fired hook hand and sticky bomb, Rat King's ult diorama, Grey Talon's owl, Paige's dragon, Doorman's
+  door and about 55 more), each with its own control (animated ones have their clips in Game Animations, and
+  loading one shows the model), and a Glow slider for self-lit parts
   (Bebop's eyes, Rat King's eyes, Infernus' arm)
 - the game's moving materials: textures that scroll and vertices that flicker as the timeline plays (Infernus' arm
   and hair flames, Haze's smoke, Geist's arms, Mirage's djinn)
 - jointed hard-surface parts where the game has them fused to one bone (Bebop's jaw, monocle and head switches)
 - face shape keys, controls and expressions for the heroes listed under [Faces](#faces)
+
+Transformed heroes are in the list under Forms: Silver's werewolf, Calico's cat, Baba's pigeon and Ivy's stone form,
+each with its own skeleton, controls and clips.
 
 NPCs are in the list too, under NPCs: the Guardian, Walker, Base Guardian, Mid-boss, Hidden King, Archmother and the
 ranged, melee and medic troopers of both teams (Amber and Sapphire). They get the same controls for whatever their
