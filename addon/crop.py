@@ -197,13 +197,14 @@ def faces_kept(ob, mesh, region_codes, keep_re):
 
 
 def see_through(mat):
-    """Whether a map material lets what is behind it show (glass, decals, cutout leaves, additive glows)."""
+    """Whether a map material lets what is behind it show (glass, decals, cutout leaves, additive glows, the cosmic
+    veil doorways)."""
     vmat = mat.get('vmat') if mat else None
     if vmat is None:
         return False
     vmat = vmat.to_dict() if hasattr(vmat, 'to_dict') else dict(vmat)
     ints = vmat.get('IntParams') or {}
-    return vmat.get('ShaderName') == 'citadel_overlay.vfx' or \
+    return vmat.get('ShaderName') in ('citadel_overlay.vfx', 'cosmic_veil.vfx') or \
         any(ints.get(k) for k in ('F_TRANSLUCENT', 'F_ALPHA_TEST', 'F_ADDITIVE_BLEND', 'F_GLASS', 'F_BLEND'))
 
 

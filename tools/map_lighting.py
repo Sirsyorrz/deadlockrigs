@@ -710,35 +710,27 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
     return None
 
 
-VEIL_HAZE = (0.08, 0.15)
-
-
 def apply_veil(mat, output, vectors, textures):
-    """cosmic_veil.vfx (the smoky doorway screens): the scene behind shows through dimmed
-    (g_vRefractBrightnessAmountsVeiled.x) under a grey smoke the shader animates from noise, thicker at the border
-    (the smoke border mask). The export gives it no textures and a white opaque surface.
+    """cosmic_veil.vfx (the smoky doorway screens): the scene behind, blurred and greyed, times
+    g_vRefractBrightnessAmountsVeiled from .x inside to .y at the smoke border mask. No light of its own, so a dark
+    room stays dark behind it (Midtown's base tunnels, the SCBS bar). The blur, the grey, the refraction noise and the
+    animated smoke warp are left out. The export gives it no textures and a white opaque surface.
     Dithered rather than blended, so it sorts with what stands in front of it (the ghosts in the doorway): blended
     surfaces sort by object, and the veil drew over them."""
     paths = dict((vmat_dict(mat).get('TextureParams') or {}))
-    lo = (list(vectors.get('g_vRefractBrightnessAmountsVeiled') or (0.34,)) + [0.34])[0]
+    lo, hi = (list(vectors.get('g_vRefractBrightnessAmountsVeiled') or ()) + [1.0, 0.2])[:2]
     g = Graph(mat.node_tree)
     for n in [n for n in g.nodes if n != output]:
         g.nodes.remove(n)
     smoke_path = textures.get(paths.get('g_tMasks'))
-    # the smoke's level is matched to a game screenshot of Midtown's Succubus street; the border brightening past 1
-    # (g_vRefractBrightnessAmountsVeiled.y) comes out as thicker smoke there
     if smoke_path:
         smoke = g.split(g.image(cached_image(smoke_path), g.node('ShaderNodeUVMap').outputs['UV']))[0]
-        haze = g.math('ADD', g.math('MULTIPLY', smoke, VEIL_HAZE[1]), VEIL_HAZE[0])
+        brightness = g.math('ADD', g.math('MULTIPLY', smoke, hi - lo), lo)
     else:
-        haze = VEIL_HAZE[0]
-    emission = g.node('ShaderNodeEmission')
-    g.put(emission.inputs['Strength'], g.math('DIVIDE', haze, 1.0 - lo))
-    mix = g.node('ShaderNodeMixShader')
-    g.put(mix.inputs[0], 1.0 - lo)
-    g.links.new(g.node('ShaderNodeBsdfTransparent').outputs[0], mix.inputs[1])
-    g.links.new(emission.outputs[0], mix.inputs[2])
-    g.links.new(mix.outputs[0], output.inputs['Surface'])
+        brightness = lo
+    see_through = g.node('ShaderNodeBsdfTransparent')
+    g.put(see_through.inputs['Color'], g.combine(brightness, brightness, brightness))
+    g.links.new(see_through.outputs[0], output.inputs['Surface'])
     mat.surface_render_method = 'DITHERED'
 
 

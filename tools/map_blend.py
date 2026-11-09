@@ -110,7 +110,8 @@ def reveal_group():
 
 def weight_group():
     def build(g, blend, threshold, low, high):
-        soft = smoothstep(g, low, high, g.math('SUBTRACT', blend, threshold))
+        # softness 0 is a hard step on the GPU (x / 0 clamps to 0 or 1); Blender's divide by 0 gives 0, hiding the layer
+        soft = smoothstep(g, low, g.math('MAXIMUM', high, 1e-6), g.math('SUBTRACT', blend, threshold))
         return [select(g, g.math('GREATER_THAN', blend, 0.99999), 1.0, soft)]
     return node_group('Deadlock layer weight', [('Blend', 'Float'), ('Threshold', 'Float'), ('Low', 'Float'),
                                                 ('High', 'Float')], [('Weight', 'Float')], build)
