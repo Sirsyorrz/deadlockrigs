@@ -367,8 +367,9 @@ class MapBuilder(Builder):
                 if self.decompile(m, p, vpks, dest)}
 
     def layer_textures(self, m, vpks):
-        """The textures of environment_blend's upper layers, reveal masks and overlays and of the parallax windows'
-        interiors, which the glTF export leaves out. Texture path -> file under the lighting folder."""
+        """The textures of environment_blend's upper layers, reveal masks and overlays, of the parallax windows'
+        interiors and of the cosmic veils, which the glTF export leaves out. Texture path -> file under the
+        lighting folder."""
         paths = set()
         for mat in json.load(open(m.world, encoding='utf-8')).get('materials', []):
             vmat = (mat.get('extras') or {}).get('vmat') or {}
@@ -378,6 +379,10 @@ class MapBuilder(Builder):
             elif vmat.get('ShaderName') == 'environment_parallax_layered.vfx':
                 textures = vmat.get('TextureParams') or {}
                 paths.update(textures[k] for k in env.PARALLAX_TEXTURES if textures.get(k))
+            elif vmat.get('ShaderName') == 'cosmic_veil.vfx':
+                textures = vmat.get('TextureParams') or {}
+                paths.add(textures.get('g_tMasks'))
+        paths.discard(None)
         return self.decompile_textures(m, vpks, paths, 'layers')
 
     def anim_textures(self, m, vpks):

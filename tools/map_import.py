@@ -137,7 +137,7 @@ layer_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.g
 print(f'parallax windows: UV maps on {map_parallax.add_uv_maps(meshes)} meshes')
 kinds = [map_lighting.apply_vmat(m, glass_masks, layer_textures) for m in tracked(mats, 'props', 'materials')]
 print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '
-      f'{kinds.count("self_illum")} self-illuminated, {kinds.count("overlay")} decals')
+      f'{kinds.count("self_illum")} self-illuminated, {kinds.count("overlay")} decals, {kinds.count("veil")} veils')
 print(f'blend layers: {map_blend.applied} materials, {len(layer_textures)} layer textures')
 print(f'vertex paint: decoded on {map_lighting.decode_paint(meshes)} meshes')
 reached('paint')
