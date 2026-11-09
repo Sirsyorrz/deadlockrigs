@@ -1370,6 +1370,17 @@
    "part": "frank",
    "mesh": "frank",
    "builder": "morphs.py"
+  },
+  "extra_models": {
+   "Hover Death": {
+    "model": "models/abilities/frank_hover_death_anim_fx_model.vmdl",
+    "clips": true,
+    "offset": [
+     2.2,
+     -1.5,
+     0
+    ]
+   }
   }
  },
  {

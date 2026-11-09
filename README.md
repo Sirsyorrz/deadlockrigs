@@ -20,9 +20,9 @@ Each hero gets a rig with:
 - a Parts panel with the game's mesh switches (Rat King's banner, ammo and guard rats, Bebop's arm as hand, gun or
   forearm), sliders for animated parts (Bebop's gun folding open and its hyperbeam mode) and extra models the hero
   uses (Bebop's fired hook hand and sticky bomb, Rat King's ult diorama, Grey Talon's owl, Paige's dragon, Doorman's
-  door and about 55 more), each with its own control (animated ones have their clips in Game Animations, and
-  loading one shows the model), and a Glow slider for self-lit parts
-  (Bebop's eyes, Rat King's eyes, Infernus' arm)
+  door, Victor's hover death and about 55 more), each with its own control (animated ones have their clips in Game
+  Animations, and loading one shows the model), and a Glow slider for self-lit parts (Bebop's eyes, Rat King's
+  eyes, Infernus' arm)
 - the game's moving materials: textures that scroll and vertices that flicker as the timeline plays (Infernus' arm
   and hair flames, Haze's smoke, Geist's arms, Mirage's djinn)
 - jointed hard-surface parts where the game has them fused to one bone (Bebop's jaw, monocle and head switches)
