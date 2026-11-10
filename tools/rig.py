@@ -254,6 +254,33 @@ def descendants(name):
     return [name] + [c.name for c in B[name].children_recursive]
 
 
+def first_frame(clips, read):
+    """(clip name, read(pose bones, keyed bone names)) on the first frame of the first of clips the library has, or
+    None. The armature is back at rest afterwards."""
+    with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
+        # an NPC's stand idle has its own name (the Guardian's boss_tier1_stand_idle): heroes.json "idle"
+        name = next((n for n in clips + (hero.cfg.get('idle'),) if n in src.actions), None)
+        dst.actions = [name] if name else []
+    if not dst.actions:
+        return None
+    a = dst.actions[0]
+    arm.animation_data_create()
+    arm.animation_data.action = a
+    arm.animation_data.action_slot = a.slots[0]
+    bpy.context.scene.frame_set(int(a.frame_range[0]))
+    bpy.context.view_layer.update()
+    pbs = arm.pose.bones
+    keyed = {fc.data_path.split('"')[1] for fc in a.layers[0].strips[0].channelbags[0].fcurves
+             if fc.data_path.startswith('pose.bones')}
+    out = read(pbs, keyed)
+    arm.animation_data.action = None
+    bpy.data.actions.remove(a)
+    for b in pbs:
+        b.location, b.rotation_quaternion, b.scale = (0, 0, 0), (1, 0, 0, 0), (1, 1, 1)
+    bpy.context.view_layer.update()
+    return name, out
+
+
 def sample_hold(key, bones, clips=HOLD_CLIPS):
     """Basis (of the keyed bones) and armature-space matrices of bones on the first frame of the hold clip."""
     if not HAVE_CLIPS:
@@ -264,30 +291,14 @@ def sample_hold(key, bones, clips=HOLD_CLIPS):
                 print(f'WARNING: no clips and no saved grip for {key}, it stays at rest')
             return None, None
         return saved['basis'], {b: Matrix(m) for b, m in saved['mats'].items()}
-    with bpy.data.libraries.load(hero.anims_blend) as (src, dst):
-        # an NPC's stand idle has its own name (the Guardian's boss_tier1_stand_idle): heroes.json "idle"
-        name = next((n for n in clips + (hero.cfg.get('idle'),) if n in src.actions), None)
-        dst.actions = [name] if name else []
-    if not dst.actions:
+    got = first_frame(clips, lambda pbs, keyed: (
+        {b: [*pbs[b].location, *pbs[b].rotation_quaternion, *pbs[b].scale] for b in bones if b in keyed},
+        {b: pbs[b].matrix.copy() for b in bones}))
+    if got is None:
         print(f'WARNING: none of the clips {clips} for {key}, it stays at rest')
         RIGDATA.setdefault('hold', {})[key] = None
         return None, None
-    a = dst.actions[0]
-    arm.animation_data_create()
-    arm.animation_data.action = a
-    arm.animation_data.action_slot = a.slots[0]
-    bpy.context.scene.frame_set(int(a.frame_range[0]))
-    bpy.context.view_layer.update()
-    pbs = arm.pose.bones
-    keyed = {fc.data_path.split('"')[1] for fc in a.layers[0].strips[0].channelbags[0].fcurves
-             if fc.data_path.startswith('pose.bones')}
-    basis = {b: [*pbs[b].location, *pbs[b].rotation_quaternion, *pbs[b].scale] for b in bones if b in keyed}
-    mats = {b: pbs[b].matrix.copy() for b in bones}
-    arm.animation_data.action = None
-    bpy.data.actions.remove(a)
-    for b in pbs:
-        b.location, b.rotation_quaternion, b.scale = (0, 0, 0), (1, 0, 0, 0), (1, 1, 1)
-    bpy.context.view_layer.update()
+    _name, (basis, mats) = got
     RIGDATA.setdefault('hold', {})[key] = {'basis': basis, 'mats': {b: [list(r) for r in m] for b, m in mats.items()}}
     return basis, mats
 
@@ -516,6 +527,24 @@ if SOCKET_HOLD:
             WEAPON_FINGERS[sock[-1]] = rots
             PROP_POSE.update({b: v for b, v in basis.items() if b in rots})
         print(f'{sock} holds its gun in {"hand_" + sock[-1]} as the idle does')
+
+# the whole body on the hold clip's first frame, for the panel's Idle Pose (and the add-on's import option): the arms
+# and props above only take the hold from it. Rounded, so rebuilds don't rewrite rigdata with float noise. The face
+# stays neutral for the face rig (the head's children), and the vertex cloth ($cloth_*) follows the body by itself
+IDLE_POSE = RIGDATA.get('idle_pose')
+if HAVE_CLIPS:
+    face = {c.name for b in B if b.name == 'head' or b.name.endswith('_head') for c in b.children_recursive}
+
+    def idle_values(pbs, keyed):
+        out = {}
+        for b in sorted(keyed - face):
+            v = [round(x, 5) for x in (*pbs[b].location, *pbs[b].rotation_quaternion, *pbs[b].scale)]
+            if not b.startswith('$') and v != [0, 0, 0, 1, 0, 0, 0, 1, 1, 1]:
+                out[b] = v
+        return out
+    IDLE_POSE = first_frame(WEAPON_CLIPS, idle_values)
+    IDLE_POSE = {'clip': IDLE_POSE[0], 'bones': IDLE_POSE[1]} if IDLE_POSE else None
+    RIGDATA['idle_pose'] = IDLE_POSE
 
 # heroes.json "rider_idle": in the bind pose Mo stands on the floor in front of Krill, in game he crouches on Krill's
 # back. The rider's idle keys are sampled here and become its default pose at the end, once its IK exists
@@ -2022,6 +2051,13 @@ if WEAPON_HOLD and hero.cfg.get('hold_arm') and WEAPON_HOLD[0].startswith('hand_
         else:
             print('WARNING: hold_arm needs the idle clavicle (rebuild with the clips)')
 arm['prop_pose'] = PROP_POSE
+if IDLE_POSE:
+    arm['idle_pose'] = IDLE_POSE['bones']
+    arm['idle_clip'] = IDLE_POSE['clip']
+    if WEAPON_HOLD and WEAPON_HOLD[0].startswith('hand_'):
+        # the game IKs the hand onto the weapon, so the clip's own hand can be far off it (McGinnis' by 0.1 m and
+        # turned round): in the idle pose the grip hand goes where the hold has it
+        arm['idle_grip'] = {WEAPON_HOLD[0]: [x for r in WEAPON_HOLD[1] for x in r]}
 for b, v in PROP_POSE.items():
     pbn = arm.pose.bones[b]
     pbn.location, pbn.rotation_quaternion, pbn.scale = v[0:3], v[3:7], v[7:10]

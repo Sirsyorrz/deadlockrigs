@@ -308,6 +308,38 @@ if arm.get('mech_legs'):
     reset()
     bpy.ops.dlrig.reset_pose()
 
+# Idle Pose: with IK on, every limb ends where the idle's FK has it, the grip hand where the weapon hold has it
+if 'idle_pose' in arm:
+    reset()
+    for p in IK_PROPS:
+        arm[p] = 0.0
+    bpy.ops.dlrig.idle_pose()
+    update()
+    fk = {names(*p[3:].rsplit('_', 1))[2]: None for p in IK_PROPS}
+    fk = {n: pb[n].matrix.copy() for n in fk if n in pb}
+    for p in IK_PROPS:
+        arm[p] = 1.0
+    bpy.ops.dlrig.idle_pose()
+    update()
+    grip = {h: Matrix([v[i:i + 4] for i in range(0, 16, 4)]) for h, v in arm.get('idle_grip', {}).items()}
+    worst, wb = 0.0, None
+    for p in IK_PROPS:
+        n, ik = names(*p[3:].rsplit('_', 1))[2:4]
+        if n not in fk:
+            continue
+        want = grip.get(n, fk[n]).translation
+        d = (pb[n].matrix.translation - want).length
+        if n in grip:
+            # the hold can be out of the arm's reach (McGinnis' by 0.1 m, as at rest): then the control is on it
+            bones = arm.data.bones
+            at = pb[ik].matrix @ bones[ik].matrix_local.inverted() @ bones[n].matrix_local
+            d = min(d, (at.translation - want).length)
+        if d > worst:
+            worst, wb = d, n
+    check('idle pose puts the IK ends on the idle', worst < 0.005 * SCALE, f'worst {worst * 1000:.2f} mm at {wb}')
+    reset()
+    bpy.ops.dlrig.reset_pose()
+
 # X-mirror and Paste Flipped copy a left bone's pose to the right one as (w, x, -y, -z); some skeletons are not
 # symmetric in position, so only the resulting rotations are compared
 FLIP_X = Matrix.Diagonal((-1, 1, 1))

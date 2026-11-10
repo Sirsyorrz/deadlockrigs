@@ -335,27 +335,51 @@ def has_rigs():
 
 def register_rig_ui():
     """Registers the add-on's own copy of the rig panel. It serves every rig in the file and replaces the copy saved
-    in a rig's text block, which in older rigs only knows its own hero."""
+    in a rig's text block, which in older rigs only knows its own hero. Returns its namespace."""
     path = os.path.join(tools_dir(), 'rig_ui.py')
+    ns = {'__name__': 'dlrig_ui'}
     with open(path) as f:
-        exec(compile(f.read(), path, 'exec'), {'__name__': 'dlrig_ui'})
+        exec(compile(f.read(), path, 'exec'), ns)
+    return ns
+
+
+def idle_pose(ui, objects):
+    """The panel's Idle Pose on each rig among objects (rigs built before it existed stay at rest)."""
+    for ob in objects:
+        if ob.type == 'ARMATURE' and 'idle_pose' in ob:
+            ui['idle_pose'](bpy.context, ob)
+    ui['update'](bpy.context)
+
+
+# a file opened with Start in Idle Pose on: the option is a property of the scene that is being replaced
+_idle_on_load = False
 
 
 @persistent
 def on_load(_dummy):
+    global _idle_on_load
     if has_rigs():
-        register_rig_ui()
+        ui = register_rig_ui()
+        if _idle_on_load:
+            idle_pose(ui, bpy.data.objects)
+    _idle_on_load = False
 
 
 def open_rig(path):
+    global _idle_on_load
+    _idle_on_load = bpy.context.scene.dlr_idle_pose
     bpy.ops.wm.open_mainfile(filepath=path)
     return True
 
 
 def append_rig(path, slug):
-    for c in load_rig(path, slug):
+    idle = bpy.context.scene.dlr_idle_pose
+    collections = load_rig(path, slug)
+    for c in collections:
         bpy.context.scene.collection.children.link(c)
-    register_rig_ui()
+    ui = register_rig_ui()
+    if idle:
+        idle_pose(ui, [o for c in collections for o in c.all_objects])
     riglight.light_rigs(bpy.context.scene)
 
 
@@ -556,6 +580,7 @@ class DLR_PT_main(bpy.types.Panel):
         sub = col.row()
         sub.enabled = not busy
         sub.operator('dlr.build', text='Export Animations', icon='ACTION').kind = 'ANIMS'
+        col.prop(sc, 'dlr_idle_pose')
 
         if _job is not None and _job.kind != 'MAP' and not _job.quiet and _job.slug == sc.dlr_hero:
             draw_job(layout, context, hero_name(_job.slug))
@@ -658,6 +683,10 @@ def register():
         items=[('OPEN', 'Then Open', 'Open the rig when it is built'),
                ('APPEND', 'Then Append', 'Append the rig into this scene when it is built'),
                ('NONE', 'Just Save', 'Only save it to the output folder')])
+    bpy.types.Scene.dlr_idle_pose = bpy.props.BoolProperty(
+        name='Start in Idle Pose', default=False,
+        description="Open or append the hero standing as in the game's idle (the pose its weapon hold comes from) "
+                    "instead of the rest pose. The rig panel's Idle Pose button does the same later")
     bpy.app.handlers.load_post.append(on_load)
     crop.register()
     textures.register()
@@ -681,5 +710,6 @@ def unregister():
     del bpy.types.Scene.dlr_hero
     del bpy.types.Scene.dlr_map
     del bpy.types.Scene.dlr_after
+    del bpy.types.Scene.dlr_idle_pose
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)

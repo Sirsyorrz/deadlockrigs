@@ -409,14 +409,15 @@ def match_twist(context, ob, limb, s, fk, key=False):
     update(context)
 
 
-def ik_from_fk(context, ob, limb, s, key=False):
-    """Move the IK target, pole and foot controls to where the FK chain currently is (FK must be active)."""
+def ik_from_fk(context, ob, limb, s, key=False, end_m=None):
+    """Move the IK target, pole and foot controls to where the FK chain currently is (FK must be active). end_m:
+    where the end bone should be instead of its FK place."""
     up, lo, end, ik, pole, dist = limb_names(limb, s)
     pb = ob.pose.bones
     feet = foot_names(ob, limb, s)
     ball_m = pb[feet[3]].matrix.copy() if feet else None
-    a, b, c = pb[up].head.copy(), pb[lo].head.copy(), pb[end].head.copy()
-    end_m = pb[end].matrix.copy()
+    end_m = pb[end].matrix.copy() if end_m is None else end_m
+    a, b, c = pb[up].head.copy(), pb[lo].head.copy(), end_m.translation.copy()
     for n in feet[:3]:
         pb[n].rotation_euler = (0, 0, 0)
         pb[n].rotation_quaternion = (1, 0, 0, 0)
@@ -785,33 +786,80 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
             if sc.dlrig_phys_auto:
                 bpy.ops.dlrig.bake_physics()
             return {'FINISHED'}
-        ik_on = {p: ob[p] for p in ik_props(ob)}
         if self.mode == 'POSE':
-            reset_bones(ob, body_bones(ob))
-            for f in cb_src.fcurves:
-                ob.path_resolve(f.data_path)[f.array_index] = f.evaluate(start)
-            for p in ik_on:
-                ob[p] = 0.0
-            update(context)
-            for p, v in ik_on.items():
-                if v > 0.5:
-                    limb, s = p[3:].rsplit('_', 1)
-                    ik_from_fk(context, ob, limb, s)
-                    ob[p] = 1.0
-            if mech_on:
-                mech_from_fk(context, ob)
-            if autokey(context):
-                for pb in body_bones(ob):
-                    key_bone(pb)
+            def pose():
+                for f in cb_src.fcurves:
+                    ob.path_resolve(f.data_path)[f.array_index] = f.evaluate(start)
+            set_pose(context, ob, pose, mech_on)
         else:
             insert_clip(ob, channelbag(ob), cb_src, sc.frame_current, start, clip.frame_range[1])
             sc.frame_end = max(sc.frame_end, int(sc.frame_current + clip.frame_range[1] - start))
             act = ob.animation_data.action
             if act.use_frame_range:
                 act.frame_end = max(act.frame_end, sc.frame_end)
-            for p in ik_on:
+            for p in ik_props(ob):
                 ob[p] = 0.0
         bpy.data.actions.remove(clip)
+        update(context)
+        return {'FINISHED'}
+
+
+def set_pose(context, ob, pose, mech_on, ends=None):
+    """Reset the body, let pose() set FK values, then move the IK (and mech) controls that were on onto it. ends:
+    {limb end bone: armature-space matrix} for IK ends that go elsewhere."""
+    ends = ends or {}
+    ik_on = {p: ob[p] for p in ik_props(ob)}
+    reset_bones(ob, body_bones(ob))
+    pose()
+    for p in ik_on:
+        ob[p] = 0.0
+    update(context)
+    for p, v in ik_on.items():
+        if v > 0.5:
+            limb, s = p[3:].rsplit('_', 1)
+            ik_from_fk(context, ob, limb, s, end_m=ends.get(limb_names(limb, s)[2]))
+            ob[p] = 1.0
+    if mech_on:
+        mech_from_fk(context, ob)
+    if autokey(context):
+        for pb in body_bones(ob):
+            key_bone(pb)
+
+
+def idle_pose(context, ob):
+    """The body as on the first frame of the clip the weapon hold came from (rig['idle_clip']), with the weapon and
+    held props kept in their default hold."""
+    for p in ob.get('clip_off', []):
+        if p in ob:
+            ob[p] = 1.0
+    hold = ob.get('prop_pose', {})
+    skip = set(hold) | {'weapon', 'weaponPivot'}
+    pbs = ob.pose.bones
+    # the twist and cloth bones are rebuilt by their constraints from the bones around them
+    bones = {b: v for b, v in ob['idle_pose'].items() if b in pbs and b not in skip
+             and 'Twist' not in pbs[b].constraints and 'Cloth Follow' not in pbs[b].constraints}
+
+    def pose():
+        for b, v in bones.items():
+            pb = pbs[b]
+            pb.location, pb.rotation_quaternion, pb.scale = v[0:3], v[3:7], v[7:10]
+    grip = {h: Matrix([v[i:i + 4] for i in range(0, 16, 4)]) for h, v in ob.get('idle_grip', {}).items()}
+    set_pose(context, ob, pose, ob.get('mech_ik', 0.0) > 0.5, grip)
+
+
+class DLRIG_OT_idle_pose(bpy.types.Operator):
+    """Pose the whole body as the game's idle the weapon hold comes from (weapon and props stay held)"""
+    bl_idname = 'dlrig.idle_pose'
+    bl_label = 'Idle Pose'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = rig(context)
+        return ob is not None and 'idle_pose' in ob
+
+    def execute(self, context):
+        idle_pose(context, rig(context))
         update(context)
         return {'FINISHED'}
 
@@ -1454,6 +1502,8 @@ class DLRIG_PT_main(bpy.types.Panel):
         row.prop(context.scene.tool_settings, 'use_keyframe_insert_auto', text='Auto-Key', toggle=True,
                  icon='RECORD_OFF')
         row.operator('dlrig.reset_pose', text='Reset Pose', icon='ARMATURE_DATA')
+        if 'idle_pose' in ob:
+            row.operator('dlrig.idle_pose', text='Idle Pose', icon='POSE_HLT')
         if FACE in ob.pose.bones:
             row = col.row(align=True)
             row.operator('dlrig.reset_face', text='Reset Face', icon='LOOP_BACK')
@@ -1957,7 +2007,7 @@ def make_group_panel(title):
 
 
 classes = [DLRIG_OT_expression, DLRIG_OT_reset_face, DLRIG_OT_key_face, DLRIG_OT_hand, DLRIG_OT_reset_pose,
-           DLRIG_OT_snap, DLRIG_OT_mech_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
+           DLRIG_OT_idle_pose, DLRIG_OT_snap, DLRIG_OT_mech_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
            DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
            DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_OT_body_group, DLRIG_OT_part_set, DLRIG_OT_stage,
            DLRIG_OT_show_extra,
