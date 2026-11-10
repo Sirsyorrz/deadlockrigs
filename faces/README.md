@@ -56,6 +56,9 @@ the tip `droop` mm (default 6). Part the lips for it with the head's own `"tongu
 mm marks the lips' inner faces). `spread` (deg): skin that a ray tilted that far escapes from stays light, so lip
 under an overhanging lip doesn't go dark and show as a spike at the corners. `cap` (a point, mm): closes the hole
 in the skin nearest it with a dark face, for a bag open at the back (Baba's), which otherwise shows the body behind it.
+`stick` (`{"region": r, "mm": d}`): bag skin in `r` within `d` mm of the face takes the nearest face vertex's
+offsets in every key, for a bag lying just behind the cheek (Apollo's) that keys would otherwise poke through. Keep
+`r` away from the lips, or an inner lip can glue to the other lip.
 
 `"eyes"`: `gaze` (the left eye's look direction), `lid_axis` (the left eye's opening, corner to corner), and the look
 angles `up`, `down`, `in`, `out` (degrees), `iris` (default true). The eye looks, their in-betweens and the iris keys

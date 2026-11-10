@@ -11,6 +11,7 @@ import sys
 
 import numpy as np
 from scipy.sparse.csgraph import connected_components
+from scipy.spatial import cKDTree
 
 sys.path.insert(0, os.path.dirname(__file__))
 import facegeo as fg  # noqa: E402
@@ -397,6 +398,8 @@ class Face:
             keep = 1 - self.region(self.spec['hold'])
             for k in out:
                 out[k] *= keep[:, None]
+        if 'stick' in self.spec.get('bag', {}):
+            self.stick(out, self.spec['bag'])
         for k, v in self.eye_keys(self.spec.get('eyes', {})).items():
             out[k] = out[k] + v if k in out else v
         return {k: v[self.h.weld].astype(np.float32) for k, v in out.items()}
@@ -420,6 +423,20 @@ class Face:
                 t, _ = ray_cast(self.p[where], np.tile(d, (len(where), 1)), tris, 0.3)
                 out[where[~np.isfinite(t)]] = 0
         return out
+
+    def stick(self, out, cfg):
+        """Mouth bag skin lying just behind the face (Apollo's floor sits 2 mm behind his lower cheek) takes the
+        offsets of the face skin nearest it, so keys that move the two a little differently don't poke it through."""
+        st = cfg['stick']
+        bag = self.bag(cfg)
+        inner = np.where((bag > 0) & (self.region(st['region']) > 0))[0]
+        face = np.where(self.skin & (bag == 0))[0]
+        d, j = cKDTree(self.p[face]).query(self.p[inner])
+        mm = st.get('mm', 5) / 1000
+        w = (1 - smoothstep(mm / 2, mm, d)) * self.region(st['region'])[inner]
+        src = face[j]
+        for k in out:
+            out[k][inner] += (out[k][src] - out[k][inner]) * w[:, None]
 
     def bag_cap(self, at):
         """The skin's hole nearest at (mm): a bag open at the back shows the body behind it through an open mouth.
