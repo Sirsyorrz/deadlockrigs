@@ -16,7 +16,8 @@ from map_lighting import Graph, UNIT
 
 # VolumetricFog.ScatteringScale is 0.0022 (the controller's fog strength to extinction per inch); that leaves the
 # Hideout far foggier than the game, this matches it in screenshots
-SCATTERING_SCALE = 0.0022 * 0.2
+DENSITY_FIT = 0.2
+SCATTERING_SCALE = 0.0022 * DENSITY_FIT
 # The share of the extinction that scatters Blender lights. The world would light the fog through it too, on top of
 # the baked indirect light, so it's kept small and the fog lights are made brighter to make up for it (not by much
 # more: EEVEE loses lights that bright in volumes).
@@ -157,9 +158,11 @@ def add_volumetric_fog(coll, fog, folder, vdb_path, title):
 
 def light_fog(coll, lights):
     """Only the lights that light the game's fog light the volume: each light leaves volumes alone, and those with a
-    fog strength get a copy that lights only volumes, as bright as the game's fog lighting (colour times attenuation
-    times fog strength, against Blender's isotropic 1/4pi phase and the scatter share). EEVEE doesn't apply light
-    linking to volumes. Returns the number of fog lights."""
+    fog strength get a copy that lights only volumes, as bright as the game's fog lighting: the froxel pass adds
+    colour x attenuation x fog strength x extinction, without a phase function, at VRF's scattering scale. Against
+    Blender's isotropic 1/4pi phase, the scatter share, the pi in a light's watts (map_environment.WATTS) and the
+    density fit. Fitted the other way (as bright at our extinction) the Archmother's shaft came out 0.7 stop dim.
+    EEVEE doesn't apply light linking to volumes. Returns the number of fog lights."""
     count = 0
     for ob in lights:
         ob.data.volume_factor = 0.0
@@ -169,7 +172,7 @@ def light_fog(coll, lights):
         copy = ob.copy()
         copy.data = ob.data.copy()
         copy.name = copy.data.name = f'{ob.name} fog'
-        copy.data.energy = ob.data.energy * strength * 4 * np.pi / SCATTER_SHARE
+        copy.data.energy = ob.data.energy * strength * 4 / (SCATTER_SHARE * DENSITY_FIT)
         copy.data.volume_factor = 1.0
         copy.data.diffuse_factor = copy.data.specular_factor = copy.data.transmission_factor = 0.0
         # the shadow pool is already full on big maps, and volume shadows are off by default
