@@ -937,6 +937,9 @@
   "name": "Paige",
   "codename": "bookworm",
   "model": "models/heroes_wip/bookworm/bookworm.vmdl",
+  "hold_clip": "game_out_of_combat_idle",
+  "hold_arm": "root",
+  "hold_offhand": true,
   "face": {
    "part": "head",
    "mesh": "head"
