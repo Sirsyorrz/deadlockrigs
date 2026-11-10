@@ -245,7 +245,11 @@ def named(g, name):
 def set_input(mod, name, value):
     ident = next(i.identifier for i in mod.node_group.interface.items_tree
                  if i.item_type == 'SOCKET' and i.in_out == 'INPUT' and i.name == name)
-    getattr(mod.properties.inputs, ident).value = value
+    # Blender 5.1 has no mod.properties, its inputs are ID properties on the modifier
+    if hasattr(mod, 'properties'):
+        getattr(mod.properties.inputs, ident).value = value
+    else:
+        mod[ident] = value
 
 
 def jitter_mask(mat, textures):
