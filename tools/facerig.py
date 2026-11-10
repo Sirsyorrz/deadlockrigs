@@ -165,6 +165,13 @@ def pose(rig, arm, head_ob, widget, scale):
             lim.name = 'Reach'
             lim.target, lim.subtarget = arm, pb[n].parent.name
             lim.distance, lim.limit_mode = b['reach'], 'LIMITDIST_INSIDE'
+        if b.get('down'):
+            # the control's Y is up: only its downward travel is capped (Baba's brows into her glasses)
+            lim = pb[n].constraints.new('LIMIT_LOCATION')
+            lim.name = 'Down'
+            lim.owner_space = 'LOCAL'
+            lim.use_min_y, lim.min_y = True, -b['down']
+            lim.use_transform_limit = True
         c = pb[f'DEF-{n}'].constraints.new('COPY_TRANSFORMS')
         c.name = 'Tweak'
         c.target, c.subtarget = arm, n

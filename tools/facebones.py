@@ -159,9 +159,9 @@ class FaceBones:
             name = sub(tmpl, side)
             parent = sub(c['parent'], side)
             self.add(name, kind='tweak', head=p, tail=p + np.array([0, 0, c.get('size', 8) / 1000]),
-                     parent=parent, field=w[self.h.weld], batch=parent, size=c.get('size', 8),
+                     parent=parent, field=w[self.h.weld], batch=c.get('batch', parent), size=c.get('size', 8),
                      main=c.get('main', False), anchor=self.orig(j) if j is not None else -1, side=side,
-                     reach=c.get('reach'))
+                     reach=c.get('reach'), down=c.get('down'))
 
     # weights
 
@@ -224,6 +224,8 @@ class FaceBones:
                 'size': b['size'] / 1000, 'anchor': b.get('anchor', -1)})
             if b.get('reach'):
                 out['bones'][-1]['reach'] = b['reach'] / 1000
+            if b.get('down'):
+                out['bones'][-1]['down'] = b['down'] / 1000
         for k, v in rig.get('reparent', {}).items():
             for side in sided(k):
                 out['reparent'][sub(k, side)] = sub(v, side)

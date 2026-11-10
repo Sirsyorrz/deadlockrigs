@@ -30,7 +30,9 @@
   "mouth_back_up_{s}": {"all": ["upper_skin", {"geo": [40, -130, -66], "r": 10, "soft": 25}]},
   "mouth_back_lo_{s}": {"all": ["lower_skin", {"geo": [38, -128, -90], "r": 10, "soft": 22}]},
   "nostril_{s}": {"all": [{"piece": "skin"}, {"geo": [14, -192, -76], "r": 8, "soft": 12}]},
-  "nose_wing_{s}": {"all": ["upper_skin", {"box": [22, -178, -62], "size": [14, 18, 16], "soft": 0.8}]}
+  "nose_wing_{s}": {"all": ["upper_skin", {"box": [22, -178, -62], "size": [14, 18, 16], "soft": 0.8}]},
+  "nose": {"all": [{"piece": "skin"}, "upper_skin", {"half": [0, -172, 0], "n": [0, -1, 0], "soft": 8},
+                    {"box": [0, -205, -35], "size": [34, 60, 60], "soft": 0.3}]}
  },
  "hold": "glasses",
  "bag": {"region": {"box": [0, -105, -88], "size": [45, 60, 45], "soft": 0.05}, "inner": 1, "deep": 4},
@@ -76,5 +78,49 @@
   "eye_target": [0, -644, -5],
   "eye_spacing": 77.6,
   "face_box": [0, -183, 294]
+ },
+ "rig": {
+  "chains": {
+   "nose_{i}": {"points": [[0, -180, 15], [0, -205, -25], [0, -245, -80]], "parent": "baba_head", "blend": 20,
+                "mask": "nose", "size": 14}
+  },
+  "tweaks": {
+   "nostril_{s}": {"at": [14, -192, -76], "parent": "nose_1", "r": 7, "soft": 12, "size": 4},
+   "lip_up_{s}": {"at": [14, -150, -84], "parent": "baba_head", "main": true, "size": 7, "mask": "upper_skin",
+                  "field": "lip_up_{s}"},
+   "lip_up_1_{s}": {"at": [18, -146, -80], "parent": "lip_up_{s}", "r": 6, "soft": 10, "size": 3.5, "mask": "upper_skin"},
+   "lip_up_2_{s}": {"at": [10, -151, -86], "parent": "lip_up_{s}", "r": 6, "soft": 10, "size": 3.5, "mask": "upper_skin"},
+   "lip_up_3_{s}": {"at": [3, -152, -88], "parent": "lip_up_{s}", "r": 6, "soft": 10, "size": 3.5, "mask": "upper_skin"},
+   "chin": {"at": [0, -141, -129], "parent": "baba_head", "r": 22, "soft": 28, "main": true, "size": 8, "mask": "lower_skin"},
+   "lip_lo_{s}": {"at": [14, -140, -99], "parent": "baba_head", "main": true, "size": 7, "mask": "lower_skin",
+                  "field": "lip_lo_{s}"},
+   "lip_lo_1_{s}": {"at": [16, -138, -94], "parent": "lip_lo_{s}", "r": 6, "soft": 10, "size": 3.5, "mask": "lower_skin"},
+   "lip_lo_2_{s}": {"at": [6, -140, -99], "parent": "lip_lo_{s}", "r": 6, "soft": 10, "size": 3.5, "mask": "lower_skin"},
+   "cheek_{s}": {"at": [51, -156, -38], "parent": "baba_head", "main": true, "size": 8, "mask": "upper_skin",
+                 "field": "cheek_{s}"},
+   "brow_{s}": {"at": [42, -177, 28], "parent": "baba_head", "mask": "brow_{s}", "main": true, "size": 8,
+                "field": "brow_{s}", "down": 2.5},
+   "brow_in_{s}": {"at": [26, -180, 26], "parent": "brow_{s}", "mask": "brow_{s}", "size": 3.5, "field": "brow_in_{s}",
+                   "down": 1.5},
+   "brow_out_{s}": {"at": [58, -170, 28], "parent": "brow_{s}", "mask": "brow_{s}", "size": 3.5, "field": "brow_out_{s}",
+                    "down": 1.5},
+   "lid_up_{s}": {"at": {"lid": "{s}", "t": 0.5, "part": "upper"}, "parent": "baba_head", "mask": "lid_up_{s}", "main": true,
+                  "size": 4, "field": "lid_up_{s}"},
+   "lid_up_0_{s}": {"at": {"lid": "{s}", "t": 0.2, "part": "upper"}, "parent": "lid_up_{s}", "mask": "lid_up_{s}", "size": 2.5,
+                    "r": 7, "soft": 12},
+   "lid_up_1_{s}": {"at": {"lid": "{s}", "t": 0.5, "part": "upper"}, "parent": "lid_up_{s}", "mask": "lid_up_{s}", "size": 2.5,
+                    "r": 7, "soft": 12},
+   "lid_up_2_{s}": {"at": {"lid": "{s}", "t": 0.8, "part": "upper"}, "parent": "lid_up_{s}", "mask": "lid_up_{s}", "size": 2.5,
+                    "r": 7, "soft": 12},
+   "lid_lo_{s}": {"at": {"lid": "{s}", "t": 0.5, "part": "lower"}, "parent": "baba_head", "mask": "lid_lo_{s}", "main": true,
+                  "size": 4, "field": "lid_lo_{s}"},
+   "lid_lo_0_{s}": {"at": {"lid": "{s}", "t": 0.3, "part": "lower"}, "parent": "lid_lo_{s}", "mask": "lid_lo_{s}", "size": 2.5,
+                    "r": 7, "soft": 12},
+   "lid_lo_1_{s}": {"at": {"lid": "{s}", "t": 0.7, "part": "lower"}, "parent": "lid_lo_{s}", "mask": "lid_lo_{s}", "size": 2.5,
+                    "r": 7, "soft": 12},
+   "corner_{s}": {"at": [30, -134, -74], "parent": "baba_head", "main": true, "size": 7, "batch": "corners",
+                  "field": {"all": [{"piece": "skin"}, {"box": [30, -136, -78], "size": [9, 22, 11], "soft": 1.0}]}}
+  },
+  "scale": 1.5
  }
 }
