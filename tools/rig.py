@@ -382,7 +382,10 @@ def weighted_points(bones):
 # the weapon hangs off root_motion and sits at the origin at rest. In game the hand is IK'd onto the weapon's
 # weaponHand_* bone, so by default the weapon rides that hand where the idle has it (a Child Of switched by
 # weapon_hold, which game clips turn off since they place the weapon themselves)
-WEAPON_CLIPS = ('game_primary_stand_idle', 'game_weapon_stand_idle') + HOLD_CLIPS
+# heroes.json "hold_clip": the clip whose first frame is the hold, when the stand idles aim and the hero's showcase pose
+# (game_ui_hero_info, the wiki's) holds the weapons as the user expects (Venator: both guns raised by his shoulders)
+WEAPON_CLIPS = (hero.cfg.get('hold_clip'),) * bool(hero.cfg.get('hold_clip')) + (
+    'game_primary_stand_idle', 'game_weapon_stand_idle') + HOLD_CLIPS
 WEAPON_HOLD = None
 WEAPON_IDLE = {}
 # the idle's fingers on the weapon, a "Weapon" hand pose: side -> bone -> quaternion
@@ -394,7 +397,7 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
     grips = [b for b in held if re.match(r'weapon_?hand_[LR](_|$)', b, re.I)]
     gun = weighted_points(set(held))
     if grips and len(gun) > 50:
-        clavicles = [f'clavicle_{s}' for s in 'LR' if f'clavicle_{s}' in B]
+        clavicles = [f'{n}_{s}' for s in 'LR' for n in ('clavicle', 'arm_upper', 'arm_lower') if f'{n}_{s}' in B]
         basis, idle = sample_hold('weapon', held + ['pelvis'] * ('pelvis' in B) + HAND_BONES + clavicles, WEAPON_CLIPS)
         if basis is not None:
 
@@ -1984,16 +1987,36 @@ if WEAPON_HOLD and hero.cfg.get('hold_arm') and WEAPON_HOLD[0].startswith('hand_
     # heroes.json "hold_arm": the grip hand's IK control starts where the idle has the hand, from the clavicle, so the
     # weapon is held as in game (Rat King's gun level at his chest) instead of hanging off the rest arm. "root" keeps the
     # idle's hand as is: Silver's aim idle leans and turns her chest, so from the upright clavicle the gun pointed up
+    # "hold_offhand": the other hand goes to its idle place too (Venator raises the pistol riding hand_L with the gun)
     hand, hand_at, _ = WEAPON_HOLD
-    clav = f'clavicle_{hand[-1]}'
-    at = hand_at if hero.cfg['hold_arm'] == 'root' else (
-        rest[clav] @ WEAPON_IDLE[clav].inverted() @ hand_at if clav in WEAPON_IDLE else None)
-    if at is not None:
-        m = arm.data.bones[f'IK_{hand}'].matrix_local.inverted() @ at
-        PROP_POSE[f'IK_{hand}'] = [*m.to_translation(), *m.to_quaternion(), *m.to_scale()]
-        print(f'hold_arm: IK_{hand} moved {(at.translation - rest[hand].translation).length:.2f} m to the idle hold')
-    else:
-        print('WARNING: hold_arm needs the idle clavicle (rebuild with the clips)')
+    held_by = {hand: hand_at}
+    other = 'hand_' + ('L' if hand[-1] == 'R' else 'R')
+    if hero.cfg.get('hold_offhand') and other in WEAPON_IDLE and f'IK_{other}' in arm.data.bones:
+        held_by[other] = WEAPON_IDLE[other]
+    for hand, hand_at in held_by.items():
+        clav = f'clavicle_{hand[-1]}'
+        at = hand_at if hero.cfg['hold_arm'] == 'root' else (
+            rest[clav] @ WEAPON_IDLE[clav].inverted() @ hand_at if clav in WEAPON_IDLE else None)
+        if at is not None:
+            m = arm.data.bones[f'IK_{hand}'].matrix_local.inverted() @ at
+            PROP_POSE[f'IK_{hand}'] = [*m.to_translation(), *m.to_quaternion(), *m.to_scale()]
+            print(f'hold_arm: IK_{hand} moved {(at.translation - rest[hand].translation).length:.2f} m to the idle hold')
+            # the elbow bends the way the idle's does: with the rest pole Venator's raised elbows stuck out sideways
+            side = hand[-1]
+            upper, lower, pole = f'arm_upper_{side}', f'arm_lower_{side}', f'pole_elbow_{side}'
+            if upper in WEAPON_IDLE and lower in WEAPON_IDLE and pole in arm.data.bones:
+                to_rest = at @ hand_at.inverted()
+                pa, pb_ = (to_rest @ WEAPON_IDLE[n].translation for n in (upper, lower))
+                pc = at.translation
+                t = (pb_ - pa).dot(pc - pa) / (pc - pa).length_squared
+                off = pb_ - (pa + (pc - pa) * t)
+                if off.length > 1e-3:
+                    pm = arm.data.bones[pole].matrix_local
+                    dist = (pm.translation - rest[lower].translation).length
+                    m = pm.inverted() @ Matrix.Translation(pb_ + off.normalized() * dist) @ pm.to_3x3().to_4x4()
+                    PROP_POSE[pole] = [*m.to_translation(), *m.to_quaternion(), *m.to_scale()]
+        else:
+            print('WARNING: hold_arm needs the idle clavicle (rebuild with the clips)')
 arm['prop_pose'] = PROP_POSE
 for b, v in PROP_POSE.items():
     pbn = arm.pose.bones[b]
