@@ -53,8 +53,9 @@ in-betweens) move it like the floor under it; tongueOut slides it `reach` mm out
 the tip `droop` mm (default 6). Part the lips for it with the head's own `"tongueOut"` moves.
 
 `"bag"`: the dark mouth inside. Skin in `region` hidden from the front by over `deep` mm of mouth goes dark (`inner`
-mm marks the lips' inner faces). `cap` (a point, mm): closes the hole in the skin nearest it with a dark face, for a
-bag open at the back (Baba's), which otherwise shows the body behind it.
+mm marks the lips' inner faces). `spread` (deg): skin that a ray tilted that far escapes from stays light, so lip
+under an overhanging lip doesn't go dark and show as a spike at the corners. `cap` (a point, mm): closes the hole
+in the skin nearest it with a dark face, for a bag open at the back (Baba's), which otherwise shows the body behind it.
 
 `"eyes"`: `gaze` (the left eye's look direction), `lid_axis` (the left eye's opening, corner to corner), and the look
 angles `up`, `down`, `in`, `out` (degrees), `iris` (default true). The eye looks, their in-betweens and the iris keys

@@ -412,6 +412,13 @@ class Face:
         out = np.zeros(self.nw, np.int8)
         out[where] = np.where(t > cfg.get('deep', 7) / 1000, 2, np.where(t > cfg.get('inner', 3) / 1000, 1, 0))
         out[where[~np.isfinite(t)]] = 0
+        # "spread" (deg): skin hidden only straight ahead (lip under an overhanging lip) escapes along a tilted ray
+        spread = np.radians(cfg.get('spread', 0))
+        if spread:
+            s, c = np.sin(spread), np.cos(spread)
+            for d in ([0, -c, s], [0, -c, -s], [s, -c, 0], [-s, -c, 0]):
+                t, _ = ray_cast(self.p[where], np.tile(d, (len(where), 1)), tris, 0.3)
+                out[where[~np.isfinite(t)]] = 0
         return out
 
     def bag_cap(self, at):
