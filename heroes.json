@@ -65,27 +65,9 @@
     0.012,
     2.39
    ],
-   "mirror_keys": true,
-   "jaw_deg": 22,
-   "gain": {
-    "mouthSmile": 1.8,
-    "mouthFrown": 2.0,
-    "mouthUpperUp": 2.0,
-    "mouthLowerDown": 2.0,
-    "mouthStretch": 1.5,
-    "mouthPucker": 1.3,
-    "mouthFunnel": 1.3,
-    "mouthPress": 1.5,
-    "mouthRoll": 1.5,
-    "mouthShrug": 1.5,
-    "mouthLeft": 1.5,
-    "mouthRight": 1.5,
-    "cheek": 1.5,
-    "noseSneer": 2.0,
-    "brow": 2.0
-   }
-  },
-  "upright": [
+   "builder": "handkeys.py"
+ },
+ "upright": [
    "offhand"
   ]
  },

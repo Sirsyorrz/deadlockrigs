@@ -400,6 +400,19 @@ class Face:
             out[k] = out[k] + v if k in out else v
         return {k: v[self.h.weld].astype(np.float32) for k, v in out.items()}
 
+    def bag(self, cfg):
+        """The mouth bag for build.py's dark interior: skin in cfg's region hidden from the front by skin, 1 when the
+        skin in front is over "inner" mm away, 2 over "deep" mm (build.py darkens faces reaching 2)."""
+        where = np.where((self.region(cfg['region']) > 0.5) & self.skin)[0]
+        tris = self.h.wco[self.h.weld[self.h.tris]]
+        tris = tris[self.skin[self.h.weld[self.h.tris[:, 0]]]]
+        fwd = np.tile([0.0, -1.0, 0.0], (len(where), 1))
+        t, _ = ray_cast(self.p[where], fwd, tris, 0.06)
+        out = np.zeros(self.nw, np.int8)
+        out[where] = np.where(t > cfg.get('deep', 7) / 1000, 2, np.where(t > cfg.get('inner', 3) / 1000, 1, 0))
+        out[where[~np.isfinite(t)]] = 0
+        return out
+
     def controls(self):
         c = self.spec['controls']
         lift = c.get('lift', 6) / 1000
@@ -433,6 +446,15 @@ def main():
     face = Face(h, spec, arrays)
     keys = face.build()
     np.savez(os.path.join(hero.data, 'keys.npz'), **keys)
+    # keys.py's lip split, cut, generated mouth and tongue add vertices these keys don't have
+    for f in ('keys_split.npz', 'keys_cut.npy', 'keys_mouth.npz', 'keys_tongue.npz'):
+        if os.path.exists(os.path.join(hero.data, f)):
+            os.remove(os.path.join(hero.data, f))
+    bag_path = os.path.join(hero.data, 'keys_bag.npy')
+    if 'bag' in spec:
+        np.save(bag_path, face.bag(spec['bag'])[h.weld])
+    elif os.path.exists(bag_path):
+        os.remove(bag_path)
     json.dump(face.controls(), open(os.path.join(hero.data, 'face.json'), 'w'), indent=1)
     print('hand-made keys', len(keys))
     rig_files = [os.path.join(hero.data, f) for f in ('facerig.json', 'facerig.npz')]
