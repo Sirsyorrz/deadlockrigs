@@ -1176,6 +1176,7 @@
    "part": "Head",
    "mesh": "Head"
   },
+  "hold_arm": "root",
   "extra_models": {
    "Bola": {
     "model": "models/heroes_wip/werewolf/werewolf_bola.vmdl",

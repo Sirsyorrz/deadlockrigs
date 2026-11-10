@@ -1982,11 +1982,13 @@ for pre, chain, end in TAILS:
 arm['tails'] = [t[0] for t in TAILS]
 if WEAPON_HOLD and hero.cfg.get('hold_arm') and WEAPON_HOLD[0].startswith('hand_'):
     # heroes.json "hold_arm": the grip hand's IK control starts where the idle has the hand, from the clavicle, so the
-    # weapon is held as in game (Rat King's gun level at his chest) instead of hanging off the rest arm
+    # weapon is held as in game (Rat King's gun level at his chest) instead of hanging off the rest arm. "root" keeps the
+    # idle's hand as is: Silver's aim idle leans and turns her chest, so from the upright clavicle the gun pointed up
     hand, hand_at, _ = WEAPON_HOLD
     clav = f'clavicle_{hand[-1]}'
-    if clav in WEAPON_IDLE:
-        at = rest[clav] @ WEAPON_IDLE[clav].inverted() @ hand_at
+    at = hand_at if hero.cfg['hold_arm'] == 'root' else (
+        rest[clav] @ WEAPON_IDLE[clav].inverted() @ hand_at if clav in WEAPON_IDLE else None)
+    if at is not None:
         m = arm.data.bones[f'IK_{hand}'].matrix_local.inverted() @ at
         PROP_POSE[f'IK_{hand}'] = [*m.to_translation(), *m.to_quaternion(), *m.to_scale()]
         print(f'hold_arm: IK_{hand} moved {(at.translation - rest[hand].translation).length:.2f} m to the idle hold')
