@@ -42,7 +42,11 @@ if not me.shape_keys:
     head.shape_key_add(name='Basis', from_mix=False)
 for name in keys.files:
     kb = me.shape_keys.key_blocks.get(name) or head.shape_key_add(name=name, from_mix=False)
-    kb.data.foreach_set('co', (base + keys[name][:n] @ inv.T).astype(np.float32).ravel())
+    # the generated tongue sits after the head's own vertices and doesn't move here
+    off = np.zeros((n, 3), np.float32)
+    k = keys[name][:n]
+    off[:len(k)] = k
+    kb.data.foreach_set('co', (base + off @ inv.T).astype(np.float32).ravel())
 
 scene.render.engine = 'BLENDER_EEVEE'
 scene.render.resolution_x = scene.render.resolution_y = 640
@@ -95,7 +99,9 @@ shots = []
 
 def shoot(label, values=None, region=None):
     if region is not None:
-        w = regs[region][:n]
+        w = np.zeros(n, np.float32)
+        r = regs[region][:n]
+        w[:len(r)] = r
         c = np.stack([w, 0.15 + 0 * w, 1 - w, np.ones_like(w)], 1).astype(np.float32)
         col.data.foreach_set('color', c.ravel())
         me.update()
