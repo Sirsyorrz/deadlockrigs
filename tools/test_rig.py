@@ -215,6 +215,15 @@ if 'weapon_hold' in arm:
     update()
     moved = (pb[hand].matrix.inverted() @ pb['weapon'].matrix).translation - rel.translation
     check(f'weapon follows {hand}', moved.length < 0.0005, f'{moved.length * 1000:.3f} mm')
+    if 'root_motion' in pb:
+        # the hold must not take the root's move a second time (the weapon flew off when root_motion was posed)
+        rel = pb['root_motion'].matrix.inverted() @ pb['weapon'].matrix
+        pb['root_motion'].matrix_basis = Matrix.Translation(Vector((0.5, -0.3, 0.2)) * SCALE) @ Matrix.Rotation(0.6, 4, 'Z')
+        update()
+        moved = ((pb['root_motion'].matrix.inverted() @ pb['weapon'].matrix).translation - rel.translation).length
+        check('weapon moves with root_motion once', moved < 0.0005, f'{moved * 1000:.3f} mm')
+        pb['root_motion'].matrix_basis = Matrix.Identity(4)
+        update()
     opts = arm.get('parent_options', {}).get('weaponPivot', [])
     # (not when it rides the pelvis, Solomon's board: turning the pelvis' parent turns the chest too)
     if 'Chest' in opts and 'hand' in hand:

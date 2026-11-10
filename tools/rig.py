@@ -812,6 +812,18 @@ if WEAPON_HOLD:
     WEAPON_PARENTS = [o for i, o in enumerate(WEAPON_PARENTS)
                       if o[1] and o[1] not in [b for _, b in WEAPON_PARENTS[:i]]]
     new_bone('MCH-weapon_space', None, None, None, copy=WEAPON_HOLD[0])
+# A held bone hangs off root_motion and so does what holds it, so a Child Of on the bone itself took a root move twice
+# (the weapon flew off when the root was posed). It hangs off MCH-hold_<bone> instead: unparented with its parent's
+# rest, so the clips' keys mean the same, copying the parent with the hold off and riding the hold target with it on
+FOLLOWS = [p for p in PROPS if 'follow' in p and p['bone'] in PROP_POSE]
+HOLD_PARENTS = {}
+for held_bone in ['weaponPivot'] * bool(WEAPON_HOLD) + [p['bone'] for p in FOLLOWS]:
+    up = eb[held_bone].parent
+    if up:
+        eb[held_bone].use_connect = False
+        eb[held_bone].parent = new_bone(f'MCH-hold_{held_bone}', None, None, None, copy=up.name)
+        HOLD_PARENTS[held_bone] = up.name
+        hpos[f'MCH-hold_{held_bone}'] = hpos[up.name].copy()
 
 # Twist bones, as the game's AnimConstraintTiltTwist: (twist bone, weight, bone whose twist is read,
 # frame bone, limb start, limb end). TW-ref rides the frame bone along the limb, TW-src the source bone
@@ -1870,20 +1882,32 @@ def chc_follow(names, kind='CHC-'):
                 d.expression = ' + '.join(f'{coef(i, k):.9f} * {names_[k]}' for k in range(size))
 
 
+def hold_con(bone, name, target, inverse, prop):
+    """bone rides target (inverse at rest) as prop goes to 1, through its MCH-hold_ parent when it has one."""
+    owner = arm.pose.bones[f'MCH-hold_{bone}' if bone in HOLD_PARENTS else bone]
+    c = owner.constraints.new('CHILD_OF')
+    c.name = name
+    c.target = arm
+    c.subtarget = target
+    c.inverse_matrix = inverse
+    if bone not in HOLD_PARENTS:
+        influence_driver(c, prop)
+        return
+    off = owner.constraints.new('COPY_TRANSFORMS')
+    off.name = name + ' off'
+    off.target = arm
+    off.subtarget = HOLD_PARENTS[bone]
+    expr_driver(off, 'influence', None, '1 - h', props=[('h', f'["{prop}"]')])
+
+
 for prop in PROPS:
     prop_widget(prop['bone'])
-FOLLOWS = [p for p in PROPS if 'follow' in p and p['bone'] in PROP_POSE]
 if FOLLOWS:
     arm['prop_follow'] = 1.0
     arm.id_properties_ui('prop_follow').update(min=0, max=1, soft_min=0, soft_max=1,
                                                description='Props ride the body (game clips place them themselves)')
 for prop in FOLLOWS:
-    c = arm.pose.bones[prop['bone']].constraints.new('CHILD_OF')
-    c.name = 'Prop follow'
-    c.target = arm
-    c.subtarget = prop['follow']
-    c.inverse_matrix = rest[prop['follow']].inverted()
-    influence_driver(c, 'prop_follow')
+    hold_con(prop['bone'], 'Prop follow', prop['follow'], rest[prop['follow']].inverted(), 'prop_follow')
 if PROP_CHAINS:
     arm['prop_chain'] = 1.0
     arm.id_properties_ui('prop_chain').update(min=0, max=1, soft_min=0, soft_max=1,
@@ -1992,14 +2016,11 @@ if WEAPON_HOLD:
         t.target, t.subtarget = arm, b
         expr_driver(t, 'weight', None, f'p == {i}', props=[('p', f'["{prop}"]')])
     arm['parent_options'] = {**arm['parent_options'].to_dict(), 'weaponPivot': [lbl for lbl, _ in WEAPON_PARENTS]}
-    c = pivot.constraints.new('CHILD_OF')
-    c.name = 'Weapon hold'
-    c.target = arm
-    # MCH-weapon_space is the hand at rest, and the hand goes where its socket meets the grip
-    c.subtarget = 'MCH-weapon_space'
+    # MCH-weapon_space is the hand at rest, and the hand goes where its socket meets the grip. pivot.matrix is taken
+    # before its MCH-hold_ parent has constraints, so it is the pivot's pose relative to that parent's rest
     weapon_in_pivot = rest['weaponPivot'].inverted() @ rest['weapon']
-    c.inverse_matrix = grip_idle.inverted() @ weapon_idle @ weapon_in_pivot.inverted() @ pivot.matrix.inverted()
-    influence_driver(c, 'weapon_hold')
+    hold_con('weaponPivot', 'Weapon hold', 'MCH-weapon_space',
+             grip_idle.inverted() @ weapon_idle @ weapon_in_pivot.inverted() @ pivot.matrix.inverted(), 'weapon_hold')
 
 
 def mech_con(bone, kind, target, prop, axis_to=None):
