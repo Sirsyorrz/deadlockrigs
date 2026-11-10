@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import facegeo as fg  # noqa: E402
 from facebones import FaceBones  # noqa: E402
 from hero import ROOT, Hero  # noqa: E402
-from keys import fib_sphere, harmonic, ray_cast, rot_axis, smoothstep, sphere_fit  # noqa: E402
+from keys import (fib_sphere, harmonic, ray_cast, rot_axis, smoothstep, sphere_fit, tongue_profile,  # noqa: E402
+                  tongue_tube)
 
 SIDES = {'L': 'Left', 'R': 'Right'}
 
@@ -413,6 +414,63 @@ class Face:
         out[where[~np.isfinite(t)]] = 0
         return out
 
+    def tongue(self, cfg, keys, n_ring=14, n_len=16):
+        """A tongue for a head with none, lying on the floor of its mouth (keys.py's shape, placed by the spec), and
+        its offsets for every key in keys (unwelded head offsets). Returns co (world), tris, {key: offsets}."""
+        o = self.origin
+        tris_all = self.h.tris[self.skin[self.h.weld[self.h.tris[:, 0]]]]
+        tc = self.h.wco[self.h.weld[tris_all]]
+        top = o[2] + cfg['top'] / 1000
+
+        def cast(pts, d):
+            return ray_cast(np.asarray(pts, float), np.tile(d, (len(pts), 1)).astype(float), tc, 0.1)
+        ys = o[1] + np.linspace(cfg['tip'], cfg['root'], n_len) / 1000
+        down, _ = cast([[o[0], y, top] for y in ys], [0, 0, -1])
+        up, _ = cast([[o[0], y, top] for y in ys], [0, 0, 1])
+        assert np.isfinite(down).all() and np.isfinite(up).all(), 'tongue runs out of the mouth: move tip/root'
+        floor, ceil = top - down, np.minimum(top + up, top)
+        side, _ = cast([[o[0], y, (f + c) / 2] for y, f, c in zip(ys, floor, ceil)], [1, 0, 0])
+        u = np.linspace(0, 1, n_len)
+        prof = tongue_profile(u)
+        hw = np.minimum(cfg['width'] / 2000, 0.85 * side) * prof
+        hh = np.minimum(cfg['height'] / 2000, 0.45 * (ceil - floor)) * np.maximum(prof, 0.5)
+        cz = floor + hh * 0.85 + cfg.get('gap', 0) / 1000
+        co, tris, uu = tongue_tube(ys, cz, hw, hh, u, n_ring, 0.001, 0.002)
+        co[:, 0] += o[0]
+
+        # the followed keys move each vertex like the floor under it
+        t, ti = cast(co, [0, 0, -1])
+        assert (ti >= 0).all(), 'tongue vertex with no floor under it'
+        hit = co - np.outer(t, [0, 0, 1])
+        a, b, c = (tc[ti, k] for k in range(3))
+        v0, v1, v2 = b - a, c - a, hit - a
+        d00, d01, d11 = (v0 * v0).sum(1), (v0 * v1).sum(1), (v1 * v1).sum(1)
+        d20, d21 = (v2 * v0).sum(1), (v2 * v1).sum(1)
+        den = d00 * d11 - d01 * d01
+        bv = (d11 * d20 - d01 * d21) / den
+        bw = (d00 * d21 - d01 * d20) / den
+        bary = np.c_[1 - bv - bw, bv, bw]
+        corners = tris_all[ti]
+        follow = [k for k in keys if k in cfg['follow'] or (k.endswith('_mid') and k[:-4] in cfg['follow'])]
+        out = {k: np.zeros_like(co) for k in keys}
+        for k in follow:
+            out[k] = (keys[k][corners] * bary[:, :, None]).sum(1)
+
+        # out over the lower lip, as keys.py's: the front half slides out whole and rises to the lips, the back half
+        # stretches
+        lead = (1 - uu) ** 1.5
+        _, ring = np.unique(uu, return_inverse=True)
+        ring_z = (np.bincount(ring, weights=co[:, 2]) / np.bincount(ring))[ring]
+        lift = np.maximum(o[2] + cfg['lift'] / 1000 - ring_z, 0)
+        slide = 1 - smoothstep(0.35, 1.0, uu)
+        droop = cfg.get('droop', 6) / 1000 * np.clip(1 - uu / 0.35, 0, 1) ** 2
+        thin = -0.25 * (co[:, 2] - ring_z)
+        out['tongueOut'] = np.stack([-0.1 * (co[:, 0] - o[0]) * lead, -cfg['reach'] / 1000 * slide,
+                                     (lift + thin) * slide - droop], 1)
+        # rig.py peaks it at tongueOut 0.5: the tip reaches lip height before it slides through the lower lip
+        out['tongueOut_mid'] = np.stack([np.zeros(len(co)), np.zeros(len(co)), 0.5 * lift * slide], 1)
+        return co, tris, out
+
     def controls(self):
         c = self.spec['controls']
         lift = c.get('lift', 6) / 1000
@@ -445,11 +503,20 @@ def main():
     h = fg.from_arrays(arrays)
     face = Face(h, spec, arrays)
     keys = face.build()
+    if 'tongue' in spec:
+        for k in ('tongueOut', 'tongueOut_mid'):
+            keys.setdefault(k, np.zeros((len(h.co), 3), np.float32))
+        tongue = face.tongue(spec['tongue'], keys)
     np.savez(os.path.join(hero.data, 'keys.npz'), **keys)
     # keys.py's lip split, cut, generated mouth and tongue add vertices these keys don't have
     for f in ('keys_split.npz', 'keys_cut.npy', 'keys_mouth.npz', 'keys_tongue.npz'):
         if os.path.exists(os.path.join(hero.data, f)):
             os.remove(os.path.join(hero.data, f))
+    if 'tongue' in spec:
+        tco, ttris, tk = tongue
+        np.savez_compressed(os.path.join(hero.data, 'keys_tongue.npz'), co=tco, tris=ttris,
+                            **{'key_' + k: v.astype(np.float32) for k, v in tk.items()})
+        print('tongue', len(tco), 'verts')
     bag_path = os.path.join(hero.data, 'keys_bag.npy')
     if 'bag' in spec:
         np.save(bag_path, face.bag(spec['bag'])[h.weld])

@@ -203,7 +203,8 @@ def weights(rig, head_ob):
     W = rig['weights']
     n = len(head_ob.data.vertices)
     for name, w in W.items():
-        assert len(w) == n, (name, len(w), n)
+        # generated parts after the head's vertices (handkeys.py's tongue) keep the skinning build.py copied to them
+        assert len(w) <= n, (name, len(w), n)
         g = head_ob.vertex_groups.get(def_of(rig, name)) or head_ob.vertex_groups.new(name=def_of(rig, name))
         on = np.where(w > 1e-5)[0]
         off = np.where(w <= 1e-5)[0]

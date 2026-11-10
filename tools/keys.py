@@ -1186,6 +1186,37 @@ TONGUE_MID = 'tongueOut_mid'
 TONGUE_JAW = 'tongueOut_jawOpen'
 
 
+def tongue_profile(u):
+    """Width along a tongue (u 0 tip .. 1 root): rounded tip, full width behind it."""
+    return np.sqrt(np.clip(1 - (1 - np.minimum(u / 0.16, 1)) ** 2, 0, 1)) ** 0.7
+
+
+def tongue_tube(ys, cz, hw, hh, u, n_ring, tip_gap, root_gap):
+    """A closed tube of rings at ys (centre height cz, half width hw, half height hh). Returns co, tris and u per
+    vertex."""
+    a = np.linspace(0, 2 * np.pi, n_ring, endpoint=False)
+    sa, ca = np.sin(a), np.cos(a)
+    # flatter on top, rounder underneath
+    sz = np.sign(sa) * np.abs(sa) ** np.where(sa > 0, 0.6, 1.0)
+    rings = np.stack([hw[:, None] * ca, np.repeat(ys[:, None], n_ring, 1), cz[:, None] + hh[:, None] * sz], -1)
+    tip = np.array([[0, ys[0] - tip_gap, cz[0]]])
+    root = np.array([[0, ys[-1] + root_gap, cz[-1]]])
+    co = np.concatenate([tip, rings[1:].reshape(-1, 3), root])
+    uu = np.r_[0, np.repeat(u[1:], n_ring), 1]
+    nr = len(ys) - 1
+    tris = []
+    for j in range(n_ring):
+        k = (j + 1) % n_ring
+        tris.append((0, 1 + j, 1 + k))
+        for i in range(nr - 1):
+            a0, a1 = 1 + i * n_ring + j, 1 + i * n_ring + k
+            b0, b1 = a0 + n_ring, a1 + n_ring
+            tris += [(a0, b1, a1), (a0, b0, b1)]
+        last = 1 + (nr - 1) * n_ring
+        tris.append((last + j, len(co) - 1, last + k))
+    return co, np.array(tris), uu
+
+
 def tongue(h, rig, n_ring=14, n_len=16):
     """A tongue lying on the mouth bag floor (the heads have none): ring-by-ring along its length, each ring
     sized to the bag around it. Returns co, tris, jaw weights and u (0 tip .. 1 root) per vertex."""
@@ -1216,37 +1247,18 @@ def tongue(h, rig, n_ring=14, n_len=16):
     side = np.where(np.isfinite(side), side, 0.02 * s)
     u = np.linspace(0, 1, len(ys))
     # rounded tip, full width behind it
-    prof = np.sqrt(np.clip(1 - (1 - np.minimum(u / 0.16, 1)) ** 2, 0, 1)) ** 0.7
+    prof = tongue_profile(u)
     hw = np.minimum(0.023 * s, 0.85 * side) * np.maximum(prof, 0.0)
     hh = np.minimum(0.0065 * s, 0.45 * (np.minimum(ceil, z_top) - floor)) * np.maximum(prof, 0.5)
     # deep bags (Drifter): the tongue floats up to where it would show, the dark bag below hides the gap
     cz = np.maximum(floor + hh * 0.85, z_top - 0.016 * s - hh)
-    a = np.linspace(0, 2 * np.pi, n_ring, endpoint=False)
-    sa, ca = np.sin(a), np.cos(a)
-    # flatter on top, rounder underneath
-    sz = np.sign(sa) * np.abs(sa) ** np.where(sa > 0, 0.6, 1.0)
-    rings = np.stack([hw[:, None] * ca, np.repeat(ys[:, None], n_ring, 1), cz[:, None] + hh[:, None] * sz], -1)
-    tip = np.array([[0, ys[0] - 0.001 * s, cz[0]]])
-    root = np.array([[0, ys[-1] + 0.002 * s, cz[-1]]])
-    co = np.concatenate([tip, rings[1:].reshape(-1, 3), root])
-    uu = np.r_[0, np.repeat(u[1:], n_ring), 1]
-    nr = len(ys) - 1
-    tris = []
-    for j in range(n_ring):
-        k = (j + 1) % n_ring
-        tris.append((0, 1 + j, 1 + k))
-        for i in range(nr - 1):
-            a0, a1 = 1 + i * n_ring + j, 1 + i * n_ring + k
-            b0, b1 = a0 + n_ring, a1 + n_ring
-            tris += [(a0, b1, a1), (a0, b0, b1)]
-        last = 1 + (nr - 1) * n_ring
-        tris.append((last + j, len(co) - 1, last + k))
+    co, tris, uu = tongue_tube(ys, cz, hw, hh, u, n_ring, 0.001 * s, 0.002 * s)
     # follows the bag floor under it, which follows the jaw
     floor_v = np.setdiff1d(rig.bag_l, rig.rim_l)
     d, i = cKDTree(p[floor_v]).query(co, k=6)
     wt = 1 / np.maximum(d, 1e-4)
     w = (rig.jaw_w[floor_v][i] * wt).sum(1) / wt.sum(1)
-    return co, np.array(tris), w, uu
+    return co, tris, w, uu
 
 
 def mouth_mid_z(rig):

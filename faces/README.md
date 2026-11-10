@@ -47,6 +47,11 @@ Extra fields: `"mask": region` multiplies one move, `"sym": true` repeats it mir
 
 `"mid"`: keys that get an in-between (`<key>_mid`), so turns stay round half way. `"hold"`: a region no key moves.
 
+`"tongue"`: a generated tongue for a head with none (keys.py's shape), lying on the mouth floor under `top` (z) from
+`tip` to `root` (y), at most `width` x `height` mm, raised `gap` mm off the floor. The keys in `follow` (and their
+in-betweens) move it like the floor under it; tongueOut slides it `reach` mm out, lifts it to `lift` (z) and drops
+the tip `droop` mm (default 6). Part the lips for it with the head's own `"tongueOut"` moves.
+
 `"eyes"`: `gaze` (the left eye's look direction), `lid_axis` (the left eye's opening, corner to corner), and the look
 angles `up`, `down`, `in`, `out` (degrees), `iris` (default true). The eye looks, their in-betweens and the iris keys
 come from these.
