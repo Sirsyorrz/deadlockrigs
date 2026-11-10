@@ -518,10 +518,12 @@ class Face:
         slide = 1 - smoothstep(0.35, 1.0, uu)
         droop = cfg.get('droop', 6) / 1000 * np.clip(1 - uu / 0.35, 0, 1) ** 2
         thin = -0.25 * (co[:, 2] - ring_z)
-        out['tongueOut'] = np.stack([-0.1 * (co[:, 0] - o[0]) * lead, -cfg['reach'] / 1000 * slide,
-                                     (lift + thin) * slide - droop], 1)
+        # a followed tongueOut (the head's own key opens the jaw a little) carries the tongue with the floor too
+        out['tongueOut'] = out['tongueOut'] + np.stack([-0.1 * (co[:, 0] - o[0]) * lead, -cfg['reach'] / 1000 * slide,
+                                                        (lift + thin) * slide - droop], 1)
         # rig.py peaks it at tongueOut 0.5: the tip reaches lip height before it slides through the lower lip
-        out['tongueOut_mid'] = np.stack([np.zeros(len(co)), np.zeros(len(co)), 0.5 * lift * slide], 1)
+        out['tongueOut_mid'] = out['tongueOut_mid'] + np.stack([np.zeros(len(co)), np.zeros(len(co)),
+                                                                0.5 * lift * slide], 1)
         return co, tris, out
 
     def controls(self):

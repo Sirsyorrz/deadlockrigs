@@ -50,7 +50,8 @@ Extra fields: `"mask": region` multiplies one move, `"sym": true` repeats it mir
 `"tongue"`: a generated tongue for a head with none (keys.py's shape), lying on the mouth floor under `top` (z) from
 `tip` to `root` (y), at most `width` x `height` mm, raised `gap` mm off the floor. The keys in `follow` (and their
 in-betweens) move it like the floor under it; tongueOut slides it `reach` mm out, lifts it to `lift` (z) and drops
-the tip `droop` mm (default 6). Part the lips for it with the head's own `"tongueOut"` moves.
+the tip `droop` mm (default 6). Part the lips for it with the head's own `"tongueOut"` moves; with `tongueOut` in `follow` the tongue also rides
+the floor for them (a tongueOut that opens the jaw a little).
 
 `"bag"`: the dark mouth inside. Skin in `region` hidden from the front by over `deep` mm of mouth goes dark (`inner`
 mm marks the lips' inner faces). `spread` (deg): skin that a ray tilted that far escapes from stays light, so lip
