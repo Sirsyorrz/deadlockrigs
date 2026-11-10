@@ -764,6 +764,9 @@
   "name": "McGinnis",
   "codename": "forge",
   "model": "models/heroes_wip/mcginnis/mcginnis.vmdl",
+  "hold_clip": "game_ui_hero_info",
+  "hold_arm": "root",
+  "hold_offhand": true,
   "face": {
    "part": "face",
    "mesh": "face",
