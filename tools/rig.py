@@ -2251,9 +2251,11 @@ for o in bpy.data.objects:
         continue
     terms, props = group_terms(o.get('split_from', o.name))
     if GUN_MESH and o.name != GUN_MESH and on_weapon(o):
-        more, more_props = group_terms(GUN_MESH)
-        terms += more
-        props += [p for p in more_props if p not in props]
+        # not from a group the piece is in itself: Graves' low violence hand is the gun's alternative, not a piece
+        for t, p in zip(*group_terms(GUN_MESH)):
+            if p not in props:
+                terms.append(t)
+                props.append(p)
     if not terms:
         continue
     o.hide_set(False)
