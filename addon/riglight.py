@@ -16,8 +16,8 @@ What the game does for the ambient part, and so does the group:
   multiplied by albedo. The game also rims the direct light and occludes rims by screen depth; this only rims the
   ambient.
 - Reflections, when the map has 'Deadlock reflections' (tools/map_reflections.py): the cubemaps through the split
-  sum, scaled by the ambient's luminance over what the cubemaps saw, capped at (2 roughness + 1), 32 times that
-  under exposure control. No multiple scattering, unlike map surfaces, and none at full roughness where the
+  sum, scaled by the ambient's luminance over what the cubemaps saw, capped at 1 (the per-view cap from
+  lb_cubemap_normalization_max, which Deadlock's gameinfo.gi sets to 1), 32 under exposure control. No multiple scattering, unlike map surfaces, and none at full roughness where the
   material asks (F_NO_SPECULAR_AT_FULL_ROUGHNESS). Every term checks out against the shader, yet that reads about
   ten times too shiny next to the game, which also has screen space AO on it and its direct and rim light under
   it; REFLECTION_STRENGTH is matched to in-game screenshots by eye.
@@ -28,7 +28,7 @@ PROBE_GROUP = 'Deadlock probe light'
 REFLECTION_GROUP = 'Deadlock reflections'
 RIG_GROUP = 'Deadlock rig light'
 NODE = 'dlr_rig_light'
-VERSION = 4
+VERSION = 5
 REFLECTION_STRENGTH = 0.1
 
 # materials/dev/npr_dummy.vmat, which the engine feeds to every NPR material (game version 6821)
@@ -162,8 +162,7 @@ def add_reflections(g, reflections, inp, ambient, normal, ao, control):
     g.put(node.inputs['Specular Color'], f0)
     luma = g.vec('DOT_PRODUCT', ambient, (0.2125, 0.7154, 0.0721))
     baked = node.outputs['Baked Luma']
-    ceiling = g.math('MULTIPLY', g.math('MULTIPLY_ADD', rough, 2.0, 1.0), g.lerp(1.0, 32.0, control))
-    norm = g.math('MINIMUM', g.math('DIVIDE', luma, g.math('MAXIMUM', baked, 1e-6)), ceiling)
+    norm = g.math('MINIMUM', g.math('DIVIDE', luma, g.math('MAXIMUM', baked, 1e-6)), g.lerp(1.0, 32.0, control))
     norm = g.select(g.math('GREATER_THAN', baked, 0.0), norm, 1.0)
     kill = g.sat(g.math('MULTIPLY_ADD', g.math('SUBTRACT', rough, 0.99608), -255.0, 1.0))
     kill = g.lerp(1.0, kill, inp.outputs['No Rough Specular'])
