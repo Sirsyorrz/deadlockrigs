@@ -422,6 +422,9 @@ class Face:
             for d in ([0, -c, s], [0, -c, -s], [s, -c, 0], [-s, -c, 0]):
                 t, _ = ray_cast(self.p[where], np.tile(d, (len(where), 1)), tris, 0.3)
                 out[where[~np.isfinite(t)]] = 0
+        # rays from the back of a pocket (Calico's) slip out through the slit between closed lips
+        if 'dark' in cfg:
+            out[(self.region(cfg['dark']) > 0.5) & self.skin] = 2
         return out
 
     def stick(self, out, cfg):
