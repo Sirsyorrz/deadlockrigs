@@ -448,7 +448,9 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
                 at = Matrix.Translation(palm) @ turn @ Matrix.Translation(-grip) @ at
                 return rest[anchor].inverted() @ at
             giant = max(1.0, B['head'].head_local.z / 2.094 if 'head' in B else 1.0)
-            if near[grip] < 0.2 * giant:
+            # heroes.json "hold_hand": false when the hold clip leaves it alone (Baba's cane stands on the ground by
+            # her pigeon): its grip socket is on it anyway, so the near test alone would hang it off her hand
+            if near[grip] < 0.2 * giant and hero.cfg.get('hold_hand', True):
                 # the parts (hammer, cylinder) take the idle's pose (below, once the hold is known); the weapon itself
                 # only moves through the hold, so with it off the weapon is back at the origin
                 # the game IKs either the hand or its grip socket (weapon_hand_R, under hand_R) onto the weapon's

@@ -72,9 +72,8 @@
    ],
    "builder": "handkeys.py"
  },
- "upright": [
-   "offhand"
-  ]
+ "hold_clip": "game_shoot_idle",
+ "hold_hand": false
  },
  {
   "slug": "bebop",
