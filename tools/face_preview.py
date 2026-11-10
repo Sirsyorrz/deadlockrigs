@@ -2,7 +2,7 @@
 
 Renders a hand-made face (handkeys.py) straight from data/keys.npz on the base build's head, without rebuilding:
 one image per key (key or key=value, '+' joins keys into one image) per view, and a contact sheet (sheet.png).
-views: side, front, 34 (three-quarter), below; centre/size frame the head in mm from the head bone.
+views: side, rside, front, 34 (three-quarter), below; centre/size frame the head in mm from the head bone.
 regions (comma list): heat maps of data/regions.npz (handkeys.py --regions) instead of keys.
 """
 import math
@@ -48,6 +48,10 @@ for name in keys.files:
     off[:len(k)] = k
     kb.data.foreach_set('co', (base + off @ inv.T).astype(np.float32).ravel())
 
+# HIDE=cat_v2,body: objects in the way (Calico's cat on her shoulder, glasses on the body mesh)
+for name in filter(None, os.environ.get('HIDE', '').split(',')):
+    bpy.data.objects[name].hide_render = True
+
 scene.render.engine = 'BLENDER_EEVEE'
 scene.render.resolution_x = scene.render.resolution_y = 640
 scene.view_settings.view_transform = 'Standard'
@@ -66,7 +70,7 @@ cam.data.ortho_scale = size
 cam.data.clip_end = 100
 scene.collection.objects.link(cam)
 scene.camera = cam
-VIEWS = {'front': (0, 0), 'side': (90, 0), '34': (40, 10), 'below': (25, -35), 'back34': (140, 10)}
+VIEWS = {'front': (0, 0), 'side': (90, 0), '34': (40, 10), 'rside': (-90, 0), 'below': (25, -35), 'back34': (140, 10)}
 
 
 def aim(view):

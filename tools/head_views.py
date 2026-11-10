@@ -45,6 +45,8 @@ if os.environ.get('ONLY'):
     # ONLY=Head: just that mesh, for faces under hats and hair (Wraith)
     for o in scene.objects:
         if o.type == 'MESH':
+            # rig bodygroup/parts drivers would show it again
+            o.driver_remove('hide_render')
             o.hide_render = o.name != os.environ['ONLY']
 for o in scene.objects:
     if o.type == 'MESH' and o.data.shape_keys:
