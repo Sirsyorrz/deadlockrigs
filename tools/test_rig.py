@@ -950,7 +950,7 @@ if arm.get('body_groups'):
             arm[f'bodygroup_{g}'] = i
             update()
             seen.setdefault(shown(), []).append(choices[i])
-        arm[f'bodygroup_{g}'] = 0
+        arm[f'bodygroup_{g}'] = arm.get('bodygroup_defaults', {}).get(g, 0)
         if len(seen) < 2:
             same[g] = list(choices)
     update()

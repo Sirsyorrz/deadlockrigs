@@ -73,7 +73,10 @@
    "builder": "handkeys.py"
  },
  "hold_clip": "game_shoot_idle",
- "hold_hand": false
+ "hold_hand": false,
+ "body_group_defaults": {
+  "default": "hexing_brew"
+ }
  },
  {
   "slug": "bebop",

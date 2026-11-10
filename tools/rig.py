@@ -2158,7 +2158,9 @@ if WEAPON_FINGERS:
     HAND_POSES['Weapon'] = WEAPON_FINGERS
 
 # bodygroups: the game's mesh switches (Rat King's banner and sewer lid, his gun's ammo, his guard rats) as
-# bodygroup_<group> properties, 0 the game's default. A mesh shows when each group that lists it has it in its choice.
+# bodygroup_<group> properties, 0 the game's default unless heroes.json "body_group_defaults" names another choice
+# (Baba's teapot on the ground as on the hero select screen). A mesh shows when each group that lists it has it in
+# its choice.
 BODY_GROUPS = bodygroups.body_groups(open(hero.vmdl).read()) if os.path.exists(hero.vmdl) else []
 # a group whose choices differ only in meshes the build drops (Violet's jar) switches nothing
 HAVE_MESHES = {o.name for o in bpy.data.objects if o.type == 'MESH'}
@@ -2168,8 +2170,11 @@ arm['body_groups'] = {g: [c for c, _ in choices] for g, choices in BODY_GROUPS}
 # named combinations of groups (heroes.json "part_sets": Bebop's arm as hand, gun or bare forearm)
 arm['part_sets'] = {k: v for k, v in hero.cfg.get('part_sets', {}).items()
                     if all(g in arm['body_groups'] for o in v.values() for g in o)}
+arm['bodygroup_defaults'] = {}
 for gi, (g, choices) in enumerate(BODY_GROUPS):
-    arm[f'bodygroup_{g}'] = 0
+    want = hero.cfg.get('body_group_defaults', {}).get(g)
+    default = [c for c, _ in choices].index(want) if want else 0
+    arm[f'bodygroup_{g}'] = arm['bodygroup_defaults'][g] = default
     arm.id_properties_ui(f'bodygroup_{g}').update(min=0, max=len(choices) - 1,
                                                   description=' / '.join(c for c, _ in choices))
 
