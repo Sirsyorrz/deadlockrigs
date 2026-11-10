@@ -9,6 +9,9 @@ same weight, so the rest pose is unchanged. Boxes and pivots are in mm from the 
                            "tail": [x, y, z]}}
 
 "mesh" limits a part to one mesh (Paradox's hourglass, not the glass around it); "limits" see pose().
+
+A soft part (Krill's snout, part of his head skin) has "sphere": [x, y, z, r, soft] instead of boxes: it takes the
+share 1 - smoothstep(r, r + soft, distance) of each vertex's bone weight, so the skin bends into it.
 """
 import math
 
@@ -25,7 +28,10 @@ def load(cfg, arm):
     out = {}
     for name, p in parts.items():
         out[name] = dict(p, head=origin + Vector(p['head']) / 1000, tail=origin + Vector(p['tail']) / 1000,
-                         boxes=[np.array(b, float).reshape(2, 3) / 1000 + np.array(origin) for b in p['boxes']])
+                         boxes=[np.array(b, float).reshape(2, 3) / 1000 + np.array(origin) for b in p.get('boxes', [])])
+        if 'sphere' in p:
+            x, y, z, r, soft = p['sphere']
+            out[name]['sphere'] = (np.array((x, y, z)) / 1000 + np.array(origin), r / 1000, soft / 1000)
     return out
 
 
@@ -68,6 +74,13 @@ def pieces(o, bone, to_arm):
     return out, w
 
 
+def soft_share(o, part, w, to_arm):
+    centre, r, soft = part['sphere']
+    co = np.array([tuple(to_arm @ v.co) for v in o.data.vertices])
+    t = np.clip((np.linalg.norm(co - centre, axis=1) - r) / soft, 0, 1)
+    return w * (1 - t * t * (3 - 2 * t))
+
+
 def weights(parts, arm):
     """Moves each part's pieces onto its bone; returns {part: vertex count}."""
     counts = {n: 0 for n in parts}
@@ -81,6 +94,18 @@ def weights(parts, arm):
             src = o.vertex_groups[bone]
             for name, p in parts.items():
                 if p['bone'] != bone or p.get('mesh', o.name) != o.name:
+                    continue
+                if 'sphere' in p:
+                    share = soft_share(o, p, w, to_arm)
+                    g = o.vertex_groups.get(name) or o.vertex_groups.new(name=name)
+                    for i in np.where(share > 1e-4)[0]:
+                        g.add([int(i)], float(share[i]), 'REPLACE')
+                        left = float(w[i] - share[i])
+                        if left > 1e-4:
+                            src.add([int(i)], left, 'REPLACE')
+                        else:
+                            src.remove([int(i)])
+                    counts[name] += int((share > 1e-4).sum())
                     continue
                 take = [comp for comp, c in found if any(np.all(c >= b[0]) and np.all(c <= b[1]) for b in p['boxes'])]
                 if not take:

@@ -888,7 +888,16 @@
     1.0707
    ]
   },
-  "rider_idle": true
+  "rider_idle": true,
+  "mech_parts": {
+   "snout": {
+    "bone": "head",
+    "mesh": "body",
+    "sphere": [0, -470, -150, 50, 110],
+    "head": [0, -330, -150],
+    "tail": [0, -500, -150]
+   }
+  }
  },
  {
   "slug": "nurse_harrow",
