@@ -4,6 +4,9 @@
   "name": "Abrams",
   "codename": "atlas",
   "model": "models/heroes_wip/abrams/abrams.vmdl",
+  "hold_arm": "root",
+  "hold_offhand": true,
+  "hold_clip": "game_hideout_stand_idle",
   "props": [
    {
     "bone": "object_hand_L",

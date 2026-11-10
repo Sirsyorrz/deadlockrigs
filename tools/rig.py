@@ -301,7 +301,9 @@ for prop in PROPS:
     held = [b for b in descendants(prop['bone']) if b not in chain and b != prop.get('chain_end')]
     extra = chain + [prop['chain_end'], prop['anchor'], B[chain[0]].parent.name] if chain else []
     extra += [prop['follow']] if 'follow' in prop else []
-    basis, idle = sample_hold(prop['bone'], held + extra)
+    # from the weapon's hold clip too, so a book riding the offhand matches where hold_offhand puts that hand
+    basis, idle = sample_hold(prop['bone'], held + extra,
+                              (hero.cfg['hold_clip'],) * ('hold_clip' in hero.cfg) + HOLD_CLIPS)
     if basis is None:
         continue
     # the chain end's own keyed offset is part of how it meets the prop
