@@ -391,6 +391,14 @@
   "name": "Graves",
   "codename": "necro",
   "model": "models/heroes_wip/necro/necro.vmdl",
+  "hold_clip": "game_weapon_stand_idle",
+  "hold_arm": "root",
+  "hold_offhand": true,
+  "props": [
+   {
+    "bone": "jar"
+   }
+  ],
   "face": {
    "part": "head",
    "mesh": "head"
