@@ -2226,15 +2226,18 @@ def group_terms(name):
     return terms, props
 
 
+def skinned_to(o, names):
+    """Mostly skinned to these bones?"""
+    idx = {g.index for g in o.vertex_groups if g.name in names}
+    if not idx:
+        return False
+    w = [sum(g.weight for g in v.groups if g.group in idx) for v in o.data.vertices]
+    return sum(w) > 0.5 * len(w)
+
+
 def on_weapon(o):
     """Mostly skinned to the weapon's bones (its ammo belts)?"""
-    if 'weaponPivot' not in B:
-        return False
-    gun = {g.index for g in o.vertex_groups if g.name in set(descendants('weaponPivot'))}
-    if not gun:
-        return False
-    w = [sum(g.weight for g in v.groups if g.group in gun) for v in o.data.vertices]
-    return sum(w) > 0.5 * len(w)
+    return 'weaponPivot' in B and skinned_to(o, set(descendants('weaponPivot')))
 
 
 # the gun's mesh, the biggest on its bones: its other pieces hide with it (Rat King's ammo belts float without it)
@@ -2257,6 +2260,56 @@ for o in bpy.data.objects:
     for path in ('hide_viewport', 'hide_render'):
         expr_driver(o, path, None, '1 - ' + ' * '.join(terms), props=props)
     print('bodygroup', o.name, ' * '.join(terms))
+
+
+def hide_with(o, prop):
+    """o also hides while prop is 0, on top of a bodygroup driver it may have."""
+    o.hide_set(False)
+    for path in ('hide_viewport', 'hide_render'):
+        fc = o.animation_data and o.animation_data.drivers.find(path)
+        if not fc:
+            expr_driver(o, path, None, 'show < 0.5', props=[('show', f'["{prop}"]')])
+            continue
+        d = fc.driver
+        prop_var(d, 'show', f'["{prop}"]')
+        d.expression = f'max({d.expression}, show < 0.5)'
+        assert d.is_simple_expression, d.expression
+
+
+# Parts toggles for what no bodygroup switches: the weapon and held props. A part with its own meshes (Rem's pillow)
+# hides by show_part_<key>; one inside the body mesh (Billy's bottle) by its bones' scale, as the game's clips do,
+# so clips that show it still do (rig['part_bones'])
+OWN_MESHES = [o for o in bpy.data.objects if o.type == 'MESH' and not o.name.startswith('WGT-')
+              and not o.get('dlrig_extra') and o.find_armature() == arm]
+PART_TOGGLES, PART_BONES = {}, {}
+# under weaponPivot, or skinned straight to a hand socket (Haze's pistols on weapon_hand_L/R, Kelvin's weapon_bone_R,
+# Vindicta's weapon_bone)
+GUN_ROOT = re.compile(r'weaponPivot|weapon_?(hand_[LR]|bone(_[LR])?)', re.I)
+GUN_BONES = {d for b in B if GUN_ROOT.fullmatch(b.name) for d in descendants(b.name)}
+GUNS = [o for o in OWN_MESHES if skinned_to(o, GUN_BONES)]
+if GUNS and not all(o.animation_data and o.animation_data.drivers.find('hide_viewport') for o in GUNS):
+    PART_TOGGLES['weapon'] = 'Weapon'
+    for o in GUNS:
+        hide_with(o, 'show_part_weapon')
+    print('part weapon', [o.name for o in GUNS])
+for prop in PROPS:
+    key = re.sub(r'\W+', '_', prop['bone'])
+    names = set(descendants(prop['bone'])) - set(prop.get('chain', [])) - {prop.get('chain_end')}
+    PART_TOGGLES[key] = prop.get('name') or prop['bone'].split('_')[0].capitalize()
+    obs = [o for o in OWN_MESHES if o not in GUNS and skinned_to(o, names)]
+    for o in obs:
+        hide_with(o, f'show_part_{key}')
+    if not obs:
+        # the bones the idle hides, or the prop's own bone
+        PART_BONES[key] = sorted(b for b in names if b in PROP_POSE and max(map(abs, PROP_POSE[b][7:10])) < 0.05) \
+            or [prop['bone']]
+    print('part', key, PART_TOGGLES[key], [o.name for o in obs] or PART_BONES[key])
+for key, label in PART_TOGGLES.items():
+    if key not in PART_BONES:
+        arm[f'show_part_{key}'] = 1
+        arm.id_properties_ui(f'show_part_{key}').update(min=0, max=1, description=f'Show the {label.lower()}')
+arm['part_toggles'] = PART_TOGGLES
+arm['part_bones'] = PART_BONES
 
 # pose sliders: an action holding the sampled stretch, played by an Action constraint on each bone (after its own
 # pose, the default one the stretch starts from, so clips and posing still work) with slider_<name> as the

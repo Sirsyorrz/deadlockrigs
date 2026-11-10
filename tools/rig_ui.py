@@ -1827,7 +1827,7 @@ class DLRIG_PT_parts(bpy.types.Panel):
     def poll(cls, context):
         ob = rig(context)
         return ob is not None and bool(ob.get('body_groups') or ob.get('sliders') or ob.get('extra_models')
-                                       or ob.get('stages') or 'glow' in ob)
+                                       or ob.get('stages') or ob.get('part_toggles') or 'glow' in ob)
 
     def draw(self, context):
         ob = rig(context)
@@ -1850,6 +1850,13 @@ class DLRIG_PT_parts(bpy.types.Panel):
                 on = all(ob.get(f'bodygroup_{g}', 0) == chosen.get(g, 0) for g in groups)
                 op = row.operator('dlrig.part_set', text=oname, depress=on)
                 op.set_name, op.option = sname, oname
+        for key, label in ob.get('part_toggles', {}).items():
+            row = self.layout.row(align=True)
+            row.label(text=label)
+            shown = part_shown(ob, key)
+            for i, lbl in enumerate(('Hide', 'Show')):
+                op = row.operator('dlrig.show_part', text=lbl, depress=shown == i)
+                op.key, op.show = key, bool(i)
         if 'glow' in ob:
             self.layout.prop(ob, '["glow"]', text='Glow', slider=True)
         for sname in ob.get('sliders', []):
@@ -1936,6 +1943,41 @@ class DLRIG_OT_show_extra(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def part_shown(ob, key):
+    bones = ob.get('part_bones', {}).get(key)
+    if bones is None:
+        return int(ob.get(f'show_part_{key}', 1))
+    pbs = ob.pose.bones
+    return int(all(min(pbs[b].scale) > 0.05 for b in bones if b in pbs))
+
+
+class DLRIG_OT_show_part(bpy.types.Operator):
+    """Show or hide this part (a part inside the body mesh hides by its bones' scale, as the game's clips do it)"""
+    bl_idname = 'dlrig.show_part'
+    bl_label = 'Show Part'
+    bl_options = {'REGISTER', 'UNDO'}
+    key: bpy.props.StringProperty()
+    show: bpy.props.BoolProperty()
+
+    def execute(self, context):
+        ob = rig(context)
+        bones = ob.get('part_bones', {}).get(self.key)
+        if bones is None:
+            ob[f'show_part_{self.key}'] = int(self.show)
+            if autokey(context):
+                ob.keyframe_insert(f'["show_part_{self.key}"]', group='Parts')
+        else:
+            for b in bones:
+                pb = ob.pose.bones.get(b)
+                if pb is None:
+                    continue
+                pb.scale = (float(self.show),) * 3
+                if autokey(context):
+                    pb.keyframe_insert('scale', group=b)
+        ob.update_tag()
+        return {'FINISHED'}
+
+
 class DLRIG_OT_body_group(bpy.types.Operator):
     """Show this bodygroup choice"""
     bl_idname = 'dlrig.body_group'
@@ -2010,7 +2052,7 @@ classes = [DLRIG_OT_expression, DLRIG_OT_reset_face, DLRIG_OT_key_face, DLRIG_OT
            DLRIG_OT_idle_pose, DLRIG_OT_snap, DLRIG_OT_mech_snap, DLRIG_OT_bake_ik, DLRIG_OT_bake_fk, DLRIG_OT_switch_parent, DLRIG_OT_switch_follow,
            DLRIG_OT_game_anim, DLRIG_OT_idle_layer, DLRIG_OT_remove_idle,
            DLRIG_OT_bake_physics, DLRIG_OT_clear_physics, DLRIG_OT_body_group, DLRIG_OT_part_set, DLRIG_OT_stage,
-           DLRIG_OT_show_extra,
+           DLRIG_OT_show_extra, DLRIG_OT_show_part,
            DLRIG_PT_main, DLRIG_PT_layers, DLRIG_PT_body, DLRIG_PT_ik, DLRIG_PT_follow, DLRIG_PT_riders,
            DLRIG_PT_expressions, DLRIG_PT_hands, DLRIG_PT_weapon, DLRIG_PT_parts, DLRIG_PT_game, DLRIG_PT_physics]
 # a panel per slider group of any rig in the file; the add-on runs this again after appending another rig

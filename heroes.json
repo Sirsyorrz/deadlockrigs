@@ -9,6 +9,7 @@
   "hold_clip": "game_hideout_stand_idle",
   "props": [
    {
+    "name": "Book",
     "bone": "object_hand_L",
     "chain": [
      "chain_0",

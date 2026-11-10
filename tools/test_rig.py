@@ -1057,6 +1057,32 @@ if placed and RUN:
     reset()
     check(f'extra model {arm["extra_models"][key]} stays upright in a clip', tilt < 1, f'{tilt:.1f} deg')
 
+# parts toggles: Hide hides the part's meshes (or collapses its bones' pieces of the body), Show brings them back
+for key, label in arm.get('part_toggles', {}).items():
+    reset()
+    bones = arm.get('part_bones', {}).get(key)
+    prop = f'["show_part_{key}"]'
+    obs = [o for o in bpy.data.objects if o.type == 'MESH' and o.animation_data and any(
+        v.targets[0].data_path == prop for fc in o.animation_data.drivers for v in fc.driver.variables)]
+    body = [o for o in bpy.data.objects if o.type == 'MESH' and o.find_armature() == arm and not o.hide_viewport
+            and not o.name.startswith('WGT-')]
+    seen = []
+    for show in (False, True, False):
+        bpy.ops.dlrig.show_part(key=key, show=show)
+        update()
+        seen.append((tuple(o.hide_viewport for o in obs), [verts(o) for o in body] if bones else []))
+    if bones:
+        moved = sum(int((np.linalg.norm(a - b, axis=1) > 1e-4).sum()) for a, b in zip(seen[0][1], seen[1][1]))
+        back = sum(int((np.linalg.norm(a - b, axis=1) > 1e-6).sum()) for a, b in zip(seen[0][1], seen[2][1]))
+        ok, detail = moved > 20 and not back, f'{len(bones)} bones, {moved} verts shown, {back} off after hiding'
+    else:
+        ok = obs and all(seen[0][0]) and not any(seen[1][0]) and all(seen[2][0])
+        detail = f'{len(obs)} meshes'
+    if not bones:
+        arm[f'show_part_{key}'] = 1
+    reset()
+    check(f'part {label} hides and shows', ok, detail)
+
 # stages: each shows its own meshes only, and its controls
 for key, i in arm.get('stage_models', {}).items():
     reset()
