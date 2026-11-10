@@ -357,7 +357,8 @@
   },
   "face": {
    "part": "Head",
-   "mesh": "Head"
+   "mesh": "Head",
+   "builder": "handkeys.py"
   },
   "extra_models": {
    "Star Dagger": {
