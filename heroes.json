@@ -1322,6 +1322,9 @@
   "name": "The Doorman",
   "codename": "doorman",
   "model": "models/heroes_wip/doorman_v2/doorman.vmdl",
+  "hold_arm": "root",
+  "hold_offhand": true,
+  "hold_clip": "game_out_of_combat_stand_idle",
   "face": {
    "part": "head",
    "mesh": "head",
