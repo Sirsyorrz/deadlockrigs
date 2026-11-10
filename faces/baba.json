@@ -2,13 +2,15 @@
  "eyes": {"gaze": [0, -1, 0], "lid_axis": [1, 0, 0], "up": 12, "down": 12, "in": 16, "out": 16},
  "regions": {
   "glasses": {"pieces_near": {"box": [0, -196, 1], "size": [6, 8, 6], "soft": 0.2}},
+  "upper_lip": {"geo": [0, -141, -88], "r": 20, "soft": 8},
+  "lower_lip": {"geo": [0, -140, -97], "r": 22, "soft": 8},
   "upper_lock": {"any": [
-   {"box": [0, -140, -60], "size": [31, 200, 31], "soft": 0.05},
+   "upper_lip",
    {"half": [0, 0, -62], "n": [0, 0, 1], "soft": 3},
    {"half": [0, -70, 0], "n": [0, 1, 0], "soft": 3},
    {"half": [0, 0, -168], "n": [0, 0, -1], "soft": 3}
   ]},
-  "chin": {"box": [0, -138, -125], "size": [45, 30, 16], "soft": 0.3},
+  "chin": {"any": ["lower_lip", {"box": [0, -138, -125], "size": [45, 30, 16], "soft": 0.3}]},
   "jaw": {"all": [{"piece": "skin"}, {"harmonic": {"one": "chin", "zero": "upper_lock"}}]},
   "upper_skin": {"all": [{"piece": "skin"}, {"not": {"ramp": [0.05, 0.4], "of": "jaw"}}]},
   "lower_skin": {"all": [{"piece": "skin"}, {"ramp": [0.05, 0.4], "of": "jaw"}]},
@@ -31,13 +33,13 @@
   "nose_wing_{s}": {"all": ["upper_skin", {"box": [22, -178, -62], "size": [14, 18, 16], "soft": 0.8}]}
  },
  "hold": "glasses",
- "bag": {"region": {"box": [0, -115, -83], "size": [42, 45, 32], "soft": 0.05}, "inner": 3, "deep": 7},
+ "bag": {"region": {"box": [0, -105, -88], "size": [45, 60, 45], "soft": 0.05}, "inner": 1, "deep": 4},
  "keys": {
-  "jawOpen": [{"turn": "jaw", "about": "jaw_0", "axis": [1, 0, 0], "deg": 14}],
-  "mouthClose": [{"turn": "jaw", "about": "jaw_0", "axis": [1, 0, 0], "deg": -7}],
+  "jawOpen": [{"turn": "jaw", "about": [0, -30, -80], "axis": [1, 0, 0], "deg": 14}],
+  "mouthClose": [{"turn": "jaw", "about": [0, -30, -80], "axis": [1, 0, 0], "deg": -7}],
   "jawForward": [{"move": "jaw", "by": [0, -8, 0]}],
-  "jawLeft": [{"turn": "jaw", "about": "jaw_0", "axis": [0, 0, 1], "deg": 5}],
-  "jawRight": [{"turn": "jaw", "about": "jaw_0", "axis": [0, 0, 1], "deg": -5}],
+  "jawLeft": [{"turn": "jaw", "about": [0, -30, -80], "axis": [0, 0, 1], "deg": 5}],
+  "jawRight": [{"turn": "jaw", "about": [0, -30, -80], "axis": [0, 0, 1], "deg": -5}],
   "eyeBlink{S}": [{"lid": "lid_up_{s}", "eye": "{s}", "close": 0.85}, {"lid": "lid_lo_{s}", "eye": "{s}", "close": 0.2, "part": "lower"}],
   "eyeWide{S}": [{"turn": "lid_up_{s}", "about": "eye_{s}", "axis": "lid_{s}", "deg": -8}, {"turn": "lid_lo_{s}", "about": "eye_{s}", "axis": "lid_{s}", "deg": 4}],
   "eyeSquint{S}": [{"lid": "lid_lo_{s}", "eye": "{s}", "close": 0.3, "part": "lower"}, {"lid": "lid_up_{s}", "eye": "{s}", "close": 0.1}, {"move": "cheek_{s}", "by": [0, 0, 4]}],
