@@ -1398,6 +1398,9 @@
   "name": "Victor",
   "codename": "frank",
   "model": "models/heroes_wip/frank/frank.vmdl",
+  "hold_clip": "game_weapon_stand_idle",
+  "hold_arm": "root",
+  "hold_offhand": true,
   "face": {
    "part": "frank",
    "mesh": "frank",
