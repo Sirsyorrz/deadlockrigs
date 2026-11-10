@@ -15,9 +15,9 @@ resolutions; the widths are for BLOOM_REFERENCE_WIDTH. Pixels of materials with 
 signs, lamps; the BLOOM_AOV pass the map build writes) skip the threshold and bloom by their colour times the amount,
 as citadel's bloom_downsample.vfx does; the scale is fitted to a game screenshot.
 
-Vignette: from the shader, the radius is where it starts and radius + feather where it is full, over a superellipse in
-[-1, 1] screen space; strength below 0 darkens toward 1 + strength. The roundness to superellipse exponent mapping is
-not in the shader (it is set on the CPU) and is a guess: 2 / roundness, an ellipse at 1, a rectangle toward 0.
+Vignette: a superellipse in [-1, 1] screen space, clear inside the radius and full at radius + 2 x feather, with
+exponent 2 / (0.25 + 0.75 roundness); strength below 0 darkens toward 1 + strength, above 0 adds 3 strength^2. The
+constants are set on the CPU, in materialsystem2.dll where it fills VignetteConstantBuffer_t.
 """
 import bpy
 
@@ -159,7 +159,8 @@ def build_group(p):
     lit = vec('ADD', exposed, vec('SCALE', bloom, bloom_on, -1000, -600), -800)
 
     v = VIGNETTE
-    power = 2 / max(v['roundness'], 0.01)
+    power = 2 / (0.25 + 0.75 * min(max(v['roundness'], 0.0), 1.0))
+    feather = max(2 * v['feather'], 0.001)
     coords = nodes.new('CompositorNodeImageCoordinates')
     coords.location = (-2600, -1400)
     links.new(scene, coords.inputs[0])
@@ -168,16 +169,17 @@ def build_group(p):
     dx, dy, _ = split(vec('ABSOLUTE', centred, x=-2000, y=-1400), -1800, -1400)
     radius = math('POWER', math('ADD', math('POWER', dx, power, -1600, -1300), math('POWER', dy, power, -1600, -1500),
                                 -1400, -1400), 1 / power, -1200, -1400)
-    edge = math('DIVIDE', math('SUBTRACT', radius, v['radius'], -1000, -1400), v['feather'], -800, -1400, clamp=True)
+    edge = math('DIVIDE', math('SUBTRACT', radius, max(v['radius'], 0.01), -1000, -1400), feather, -800, -1400,
+                clamp=True)
     smooth = math('MULTIPLY', math('MULTIPLY', edge, edge, -600, -1300), mad(edge, -2.0, 3.0, -600, -1500), -400, -1400)
     s = v['strength']
     vignette_on = value('Vignette', 1.0, -400, -1600)
     amount = math('MULTIPLY', smooth, vignette_on, -200, -1400)
-    darken = mad(amount, -abs(s), 1.0, 0, -1400)
+    darken = mad(amount, -min(max(-s, 0.0), 1.0), 1.0, 0, -1400)
     vignetted = vec('SCALE', lit, darken, -600)
     if s > 0:
-        vignetted = vec('ADD', vignetted, vec('SCALE', (1.0, 1.0, 1.0), math('MULTIPLY', amount, s, 0, -1600),
-                                              -400, -200), -400)
+        glow = math('MULTIPLY', amount, 3 * min(s, 1.0) ** 2, 0, -1600)
+        vignetted = vec('ADD', vignetted, vec('SCALE', (1.0, 1.0, 1.0), glow, -400, -200), -400)
 
     x = vec('MINIMUM', vec('SCALE', vignetted, SHADER_EXPOSURE, -400), white, -1000)
     ax = vec('SCALE', x, a, -800)
