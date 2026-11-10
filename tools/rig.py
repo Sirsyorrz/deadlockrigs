@@ -303,7 +303,7 @@ for prop in PROPS:
     extra += [prop['follow']] if 'follow' in prop else []
     # from the weapon's hold clip too, so a book riding the offhand matches where hold_offhand puts that hand
     basis, idle = sample_hold(prop['bone'], held + extra,
-                              (hero.cfg['hold_clip'],) * ('hold_clip' in hero.cfg) + HOLD_CLIPS)
+                              (hero.cfg.get('hold_clip'),) * ('hold_clip' in hero.cfg) + HOLD_CLIPS)
     if basis is None:
         continue
     # the chain end's own keyed offset is part of how it meets the prop
