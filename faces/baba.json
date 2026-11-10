@@ -37,7 +37,7 @@
  "hold": "glasses",
  "tongue": {"tip": -128, "root": -86, "top": -92, "width": 34, "height": 11, "gap": 5, "lift": -94, "reach": 45, "droop": 10,
             "follow": ["jawOpen", "mouthClose", "jawForward", "jawLeft", "jawRight"]},
- "bag": {"region": {"box": [0, -105, -88], "size": [45, 60, 45], "soft": 0.05}, "inner": 1, "deep": 4},
+ "bag": {"region": {"box": [0, -105, -88], "size": [45, 60, 45], "soft": 0.05}, "inner": 1, "deep": 4, "cap": [0, -76, -90]},
  "keys": {
   "jawOpen": [{"turn": "jaw", "about": [0, -30, -80], "axis": [1, 0, 0], "deg": 14}],
   "mouthClose": [{"turn": "jaw", "about": [0, -30, -80], "axis": [1, 0, 0], "deg": -7}],

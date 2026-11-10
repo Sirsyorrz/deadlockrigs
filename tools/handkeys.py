@@ -414,6 +414,32 @@ class Face:
         out[where[~np.isfinite(t)]] = 0
         return out
 
+    def bag_cap(self, at):
+        """The skin's hole nearest at (mm): a bag open at the back shows the body behind it through an open mouth.
+        Returns the hole's border as one unwelded vertex per welded one, in order, for build.py to close."""
+        t = self.h.weld[self.h.tris]
+        t = t[self.skin[t[:, 0]]]
+        e, n = np.unique(np.sort(np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]), 1), axis=0,
+                         return_counts=True)
+        nb = {}
+        for a, b in e[n == 1]:
+            nb.setdefault(a, []).append(b)
+            nb.setdefault(b, []).append(a)
+        q = self.origin + np.asarray(at, float) / 1000
+        ends = np.array(list(nb))
+        start = ends[np.argmin(np.linalg.norm(self.p[ends] - q, axis=1))]
+        loop, prev = [start], None
+        while True:
+            nxt = [v for v in nb[loop[-1]] if v != prev]
+            assert len(nb[loop[-1]]) == 2 and len(loop) < 500, 'bag cap: the hole border is not a simple loop'
+            if nxt[0] == start:
+                break
+            prev = loop[-1]
+            loop.append(nxt[0])
+        first = np.full(self.nw, -1)
+        first[self.h.weld[::-1]] = np.arange(len(self.h.weld))[::-1]
+        return first[loop]
+
     def tongue(self, cfg, keys, n_ring=14, n_len=16):
         """A tongue for a head with none, lying on the floor of its mouth (keys.py's shape, placed by the spec), and
         its offsets for every key in keys (unwelded head offsets). Returns co (world), tris, {key: offsets}."""
@@ -522,6 +548,11 @@ def main():
         np.save(bag_path, face.bag(spec['bag'])[h.weld])
     elif os.path.exists(bag_path):
         os.remove(bag_path)
+    cap_path = os.path.join(hero.data, 'keys_bag_cap.npy')
+    if 'cap' in spec.get('bag', {}):
+        np.save(cap_path, face.bag_cap(spec['bag']['cap']))
+    elif os.path.exists(cap_path):
+        os.remove(cap_path)
     json.dump(face.controls(), open(os.path.join(hero.data, 'face.json'), 'w'), indent=1)
     print('hand-made keys', len(keys))
     rig_files = [os.path.join(hero.data, f) for f in ('facerig.json', 'facerig.npz')]

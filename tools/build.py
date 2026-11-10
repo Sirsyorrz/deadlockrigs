@@ -236,6 +236,20 @@ if hero.face and os.path.exists(bag_path):
             continue
         if all(bag[v] for v in poly.vertices) and any(bag[v] == 2 for v in poly.vertices):
             poly.material_index = mi
+    cap_path = os.path.join(hero.data, 'keys_bag_cap.npy')
+    if os.path.exists(cap_path):
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bm.verts.ensure_lookup_table()
+        cap = bm.faces.new([bm.verts[int(v)] for v in np.load(cap_path)])
+        cap.material_index = mi
+        cap.normal_update()
+        # facing the front, into the mouth
+        if (head.matrix_world.to_3x3() @ cap.normal).y > 0:
+            cap.normal_flip()
+        bm.to_mesh(me)
+        bm.free()
+        print('closed the back of the mouth bag:', len(np.load(cap_path)), 'vertices')
 
 # heroes.json "material": the game swaps in a material of its own (Ivy's stone form is her model in a particle with a
 # stone override), decompiled next to the raw export: its colour texture in its tint on every mesh
