@@ -13,6 +13,7 @@ python tools/mapbuild.py <map> [options]
 The map is rebuilt only when the game's version or the map's archive changed since the last build (or with --force).
 """
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -407,8 +408,13 @@ class MapBuilder(Builder):
     def decompile_textures(self, m, vpks, paths, folder):
         dest = os.path.join(m.lighting, folder)
         wanted = sorted(paths)
+
+        # Source2Viewer writes the game's folder tree, which in a deep work folder goes past Windows' 260 character
+        # MAX_PATH; Python reads those but Blender's image loader can't, so each file moves to a short name
+        def flat(p):
+            return os.path.join(dest, hashlib.sha1(p.encode()).hexdigest()[:16] + '.png')
         for vpk in vpks:
-            missing = [p for p in wanted if not os.path.exists(os.path.join(dest, os.path.splitext(p)[0] + '.png'))]
+            missing = [p for p in wanted if not os.path.exists(flat(p))]
             if not missing:
                 break
             # Source2Viewer exits 0 when the archive doesn't have a file
@@ -417,8 +423,11 @@ class MapBuilder(Builder):
                           '--threads', str(os.cpu_count() or 4), '-q'], m, show=False)
             except BuildError:
                 continue
-        found = {p: os.path.relpath(os.path.join(dest, os.path.splitext(p)[0] + '.png'), m.lighting) for p in wanted}
-        return {p: f for p, f in found.items() if os.path.exists(os.path.join(m.lighting, f))}
+            for p in missing:
+                tree = os.path.join(dest, os.path.splitext(p)[0] + '.png')
+                if os.path.exists(tree):
+                    os.replace(tree, flat(p))
+        return {p: os.path.relpath(flat(p), m.lighting) for p in wanted if os.path.exists(flat(p))}
 
     def rebatch(self, m):
         self.run([self.python, os.path.join(TOOLS, 'map_rebatch.py'), m.world, m.rebatched,
