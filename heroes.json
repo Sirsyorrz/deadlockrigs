@@ -274,6 +274,14 @@
   "name": "Billy",
   "codename": "punkgoat",
   "model": "models/heroes_wip/punkgoat/punkgoat.vmdl",
+  "hold_clip": "game_weapon_stand_idle",
+  "hold_arm": "root",
+  "hold_offhand": true,
+  "props": [
+   {
+    "bone": "bottle_attach"
+   }
+  ],
   "face": {
    "part": "punkgoat_model",
    "mesh": "punkgoat_model",
