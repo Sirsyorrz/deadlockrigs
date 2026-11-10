@@ -641,6 +641,34 @@ def add_bloom_amount(mat, floats):
     node.inputs['Value'].default_value = amount
 
 
+def apply_alpha_test(mat, bsdf, floats):
+    """F_ALPHA_TEST as pbr.vfx's depth pass does it: vertex alpha x alpha, faded by g_flAlphaAnglePower, boosted up
+    to g_flAlphaBoostStrength times over g_flAlphaBoostDistance from the camera (so distant trees stay full), cut at
+    g_flAlphaTestReference. The import cuts the bare alpha at the glTF default 0.5. Returns whether it found the cut."""
+    alpha = source_of(bsdf.inputs['Alpha'])
+    cut = alpha.node if alpha and alpha.node.type == 'MATH' and alpha.node.operation == 'SUBTRACT' else None
+    test = cut and source_of(cut.inputs[1])
+    if not test or test.node.type != 'MATH' or test.node.operation != 'LESS_THAN' or not test.node.inputs[0].is_linked:
+        return False
+    test.node.inputs[1].default_value = param(floats, 'g_flAlphaTestReference', 0.5)
+    g = Graph(mat.node_tree)
+    opacity = test.node.inputs[0].links[0].from_socket
+    power = param(floats, 'g_flAlphaAnglePower', 0.0)
+    if power:
+        geo = g.node('ShaderNodeNewGeometry')
+        facing = g.math('ABSOLUTE', g.vec('DOT_PRODUCT', geo.outputs['Incoming'], geo.outputs['Normal']))
+        fade = g.math('POWER', g.math('MAXIMUM', facing, 0.001), abs(power))
+        if power < 0:
+            fade = g.math('POWER', g.math('MAXIMUM', g.math('SUBTRACT', 1.0, facing), 0.001), -power)
+        opacity = g.math('MULTIPLY', opacity, fade)
+    boost, distance = param(floats, 'g_flAlphaBoostStrength', 1.0), param(floats, 'g_flAlphaBoostDistance', 0.0)
+    if boost != 1.0 and distance > 0:
+        far = g.math('DIVIDE', g.node('ShaderNodeCameraData').outputs['View Distance'], distance * UNIT, clamp=True)
+        opacity = g.math('MULTIPLY', opacity, g.math('ADD', g.math('MULTIPLY', far, boost - 1.0), 1.0))
+    g.links.new(opacity, test.node.inputs[0])
+    return True
+
+
 def apply_vmat(mat, glass_masks=None, layer_textures=None):
     """What the glTF export loses of the game's shading: unlit and additive materials show their colour as it is,
     glass lets the scene through, and self-illumination is scaled by g_flSelfIllumScale. Returns 'unlit', 'glass',
@@ -653,6 +681,8 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
     bsdf = surface.node
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
     add_bloom_amount(mat, floats)
+    if ints.get('F_ALPHA_TEST'):
+        apply_alpha_test(mat, bsdf, floats)
     strength = paint_strength(mat, ints, floats)
     set_vertex_paint(mat, bsdf, strength)
     apply_albedo_correction(mat, bsdf, ints, floats, strength)

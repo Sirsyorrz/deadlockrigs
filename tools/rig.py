@@ -2312,22 +2312,8 @@ if VMAT_SHADED:
         bsdf = next((n for n in m.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
         if bsdf is None:
             continue
-        alpha = map_lighting.source_of(bsdf.inputs['Alpha'])
-        cut = alpha.node if alpha and alpha.node.type == 'MATH' and alpha.node.operation == 'SUBTRACT' else None
-        test = cut and map_lighting.source_of(cut.inputs[1])
-        if ints.get('F_ALPHA_TEST') and test and test.node.operation == 'LESS_THAN':
-            # the import cuts at the glTF default 0.5
-            test.node.inputs[1].default_value = map_lighting.param(floats, 'g_flAlphaTestReference', 0.5)
-            power = map_lighting.param(floats, 'g_flAlphaAnglePower', 0.0)
-            if power:
-                g = map_lighting.Graph(m.node_tree)
-                geo = g.node('ShaderNodeNewGeometry')
-                facing = g.math('ABSOLUTE', g.vec('DOT_PRODUCT', geo.outputs['Incoming'], geo.outputs['Normal']))
-                fade = g.math('POWER', g.math('MAXIMUM', facing, 0.001), abs(power))
-                if power < 0:
-                    fade = g.math('POWER', g.math('MAXIMUM', g.math('SUBTRACT', 1.0, facing), 0.001), -power)
-                opacity = test.node.inputs[0].links[0].from_socket
-                g.links.new(g.math('MULTIPLY', opacity, fade), test.node.inputs[0])
+        if ints.get('F_ALPHA_TEST'):
+            map_lighting.apply_alpha_test(m, bsdf, floats)
         if ints.get('F_SELF_ILLUM'):
             map_lighting.apply_self_illum(m, bsdf, floats, dict(map_lighting.vmat_dict(m).get('VectorParams') or {}))
 
