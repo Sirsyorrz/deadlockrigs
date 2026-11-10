@@ -1127,6 +1127,14 @@
   "name": "Rem",
   "codename": "familiar",
   "model": "models/heroes_wip/familiar/familiar_wip.vmdl",
+  "hold_clip": "game_out_of_combat_stand_idle",
+  "hold_arm": "root",
+  "hold_offhand": true,
+  "props": [
+   {
+    "bone": "pillow_attach"
+   }
+  ],
   "face": {
    "part": "head",
    "mesh": "head",
