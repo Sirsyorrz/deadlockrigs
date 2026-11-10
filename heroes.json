@@ -51,6 +51,9 @@
   "name": "Baba",
   "codename": "baba",
   "model": "models/heroes_wip/baba/baba.vmdl",
+  "parts": [
+   {"key": "cane", "name": "Cane", "bones": ["offhand"]}
+  ],
   "split": {
    "Head": {
     "mats": [
@@ -278,6 +281,9 @@
   "name": "Billy",
   "codename": "punkgoat",
   "model": "models/heroes_wip/punkgoat/punkgoat.vmdl",
+  "parts": [
+   {"key": "bat", "name": "Bat", "bones": ["bat_0"]}
+  ],
   "hold_clip": "game_weapon_stand_idle",
   "hold_arm": "root",
   "hold_offhand": true,
@@ -554,6 +560,10 @@
   "name": "Infernus",
   "codename": "inferno",
   "model": "models/heroes_wip/inferno/inferno.vmdl",
+  "parts": [
+   {"key": "hat", "name": "Hat", "bones": ["hat_0"]},
+   {"key": "toothpick", "name": "Toothpick", "bones": ["toothpick_0"]}
+  ],
   "split": {
    "Head": {
     "mats": [
@@ -704,6 +714,9 @@
   "name": "Lash",
   "codename": "lash",
   "model": "models/heroes_wip/lash/lash.vmdl",
+  "parts": [
+   {"key": "glove", "name": "Glove", "bones": ["glove"]}
+  ],
   "split": {
    "Head": {
     "mats": [
@@ -832,6 +845,9 @@
   "name": "Mirage",
   "codename": "mirage",
   "model": "models/heroes_staging/mirage_v2/mirage.vmdl",
+  "parts": [
+   {"key": "urn", "name": "Urn", "bones": ["attachHand_L"]}
+  ],
   "split": {
    "Head": [
     "miragev3_head",
@@ -941,6 +957,9 @@
   "name": "Paige",
   "codename": "bookworm",
   "model": "models/heroes_wip/bookworm/bookworm.vmdl",
+  "parts": [
+   {"key": "books", "name": "Books", "bones": ["book_top", "book_a", "book_b", "book_c", "book_d", "pages"]}
+  ],
   "hold_clip": "game_out_of_combat_idle",
   "hold_arm": "root",
   "hold_offhand": true,
@@ -1755,6 +1774,9 @@
   "name": "Yamato",
   "codename": "yamato",
   "model": "models/heroes_staging/yamato_v2/yamato.vmdl",
+  "parts": [
+   {"key": "scabbard", "name": "Scabbard", "bones": ["scabbard_jiggle"]}
+  ],
   "split": {
    "Head": {
     "mats": [

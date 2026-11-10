@@ -1066,17 +1066,18 @@ for key, label in arm.get('part_toggles', {}).items():
         v.targets[0].data_path == prop for fc in o.animation_data.drivers for v in fc.driver.variables)]
     body = [o for o in bpy.data.objects if o.type == 'MESH' and o.find_armature() == arm and not o.hide_viewport
             and not o.name.startswith('WGT-')]
-    seen = []
+    seen = [(tuple(o.hide_viewport for o in obs), [])]
     for show in (False, True, False):
         bpy.ops.dlrig.show_part(key=key, show=show)
         update()
         seen.append((tuple(o.hide_viewport for o in obs), [verts(o) for o in body] if bones else []))
     if bones:
-        moved = sum(int((np.linalg.norm(a - b, axis=1) > 1e-4).sum()) for a, b in zip(seen[0][1], seen[1][1]))
-        back = sum(int((np.linalg.norm(a - b, axis=1) > 1e-6).sum()) for a, b in zip(seen[0][1], seen[2][1]))
+        moved = sum(int((np.linalg.norm(a - b, axis=1) > 1e-4).sum()) for a, b in zip(seen[1][1], seen[2][1]))
+        back = sum(int((np.linalg.norm(a - b, axis=1) > 1e-6).sum()) for a, b in zip(seen[1][1], seen[3][1]))
         ok, detail = moved > 20 and not back, f'{len(bones)} bones, {moved} verts shown, {back} off after hiding'
     else:
-        ok = obs and all(seen[0][0]) and not any(seen[1][0]) and all(seen[2][0])
+        # Show brings back what the bodygroups show (Yamato's sheathed swords stay hidden while one is in hand)
+        ok = obs and all(seen[1][0]) and seen[2][0] == seen[0][0] and not all(seen[0][0]) and all(seen[3][0])
         detail = f'{len(obs)} meshes'
     if not bones:
         arm[f'show_part_{key}'] = 1

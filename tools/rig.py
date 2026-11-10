@@ -2235,6 +2235,11 @@ def skinned_to(o, names):
     return sum(w) > 0.5 * len(w)
 
 
+def dominant_verts(o, names):
+    idx = {g.index for g in o.vertex_groups if g.name in names}
+    return sum(1 for v in o.data.vertices if v.groups and max(v.groups, key=lambda g: g.weight).group in idx)
+
+
 def on_weapon(o):
     """Mostly skinned to the weapon's bones (its ammo belts)?"""
     return 'weaponPivot' in B and skinned_to(o, set(descendants('weaponPivot')))
@@ -2278,9 +2283,26 @@ def hide_with(o, prop):
         assert d.is_simple_expression, d.expression
 
 
-# Parts toggles for what no bodygroup switches: the weapon and held props. A part with its own meshes (Rem's pillow)
-# hides by show_part_<key>; one inside the body mesh (Billy's bottle) by its bones' scale, as the game's clips do,
-# so clips that show it still do (rig['part_bones'])
+def group_hides_all(obs):
+    """Has some bodygroup a choice that hides all of these meshes (Abrams' gun, Apollo's sword_hidden)? Read from
+    their hide drivers: Rat King's ammo isn't in his gun's group but its driver hides it with the gun."""
+    fcs = [o.animation_data and o.animation_data.drivers.find('hide_viewport') for o in obs]
+    if not all(fcs):
+        return False
+    for g, choices in BODY_GROUPS:
+        for c in range(len(choices)):
+            values = {f'["bodygroup_{k}"]': arm[f'bodygroup_{k}'] for k, _ in BODY_GROUPS}
+            values[f'["bodygroup_{g}"]'] = c
+            if all(eval(fc.driver.expression, {}, {v.name: values[v.targets[0].data_path]
+                                                   for v in fc.driver.variables}) for fc in fcs):
+                return True
+    return False
+
+
+# Parts toggles for what no bodygroup switches: the weapon, held props and heroes.json "parts" (bones whose pieces
+# are the part: Billy's bat, Infernus' hat). A part with its own meshes (Rem's pillow) hides by show_part_<key>; one
+# inside the body mesh (Billy's bottle) by its bones' scale, as the game's clips do, so clips that show it still do
+# (rig['part_bones'])
 OWN_MESHES = [o for o in bpy.data.objects if o.type == 'MESH' and not o.name.startswith('WGT-')
               and not o.get('dlrig_extra') and o.find_armature() == arm]
 PART_TOGGLES, PART_BONES = {}, {}
@@ -2289,7 +2311,7 @@ PART_TOGGLES, PART_BONES = {}, {}
 GUN_ROOT = re.compile(r'weaponPivot|weapon_?(hand_[LR]|bone(_[LR])?)', re.I)
 GUN_BONES = {d for b in B if GUN_ROOT.fullmatch(b.name) for d in descendants(b.name)}
 GUNS = [o for o in OWN_MESHES if skinned_to(o, GUN_BONES)]
-if GUNS and not all(o.animation_data and o.animation_data.drivers.find('hide_viewport') for o in GUNS):
+if GUNS and not group_hides_all(GUNS):
     PART_TOGGLES['weapon'] = 'Weapon'
     for o in GUNS:
         hide_with(o, 'show_part_weapon')
@@ -2305,6 +2327,18 @@ for prop in PROPS:
         # the bones the idle hides, or the prop's own bone
         PART_BONES[key] = sorted(b for b in names if b in PROP_POSE and max(map(abs, PROP_POSE[b][7:10])) < 0.05) \
             or [prop['bone']]
+    print('part', key, PART_TOGGLES[key], [o.name for o in obs] or PART_BONES[key])
+for part in hero.cfg.get('parts', []):
+    key = part['key']
+    PART_TOGGLES[key] = part['name']
+    names = {d for b in part['bones'] if b in B for d in descendants(b)}
+    obs = [o for o in OWN_MESHES if o not in GUNS and skinned_to(o, names)]
+    # a piece in the body mesh too (Billy's bat, also on punkgoat_bat_jitter): bone scale hides both
+    if not obs or any(o not in obs and dominant_verts(o, names) > 50 for o in OWN_MESHES):
+        PART_BONES[key] = [b for b in part['bones'] if b in B]
+        obs = []
+    for o in obs:
+        hide_with(o, f'show_part_{key}')
     print('part', key, PART_TOGGLES[key], [o.name for o in obs] or PART_BONES[key])
 for key, label in PART_TOGGLES.items():
     if key not in PART_BONES:
