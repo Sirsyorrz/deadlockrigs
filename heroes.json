@@ -385,12 +385,7 @@
   "face": {
    "part": "drifter_head_neutral",
    "mesh": "drifter_head_neutral",
-   "tune": {
-    "mouthPucker": 0.6,
-    "mouthFunnel": 0.6,
-    "mouthLeft": 0.6,
-    "mouthRight": 0.6
-   }
+   "builder": "handkeys.py"
   }
  },
  {
