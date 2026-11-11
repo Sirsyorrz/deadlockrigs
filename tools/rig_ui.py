@@ -6,6 +6,7 @@ import ast
 import json
 import math
 import os
+import re
 import time
 
 import bpy
@@ -772,8 +773,10 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
                 ob[f'show_{key}'] = 1
                 ob.update_tag()
         start = clip.frame_range[0]
+        name = self.clip[5:] if self.clip.startswith('game_') else self.clip
         if self.mode == 'NEW':
-            clip.name = self.clip[5:] if self.clip.startswith('game_') else self.clip
+            clip.name = name
+            clip['dlrig_clips'] = [{'clip': name, 'first': float(start), 'last': float(clip.frame_range[1])}]
             reset_bones(ob, body_bones(ob))
             ob.animation_data_create()
             ob.animation_data.action = clip
@@ -792,9 +795,16 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
                     ob.path_resolve(f.data_path)[f.array_index] = f.evaluate(start)
             set_pose(context, ob, pose, mech_on)
         else:
+            recorded = clips_in(ob.animation_data.action if ob.animation_data else None)
             insert_clip(ob, channelbag(ob), cb_src, sc.frame_current, start, clip.frame_range[1])
             sc.frame_end = max(sc.frame_end, int(sc.frame_current + clip.frame_range[1] - start))
             act = ob.animation_data.action
+            first = float(sc.frame_current)
+            last = first + clip.frame_range[1] - start
+            # the clips it overwrote are gone
+            recorded = [c for c in recorded if c['last'] <= first or c['first'] >= last]
+            recorded.append({'clip': name, 'first': first, 'last': last})
+            act['dlrig_clips'] = sorted(recorded, key=lambda c: c['first'])
             if act.use_frame_range:
                 act.frame_end = max(act.frame_end, sc.frame_end)
             for p in ik_props(ob):
@@ -802,6 +812,17 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
         bpy.data.actions.remove(clip)
         update(context)
         return {'FINISHED'}
+
+
+def clips_in(act):
+    """[{clip, first, last}]: the game clips the action plays and their frames (Clip Effects reads them). An action loaded before
+    they were recorded counts as the clip it's named after; one that isn't a clip has no effects anyway."""
+    if act is None:
+        return []
+    if 'dlrig_clips' in act:
+        return [c.to_dict() for c in act['dlrig_clips']]
+    return [{'clip': re.sub(r'\.\d{3}$', '', act.name).removeprefix('game_'), 'first': float(act.frame_range[0]),
+             'last': float(act.frame_range[1])}]
 
 
 def set_pose(context, ob, pose, mech_on, ends=None):

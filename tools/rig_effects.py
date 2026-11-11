@@ -218,7 +218,7 @@ def uses_model(definition, seen=None):
 def show_between(holder, first, last):
     """The effect's objects hidden outside the clip's frames (a looping bake would otherwise play on forever)."""
     for ob in holder.children_recursive:
-        for frame, hidden in ((first - 1, True), (first, False), (math.ceil(last), True)):
+        for frame, hidden in ((first - 1, True), (first, False), (math.floor(last) + 1, True)):
             ob.hide_viewport = ob.hide_render = hidden
             ob.keyframe_insert('hide_viewport', frame=frame)
             ob.keyframe_insert('hide_render', frame=frame)

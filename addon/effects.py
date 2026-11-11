@@ -19,13 +19,17 @@ def rig_of(ob):
     return None
 
 
-def clip_of(arm):
-    """The clip the rig's action is (a Game Animation loaded as a new action is named after it), or ''."""
+def clips_of(arm):
+    """[(clip, first frame, last frame)] of the game clips the rig's action plays: every clip loaded or inserted
+    (rig_ui.py records them), or the clip an older action is named after. Empty without an action."""
     act = arm.animation_data.action if arm.animation_data else None
     if act is None:
-        return ''
-    name = re.sub(r'\.\d{3}$', '', act.name)
-    return name.removeprefix('game_')
+        return []
+    if 'dlrig_clips' in act:
+        return [(c['clip'], c['first'], c['last']) for c in act['dlrig_clips']]
+    name = re.sub(r'\.\d{3}$', '', act.name).removeprefix('game_')
+    first, last = act.frame_range
+    return [(name, first, last)]
 
 
 def effects_of(arm, clip):
@@ -47,36 +51,53 @@ def effects_of(arm, clip):
     return _found[key]
 
 
+def merged(clips, arm):
+    """Back to back copies of a clip whose effects all loop (a channel inserted twice) as one span, so the effect
+    carries on instead of starting over."""
+    out = []
+    for clip, first, last in clips:
+        if (out and out[-1][0] == clip and first - out[-1][2] <= 1.5
+                and all(e['loop'] for e in effects_of(arm, clip))):
+            out[-1] = (clip, out[-1][1], last)
+        else:
+            out.append((clip, first, last))
+    return out
+
+
 class DLR_OT_clip_effects(bpy.types.Operator):
     bl_idname = 'dlr.clip_effects'
     bl_label = 'Add Clip Effects'
-    bl_description = ("Add the particle effects the game plays with the rig's current clip, from the frame its "
-                      "action starts. Replaces the ones added before for that clip")
+    bl_description = ("Add the particle effects the game plays with each clip in the rig's action (loaded or "
+                      "inserted Game Animations), over that clip's frames. Replaces the ones added before")
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
         arm = rig_of(context.active_object)
-        return arm is not None and bool(clip_of(arm))
+        return arm is not None and bool(clips_of(arm))
 
     def execute(self, context):
         from . import tools_module
         arm = rig_of(context.active_object)
-        clip = clip_of(arm)
-        if not effects_of(arm, clip):
-            self.report({'WARNING'}, f'The game plays no effects with {clip}')
+        clips = merged([c for c in clips_of(arm) if effects_of(arm, c[0])], arm)
+        if not clips:
+            self.report({'WARNING'}, 'The game plays no effects with these clips')
             return {'CANCELLED'}
         particles.bridge_particles()
         rig_effects = tools_module('rig_effects')
-        old = [o for o in arm.children if o.get(TAG) == clip]
-        first, last = arm.animation_data.action.frame_range
+        old = [o for o in arm.children if o.get(TAG)]
         sc = context.scene
+        fps = sc.render.fps / sc.render.fps_base
         wm = context.window_manager
         wm.progress_begin(0, 100)
+        holders = []
         try:
-            holders = rig_effects.add(context, arm, clip, first, (last - first) / (sc.render.fps / sc.render.fps_base),
-                                      progress=lambda n, total: wm.progress_update(100 * n // max(total, 1)))
+            for i, (clip, first, last) in enumerate(clips):
+                def progress(n, total, i=i):
+                    wm.progress_update(100 * (i + n / max(total, 1)) // len(clips))
+                holders += rig_effects.add(context, arm, clip, first, (last - first) / fps, progress=progress)
         except Exception as e:
+            rig_effects.remove_holders(holders)
             self.report({'ERROR'}, f'Clip effects failed: {e}')
             return {'CANCELLED'}
         finally:
@@ -86,8 +107,9 @@ class DLR_OT_clip_effects(bpy.types.Operator):
             # built while the old ones still held their names
             holder.name = re.sub(r'\.\d{3}$', '', holder.name)
             particles.jitter(holder)
-        self.report({'INFO'}, f'{len(holders)} effects added for {clip}' if holders
-                    else f'The effects of {clip} draw nothing here')
+        names = ', '.join(dict.fromkeys(c[0] for c in clips))
+        self.report({'INFO'}, f'{len(holders)} effects added for {names}' if holders
+                    else f'The effects of {names} draw nothing here')
         return {'FINISHED'}
 
 
@@ -123,16 +145,17 @@ class DLR_PT_clip_effects(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         arm = rig_of(context.active_object)
-        clip = clip_of(arm)
-        if not clip:
+        clips = clips_of(arm)
+        if not clips:
             layout.label(text='Load a Game Animation first', icon='INFO')
         else:
-            layout.label(text=clip, icon='ACTION')
-            key = (arm['dlrig'], clip)
-            if key in _found and not _found[key]:
-                layout.label(text='No effects in the game for this clip', icon='INFO')
-            else:
-                layout.operator('dlr.clip_effects', icon='PARTICLES')
+            col = layout.column(align=True)
+            for clip, first, last in clips:
+                key = (arm['dlrig'], clip)
+                none = key in _found and not _found[key]
+                col.label(text=f'{int(first)}-{int(round(last))}  {clip}' + ('  (no effects)' if none else ''),
+                          icon='ACTION')
+            layout.operator('dlr.clip_effects', icon='PARTICLES')
         added = sorted({o[TAG] for o in arm.children if o.get(TAG)})
         if added:
             row = layout.row()
