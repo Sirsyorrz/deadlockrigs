@@ -11,12 +11,22 @@ TAG = 'dlr_clip_effect'
 _found = {}
 
 
+def _is_rig(ob):
+    return ob is not None and ob.type == 'ARMATURE' and 'dlrig' in ob
+
+
 def rig_of(ob):
+    """The rig the Game Animations panel shows for ``ob`` (the active object): its own, a deformed mesh's, or the
+    file's first when the selection isn't part of one."""
+    start = ob
     while ob is not None:
-        if ob.type == 'ARMATURE' and 'dlrig' in ob:
+        if _is_rig(ob):
             return ob
         ob = ob.parent
-    return None
+    arm = start.find_armature() if start is not None and start.type == 'MESH' else None
+    if _is_rig(arm):
+        return arm
+    return next((o for o in bpy.data.objects if _is_rig(o)), None)
 
 
 def clips_of(arm):
@@ -166,23 +176,39 @@ class DLR_PT_clip_effects(bpy.types.Panel):
 CLASSES = (DLR_OT_clip_effects, DLR_OT_remove_clip_effects)
 
 
+_parent = [None]
+
+
 def attach_panel():
     """(Re)registers the panel under the rig panel's Game Animations. That panel is registered by rig_ui.py,
     whenever a rig is opened or appended (and by a rig's own text block), and a sub-panel registered before its
     parent, or left over from a parent that was replaced, doesn't show."""
     if DLR_PT_clip_effects.is_registered:
         bpy.utils.unregister_class(DLR_PT_clip_effects)
-    if hasattr(bpy.types, DLR_PT_clip_effects.bl_parent_id):
+    parent = getattr(bpy.types, DLR_PT_clip_effects.bl_parent_id, None)
+    _parent[0] = parent
+    if parent is not None:
         bpy.utils.register_class(DLR_PT_clip_effects)
+
+
+def _watch_parent():
+    """Re-attaches the panel when Game Animations was registered anew behind the add-on's back (a rig's text
+    block run by hand, or on load with auto run scripts on)."""
+    if getattr(bpy.types, DLR_PT_clip_effects.bl_parent_id, None) is not _parent[0]:
+        attach_panel()
+    return 1.0
 
 
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
     attach_panel()
+    bpy.app.timers.register(_watch_parent, first_interval=1.0, persistent=True)
 
 
 def unregister():
+    if bpy.app.timers.is_registered(_watch_parent):
+        bpy.app.timers.unregister(_watch_parent)
     if DLR_PT_clip_effects.is_registered:
         bpy.utils.unregister_class(DLR_PT_clip_effects)
     for c in reversed(CLASSES):
