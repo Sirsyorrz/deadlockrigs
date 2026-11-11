@@ -52,7 +52,7 @@ def effects_of(arm, clip):
         clip_effects = tools_module('clip_effects')
         from deadlock_bridge import session
         try:
-            fx = clip_effects.ClipEffects(session.content(), rig_effects.model_of(arm))
+            fx = clip_effects.for_model(session.content(), rig_effects.model_of(arm))
             _found[key] = fx.effects(clip) if clip else []
         except Exception as e:
             # not kept: the game folder may just not be set yet

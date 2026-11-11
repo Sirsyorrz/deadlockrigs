@@ -7,7 +7,7 @@ import math
 
 import bpy
 import numpy as np
-from clip_effects import ClipEffects, quat_matrix
+from clip_effects import for_model, quat_matrix
 from deadlock_bridge import session
 from deadlock_bridge.blender import particles as bridge
 from deadlock_bridge.core import particles as plib
@@ -131,7 +131,7 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None):
     """Builds every effect clip ``clip`` starts onto the rig, the clip playing from ``start_frame`` for ``duration``
     seconds (the game's clip length if None). Returns the effects' empties."""
     content = session.content()
-    fx = ClipEffects(content, model_of(arm))
+    fx = for_model(content, model_of(arm))
     effects = fx.effects(clip)
     duration = duration or fx.duration(clip)
     if not effects or duration <= 0:
