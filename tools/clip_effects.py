@@ -42,7 +42,7 @@ SKIP = ('enemy', 'preview', 'status', 'tgt', 'target', 'impact', 'tracer', 'proj
 ABILITY_WORDS = {'ability', 'ult'}
 GENERIC_WORDS = {'idle', 'idle1', 'run', 'walk', 'sprint', 'stand', 'crouch', 'bindpose', 'bind', 'pose', 'ref',
                  'tools', 'animsetup', 'animbindpose', 'ui', 'shop', 'flinch', 'reload', 'melee', 'jump', 'slide',
-                 'mantle', 'outofcombat', 'combat'}
+                 'mantle', 'outofcombat', 'incombat', 'combat'}
 # the parts of a state's node path its conditions sit under (the state is the path before them)
 SM_PARTS = ('Entry Overrides', 'Global Transitions', 'Transition Conduit')
 FILLER_WORDS = {'weapon', 'arm', 'item', 'zoomed', 'open', 'close', 'center', 'centre', 'e', 'n', 's', 'w', 'ne', 'nw',
@@ -157,6 +157,15 @@ def _graph_ids(name, block, graph):
     return ids
 
 
+def _tokens(*texts):
+    """The words of names and titles and each two in a row run together (Hyper Beam: hyperbeam, as its clips say)."""
+    out = set()
+    for text in texts:
+        seq = [w for w in re.split(r'[^a-z0-9]+', re.sub(r'([a-z])([A-Z])', r'\1_\2', text).lower()) if w]
+        out.update(seq, (a + b for a, b in zip(seq, seq[1:])))
+    return {w for w in out if len(w) > 2 and not w.isdigit()}
+
+
 def _cores(clips):
     return set().union(*map(_core, clips))
 
@@ -204,6 +213,7 @@ class ClipEffects:
         self._graph = None
         self._nm = None
         self._catalog = None
+        self._clip_roots = None
 
     def clip_file(self, name):
         """The compiled clip called name (as the rig's actions are, game_<name>) on this model's skeleton. Clips
@@ -447,6 +457,44 @@ class ClipEffects:
                 title = names.get(root) or root.replace('citadel_', '').replace('ability_', '').replace('_', ' ')
                 self._catalog.append((root, title, list(effects.values())))
         return self._catalog
+
+    def ability_duration(self, name):
+        """Seconds an ability lasts after its cast (Kelvin's dome: 5), 0 for channelled ones (they last their clips)."""
+        props = ((resource_data(self.content, 'scripts/abilities.vdata') or {}).get(name) or {}).get(
+            'm_mapAbilityProperties') or {}
+        value = (props.get('AbilityDuration') or {}).get('m_strValue') or '0'
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+
+    def clip_abilities(self, name):
+        """The catalog's abilities a clip plays for: the ones whose animgraph states play it, else the ones its name
+        names (bebop_stickybomb_run_01_n: Sticky Bomb, ability_rejuvenating: Rejuvenating Aurora)."""
+        if self._clip_roots is None:
+            abilities = resource_data(self.content, 'scripts/abilities.vdata') or {}
+            names = titles(self.content)
+            roots = [root for root, _, _ in self.catalog()]
+            by_graph = {}
+            for root, clips in self.ability_clips(abilities, roots).items():
+                for clip in clips:
+                    by_graph.setdefault(clip, set()).add(root)
+            tokens = {root: _tokens(root, (abilities.get(root) or {}).get('m_strAG2CastingAction') or '',
+                                    names.get(root) or '') - {'citadel', 'ability', 'weapon', 'set'}
+                      for root in roots}
+            # the hero's codename (bebop_laser_beam, bebop_stickybomb_run) names no one ability
+            common = _tokens(os.path.basename(self.model).split('.')[0], os.path.basename(os.path.dirname(self.model)))
+            common |= {w for ws in tokens.values() for w in ws if sum(w in o for o in tokens.values()) > 1}
+            self._clip_roots = by_graph, {root: ws - common for root, ws in tokens.items()}
+        by_graph, tokens = self._clip_roots
+        core = _core(name) - {'self'}
+        words = _tokens('_'.join(w for w in re.split(r'[^a-z0-9]+', name.lower()) if w in core))
+        named = [root for root, ws in tokens.items() if ws & words]
+        graph = next((by_graph[n] for n in self.names(name) if n in by_graph), None)
+        if graph is None:
+            return named
+        # locomotion the graph picks by the ability (Kelvin's skate_incombat_n under Arctic Beam) only when named
+        return [r for r in sorted(graph) if r in named or not _words(name.lower()) & GENERIC_WORDS]
 
     def _specific(self, sequence, ability_clips):
         """Whether a preview's sequence says when the effect plays: a clip of this hero that isn't one artists
