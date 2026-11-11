@@ -297,6 +297,20 @@ class Face:
             s_ = sub(o['eye'], side)
             _, m, _, _ = self.lid_frame(s_)
             _, _, gap = self.lid_angles(s_, p)
+            if o.get('cards') == 'skin':
+                # a lash card spans root to tip at different depths, so its own angles crumple it: each card
+                # vertex takes the gap of the nearest lid margin vertex (skin hugging the eyeball), smoothed along
+                # the card
+                c, r = self.eye_c[s_]
+                cards = (w > 0) & ~self.skin
+                margin = np.where(self.skin & (w > 0.5) & (np.linalg.norm(p - c, axis=1) < r + 0.006))[0]
+                if cards.any() and len(margin):
+                    _, near = cKDTree(p[margin]).query(p[cards])
+                    gap = gap.copy()
+                    gap[cards] = gap[margin[near]]
+                    for _ in range(o.get('smooth', 10)):
+                        avg = (self.adj @ gap) / np.maximum(self.deg, 1)
+                        gap = np.where(cards, 0.5 * gap + 0.5 * avg, gap)
             sign = 1 if o.get('part', 'upper') == 'upper' else -1
             c = self.eye_c[s_][0]
             out = rot_axis(p, c, m, np.radians(gap * o['close'] * sign) * t * w) - p
