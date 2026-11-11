@@ -52,7 +52,7 @@
  },
  "hold": "seam",
  "tongue": {"tip": -112, "root": -55, "top": -40, "width": 50, "height": 14, "gap": 1, "lift": -30, "reach": 45, "droop": 16, "hold": 0.5,
-            "follow": ["jawOpen", "mouthClose", "jawForward", "jawLeft", "jawRight", "tongueOut"]},
+            "follow": ["jawOpen", "mouthClose", "jawForward", "jawLeft", "jawRight", "tongueOut", "tongueOut_jawOpen"]},
  "keys": {
   "jawOpen": [{"turn": "jaw", "about": [0, -20, 24], "axis": [1, 0, 0], "deg": 14}, {"move": "jaw", "by": [0, -7, 0]}],
   "mouthClose": [{"move": "close_up", "by": [0, -3, -11]}, {"move": "close_lo", "by": [0, -4, 12]}],
@@ -83,7 +83,8 @@
   "mouthRollLower": [{"turn": "roll_lo", "about": [0, -120, -46], "axis": [1, 0, 0], "deg": -20}],
   "mouthShrugUpper": [{"move": "lip_up_mid", "by": [0, -2, 3]}],
   "mouthShrugLower": [{"move": "lip_lo_mid", "by": [0, -3, 4]}],
-  "tongueOut": [{"key": "jawOpen", "times": 0.8, "mid": 0.9}, {"move": "lip_lo_mid", "by": [0, -3, -6]}, {"move": "lip_lo_{s}", "by": [0, -2, -4], "sym": true}]
+  "tongueOut": [{"key": "jawOpen", "times": 0.8, "mid": 0.9}, {"move": "lip_lo_mid", "by": [0, -3, -6]}, {"move": "lip_lo_{s}", "by": [0, -2, -4], "sym": true}],
+  "tongueOut_jawOpen": [{"key": "jawOpen", "times": -0.8}]
  },
  "mid": ["jawOpen", "tongueOut"],
  "controls": {
