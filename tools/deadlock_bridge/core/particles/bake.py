@@ -7,6 +7,9 @@ emitting. Particles born before the stretch that outlive it (a system's one off 
 are during it.
 
 Once (an effect placed to play from a frame): every step from the effect's start, as it is.
+
+Both take ``moving``: control points that move while the effect plays (a rig's bones), a function of the seconds
+since the start giving {number: (position, rotation or None)}, set before each step.
 """
 from contextlib import contextmanager
 
@@ -64,6 +67,13 @@ def _new(definition, control_points, seed, unset_value):
     return simulation
 
 
+def _step(simulation, step, moving):
+    if moving is not None:
+        for index, (position, rotation) in moving(simulation.age).items():
+            simulation.set_control_point(index, position, rotation)
+    simulation.update(step)
+
+
 def _ids(system):
     return system.particles.array("unique_id").copy()
 
@@ -77,7 +87,7 @@ def loop_length(simulation) -> float:
 
 
 def loop(definition, control_points, seed, start, length=None, rate=30.0, ambient=(0.0, 0.0, 0.0),
-         unset_value=0.0):
+         unset_value=0.0, moving=None):
     """The draws of a looping effect: a list of ``length * rate`` steps (``length`` None: loop_length()'s), each a
     list of (system, renderer, batch), for the stretch from ``start`` seconds. Systems keep their identity across
     steps."""
@@ -88,7 +98,7 @@ def loop(definition, control_points, seed, start, length=None, rate=30.0, ambien
     # the same).
     probe = _new(definition, control_points, seed, unset_value)
     for _ in range(warm):
-        probe.update(step)
+        _step(probe, step, moving)
     if length is None:
         length = loop_length(probe)
     steps = max(1, int(round(length * rate)))
@@ -97,12 +107,12 @@ def loop(definition, control_points, seed, start, length=None, rate=30.0, ambien
     for i, s in enumerate(probe.walk()):
         early[i] = set(_ids(s)[s.particles.array("creation_time") < begun[i]].tolist())
     for _ in range(steps):
-        probe.update(step)
+        _step(probe, step, moving)
     lasting = {i: early[i] & set(_ids(s).tolist()) for i, s in enumerate(probe.walk())}
 
     simulation = _new(definition, control_points, seed, unset_value)
     for _ in range(warm):
-        simulation.update(step)
+        _step(simulation, step, moving)
     systems = list(simulation.walk())
     window = {id(s): (s.age, s.age + steps * step) for s in systems}
     persistent = {id(s): lasting[i] for i, s in enumerate(systems)}
@@ -127,16 +137,17 @@ def loop(definition, control_points, seed, start, length=None, rate=30.0, ambien
         k += 1
         if k >= steps * (1 + TAIL_LOOPS):
             break
-        simulation.update(step)
+        _step(simulation, step, moving)
     return frames
 
 
-def once(definition, control_points, seed, length, rate=30.0, ambient=(0.0, 0.0, 0.0), unset_value=0.0):
+def once(definition, control_points, seed, length, rate=30.0, ambient=(0.0, 0.0, 0.0), unset_value=0.0,
+         moving=None):
     """The draws of an effect played from its start for ``length`` seconds, a list of steps as loop() gives."""
     step = 1.0 / rate
     simulation = _new(definition, control_points, seed, unset_value)
     frames = []
     for _ in range(max(1, int(round(length * rate)))):
-        simulation.update(step)
+        _step(simulation, step, moving)
         frames.append(_drawn(simulation, ambient))
     return frames

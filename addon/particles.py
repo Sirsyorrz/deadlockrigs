@@ -36,10 +36,11 @@ def jitter(holder):
 
 
 def effect_holder(ob):
-    """The empty holding an effect's objects, from it or one of its objects."""
+    """The empty holding an effect's objects, from it or one of its objects. Not a rig's clip effect: those follow
+    its bones and are rebuilt with Add Clip Effects."""
     while ob is not None:
         if ob.type == 'EMPTY' and ob.get('dl_effect') and 'dl_time' in ob:
-            return ob
+            return None if ob.get('dlr_clip_effect') else ob
         ob = ob.parent
     return None
 

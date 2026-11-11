@@ -48,7 +48,7 @@ _LUMA = (0.2125, 0.7154, 0.0721)
 _LUMA_601 = (0.299, 0.587, 0.114)
 
 # Bumped when the node groups change, so files made by an older version get new ones.
-_GROUP_VERSION = 1
+_GROUP_VERSION = 2
 
 
 def _srgb(c: float) -> float:
@@ -133,16 +133,17 @@ def build_particle_systems(importer, time: float = 2.0, animate: bool = False) -
 
 
 def _build_played(builder, name, definition, points, time, seed, ambient, playback: dict, holder=None, local=False,
-                  unset_value=0.0):
+                  unset_value=0.0, moving=None):
     """Bakes an effect and builds it to play with the scene's time. ``playback``: loop (from ``time`` seconds in,
-    for ``length`` seconds or a length that suits the effect when None) or play once from its start for
-    ``length`` seconds, beginning at ``start`` (scene seconds)."""
+    for ``length`` seconds or a length that suits the effect when None, its first step at ``start``) or play once
+    from its start for ``length`` seconds, beginning at ``start`` (scene seconds). ``moving``: see core bake."""
     playback = dict(playback, rate=playback.get("rate", BAKE_RATE))
     if playback["loop"]:
         frames = baking.loop(definition, points, seed, time, playback.get("length"), playback["rate"], ambient,
-                             unset_value)
+                             unset_value, moving)
     else:
-        frames = baking.once(definition, points, seed, playback["length"], playback["rate"], ambient, unset_value)
+        frames = baking.once(definition, points, seed, playback["length"], playback["rate"], ambient, unset_value,
+                             moving)
     return builder.build_animated(name, definition.path, frames, points, time, seed, ambient, playback, holder, local)
 
 
@@ -1019,15 +1020,16 @@ def _sprite_group() -> bpy.types.NodeTree:
 
 def _time_group() -> bpy.types.NodeTree:
     """``DL Particle Time``: keeps the points (and the faces on them) of the bake step the scene's time is at:
-    seconds times Rate, wrapped round Steps when looping, else counted from Start and nothing outside the bake."""
+    seconds since Start times Rate, wrapped round Steps when looping, else nothing outside the bake."""
     tree, b, i, out = _geometry_group("DL Particle Time", [("Rate", "NodeSocketFloat", 30.0),
                                                           ("Steps", "NodeSocketInt", 1),
                                                           ("Loop", "NodeSocketBool", True),
                                                           ("Start", "NodeSocketFloat", 0.0)])
     seconds = b.node("GeometryNodeInputSceneTime").outputs["Seconds"]
     # a hair over, so a frame on a step's boundary doesn't round down to the step before
-    looped = b.math("FLOOR", b.math("FLOORED_MODULO", b.madd(seconds, i["Rate"], 0.001), i["Steps"]))
-    once = b.math("FLOOR", b.madd(b.sub(seconds, i["Start"]), i["Rate"], 0.001))
+    since = b.madd(b.sub(seconds, i["Start"]), i["Rate"], 0.001)
+    looped = b.math("FLOOR", b.math("FLOORED_MODULO", since, i["Steps"]))
+    once = b.math("FLOOR", since)
     switch = b.node("GeometryNodeSwitch", input_type="FLOAT")
     b.set(switch.inputs["Switch"], i["Loop"])
     b.set(switch.inputs["False"], once)
