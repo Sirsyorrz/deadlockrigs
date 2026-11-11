@@ -112,7 +112,11 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None):
     fps = scene.render.fps / scene.render.fps_base
     library = plib.library(content)
     rig_points = RigPoints(context, arm, fx)
+    had_collection = 'Deadlock Particles' in bpy.data.collections
     target = bridge._Target.for_scene(context, UNIT)
+    if not had_collection and not target.collection.all_objects:
+        # for_scene makes one for loose effects; these go with the rig
+        bpy.data.collections.remove(target.collection)
     target.collection = arm.users_collection[0]
     builder = bridge._ObjectBuilder(target)
     frame_was = scene.frame_current, scene.frame_subframe
