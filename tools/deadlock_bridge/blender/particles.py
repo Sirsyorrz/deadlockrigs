@@ -49,7 +49,7 @@ _LUMA = (0.2125, 0.7154, 0.0721)
 _LUMA_601 = (0.299, 0.587, 0.114)
 
 # Bumped when the node groups change, so files made by an older version get new ones.
-_GROUP_VERSION = 2
+_GROUP_VERSION = 3
 
 
 def _srgb(c: float) -> float:
@@ -771,6 +771,8 @@ class _ObjectBuilder:
         modifier.node_group = self.sprite_group
         _set_input(modifier, "Facing", batch.orientation)
         _set_input(modifier, "Material", material)
+        for key, value in zip(("Min Size", "Fade Start", "Fade End", "Max Size"), batch.size_bounds):
+            _set_input(modifier, key, float(value))
         mesh.materials.append(material)
         return obj
 
@@ -885,6 +887,7 @@ def _merge_sprites(renderer, batches):
     counts = [batch.count for batch in batches]
     out = R.Sprites(renderer, sum(counts))
     out.orientation = batches[0].orientation
+    out.size_bounds = batches[0].size_bounds
     for name in ("position", "half_width", "roll", "yaw", "right", "up", "card", "color", "frame_blend"):
         setattr(out, name, _stack(batches, name))
     _merge_layers(out, batches)
@@ -1008,7 +1011,12 @@ def _sprite_group() -> bpy.types.NodeTree:
     up towards the camera), turned by the particle's roll about the card's normal and its yaw about the card's up;
     the card offset and sized (in half widths) along them."""
     tree, b, i, out = _geometry_group("DL Particle Sprites", [("Facing", "NodeSocketInt", 0),
-                                                            ("Material", "NodeSocketMaterial", None)])
+                                                            ("Material", "NodeSocketMaterial", None),
+                                                            ("Min Size", "NodeSocketFloat", 0.0),
+                                                            ("Fade Start", "NodeSocketFloat", 1e8),
+                                                            ("Fade End", "NodeSocketFloat", 2e8),
+                                                            ("Max Size", "NodeSocketFloat", 5000.0)])
+    points = _size_bounds(b, i)
     b.frame("Card")
     grid = b.node("GeometryNodeMeshGrid")
     for key, value in (("Size X", 2.0), ("Size Y", 2.0), ("Vertices X", 2), ("Vertices Y", 2)):
@@ -1022,7 +1030,7 @@ def _sprite_group() -> bpy.types.NodeTree:
 
     b.column(1)
     instances = b.node("GeometryNodeInstanceOnPoints")
-    b.set(instances.inputs["Points"], i["Geometry"])
+    b.set(instances.inputs["Points"], points)
     b.set(instances.inputs["Instance"], corner_store.outputs[0])
     realized = b.node("GeometryNodeRealizeInstances")
     b.set(realized.inputs["Geometry"], instances.outputs[0])
@@ -1079,6 +1087,36 @@ def _sprite_group() -> bpy.types.NodeTree:
     b.set(material.inputs["Material"], i["Material"])
     b.set(out.inputs[0], material.outputs[0])
     return tree
+
+
+def _size_bounds(b: Builder, i):
+    """The spritecard's size clamp and fade (radii per unit of camera distance, so the same on any lens): a card
+    fades out as its radius grows from Fade Start to Fade End times its distance, and its radius is held between
+    Min Size and Max Size times it. A lens flare filling the view is faded away so, as the game does."""
+    b.frame("Size clamp and fade")
+    location, _, _, _ = _camera(b)
+    distance = b.vmath("DISTANCE", b.node("GeometryNodeInputPosition").outputs[0], location)
+    radius = _named(b, "dl_half_width", "FLOAT")
+    span = b.math("MAXIMUM", b.mul(distance, b.sub(i["Fade End"], i["Fade Start"])), 1e-9)
+    fade = b.sub(1.0, b.saturate(b.div(b.sub(radius, b.mul(i["Fade Start"], distance)), span)))
+    clamped = b.math("MINIMUM", b.math("MAXIMUM", radius, b.mul(i["Min Size"], distance)), b.mul(i["Max Size"], distance))
+    color = _named(b, "dl_color", "FLOAT_COLOR")
+    parts = b.node("FunctionNodeSeparateColor")
+    b.set(parts.inputs[0], color)
+    joined = b.node("FunctionNodeCombineColor")
+    for k in range(3):
+        b.set(joined.inputs[k], parts.outputs[k])
+    b.set(joined.inputs[3], b.mul(parts.outputs[3], fade))
+    store_color = b.node("GeometryNodeStoreNamedAttribute", data_type="FLOAT_COLOR", domain="POINT")
+    store_color.inputs["Name"].default_value = "dl_color"
+    b.set(store_color.inputs["Geometry"], i["Geometry"])
+    b.set(store_color.inputs["Value"], joined.outputs[0])
+    store_radius = b.node("GeometryNodeStoreNamedAttribute", data_type="FLOAT", domain="POINT")
+    store_radius.inputs["Name"].default_value = "dl_half_width"
+    b.set(store_radius.inputs["Geometry"], store_color.outputs[0])
+    b.set(store_radius.inputs["Value"], clamped)
+    b.frame(None)
+    return store_radius.outputs[0]
 
 
 def _time_group() -> bpy.types.NodeTree:

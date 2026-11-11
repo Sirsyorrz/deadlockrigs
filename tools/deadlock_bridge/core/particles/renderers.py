@@ -296,6 +296,7 @@ class Sprites:
         self.card = np.tile([0.0, 0.0, 1.0, 1.0], (n, 1))
         self.color = np.ones((n, 4))
         self.frame_blend = np.zeros(n)
+        self.size_bounds = (0.0, 1e8, 2e8, 5000.0)
         self.rects = [None] * len(renderer.layers)
         self.next_rects = [None] * len(renderer.layers)
         self.offsets = [None] * len(renderer.layers)
@@ -353,6 +354,9 @@ class RenderSprites(Renderer):
     def __init__(self, p: Params, library, index: int):
         super().__init__(p, library, index)
         self.center_offset = (p.number("m_flCenterXOffset", 0.0), p.number("m_flCenterYOffset", 0.0))
+        # radii per unit of camera distance; the defaults are VRF's (no clamp, no fade)
+        self.size_bounds = (p.number("m_flMinSize", 0.0), p.number("m_flStartFadeSize", 1e8),
+                            p.number("m_flEndFadeSize", 2e8), p.number("m_flMaxSize", 5000.0))
         if self.orientation == FULL_ROTATION:
             p.note("sprites full 3 axis rotation")
 
@@ -369,6 +373,7 @@ class RenderSprites(Renderer):
         rows = np.nonzero(keep)[0]
         out = Sprites(self, len(rows))
         out.shading = self.shading(sim)
+        out.size_bounds = tuple(float(f(sim)) for f in self.size_bounds)
         out.position = v.get("position")[rows]
         out.half_width = radius[rows]
         out.roll = v.get("roll")[rows]
