@@ -409,7 +409,8 @@
   ],
   "face": {
    "part": "head",
-   "mesh": "head"
+   "mesh": "head",
+   "builder": "handkeys.py"
   },
   "extra_models": {
    "Grasping Hand": {
