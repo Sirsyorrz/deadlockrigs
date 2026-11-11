@@ -862,8 +862,40 @@ class RenderStandardLight:
         return out
 
 
+class RenderProjected(RenderSprites):
+    """A decal pressed onto whatever is under the particle (C_OP_RenderProjected), drawn as a flat card on the
+    ground with its material's colour map: Kelvin's dome edge, scorch and darken marks. The material's self
+    illumination scale stands in for the sprite's (a lit decal glows)."""
+
+    kind = "sprites"
+
+    def __init__(self, p: Params, library, index: int):
+        materials = [m.str("m_hMaterial") for m in p.array("m_vecProjectedMaterials") if m.str("m_hMaterial")]
+        material = library.material(materials[0]) if materials else None
+        if material is None:
+            raise ValueError("no projected material")
+        texture = material.textures.get("g_tColor")
+        if not texture:
+            raise ValueError("projected material has no colour map")
+        tint = material.vector("g_vColorTint", (1.0, 1.0, 1.0))[:3]
+        data = dict(p.data)
+        data["m_vecTexturesInput"] = [{"m_hTexture": texture}]
+        data["m_nOrientationType"] = "PARTICLE_ORIENTATION_WORLD_Z_ALIGNED"
+        data["m_flSelfIllumAmount"] = material.float("g_flSelfIllumScale", 0.0)
+        data["m_vecColorScale"] = list(tint)
+        data["m_flAlphaScale"] = material.float("g_flOpacityScale", 1.0) * material.float("g_flAlbedoOpacity", 1.0)
+        super().__init__(p.nested(data), library, index)
+
+    def build(self, sim, ambient) -> Sprites | None:
+        out = super().build(sim, ambient)
+        if out is not None:
+            out.position = out.position + [0.0, 0.0, 1.0]  # a game unit up: the card sits on the floor it projects on
+        return out
+
+
 RENDERERS = {
     "C_OP_RenderStandardLight": RenderStandardLight,
+    "C_OP_RenderProjected": RenderProjected,
     "C_OP_RenderSprites": RenderSprites,
     "C_OP_RenderRopes": RenderRopes,
     "C_OP_RenderTrails": RenderTrails,

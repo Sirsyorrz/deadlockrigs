@@ -288,6 +288,16 @@ class Library:
             self._sheets[key] = self._read_sheet(key) if self._read_sheet and key else None
         return self._sheets[key]
 
+    def material(self, path: str):
+        """A compiled material, or None."""
+        from ..material import CompiledMaterial
+        key = (path or "").replace("\\", "/").lower().removesuffix("_c")
+        data = self._read(key + "_c") if key else None
+        try:
+            return CompiledMaterial(data) if data is not None else None
+        except ValueError:
+            return None
+
     def skip(self, kind: str, name: str):
         self.unsupported[f"{kind} {name}"] += 1
 

@@ -265,6 +265,8 @@ class Translator:
             self.environment()
         elif shader == "pbr.vfx" and self.combo("F_GLASS"):
             self.glass()
+        elif shader == "pbr.vfx" and self.combo("F_CLOAK") and self.f("g_flCloakIntensity", 1.0) >= 0.5:
+            self.cloak()
         elif shader == "environment_parallax_layered.vfx":
             self.parallax()
         elif shader == "citadel_overlay.vfx":
@@ -756,6 +758,45 @@ class Translator:
         b.set(add.inputs[0], lit)
         b.set(add.inputs[1], transparent.outputs[0])
         self.finish(add.outputs[0], blended=True)
+
+    def cloak(self):
+        """F_CLOAK (Kelvin's ice dome): the engine draws what's behind, refracted through the normal map and tinted by
+        g_vCloakColorTint, with the lit surface only showing toward the silhouette (g_flCloakFresnelEffect).
+        Barely cloaked surfaces (the pig, strong troopers) stay pbr. No refraction: EEVEE only refracts with raytracing
+        on."""
+        b = self.b
+        b.column(0)
+        uv = b.uv("UVMap")
+        b.column(2)
+        color_node = self.texture("g_tColor", True, uv, "Color")
+        nr = self.texture("g_tNormalRoughness", False, uv, "Normal Roughness")
+        b.column(4)
+        correct, tint_rows = self.color_matrices("1", "g_tColor")
+        albedo = self.apply_matrix(color_node.outputs["Color"] if color_node else (1, 1, 1), correct, "Albedo")
+        albedo = self.apply_matrix(albedo, tint_rows, "Color Tint")
+        b.column(6)
+        if nr:
+            gradient = b.group(groups.normal_gradient(), Normal_Roughness=nr.outputs["Color"]).outputs[0]
+            normal = b.group(groups.gradient_normal(), Gradient=gradient).outputs[0]
+            roughness = b.separate_color(nr.outputs["Color"])[2]
+        else:
+            normal, roughness = None, 0.3
+        lit = self.lit(albedo, 0.0, roughness, normal, fog=self.fog_amount())
+
+        b.column(34)
+        edge = b.node("ShaderNodeLayerWeight")
+        edge.inputs["Blend"].default_value = 0.5
+        intensity = max(0.0, min(1.0, self.f("g_flCloakIntensity", 1.0)))
+        rim = b.math("POWER", edge.outputs["Facing"], 3.0)
+        surface = b.lerp(1.0, b.saturate(b.mul(rim, self.f("g_flCloakFresnelEffect", 0.5))), intensity)
+        transparent = b.node("ShaderNodeBsdfTransparent")
+        # used as stored: decoded from sRGB it's twice as blue as the game's dome (and both faces tint)
+        transparent.inputs["Color"].default_value = (*self.v("g_vCloakColorTint", (1, 1, 1))[:3], 1.0)
+        mix = b.node("ShaderNodeMixShader")
+        b.set(mix.inputs[0], surface)
+        b.set(mix.inputs[1], transparent.outputs[0])
+        b.set(mix.inputs[2], lit)
+        self.finish(mix.outputs[0], blended=True)
 
     # citadel_overlay ------------------------------------------------------------------------------------------------
 
