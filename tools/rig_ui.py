@@ -1255,12 +1255,13 @@ def simulate_cloth(cloth, goals, caps, fps, settings, allow, seq):
     return out
 
 
-def cloth_goals(cloth, m, rest_inv):
-    """Every node where the body bones' blend (its follow weights) takes it, from bone matrices m."""
+def cloth_goals(cloth, m, rest_inv, mw):
+    """Every node where the body bones' blend (its follow weights) takes it, from world bone matrices m. Node rest
+    positions are in armature space; mw puts them in the world like the bones."""
     import numpy as np
     out = np.zeros((len(cloth['nodes']), 3))
     for i, nd in enumerate(cloth['nodes']):
-        p = Vector(nd['rest'])
+        p = mw @ Vector(nd['rest'])
         acc = Vector()
         tot = 0.0
         for bn, w in nd['follow'].items():
@@ -1280,13 +1281,14 @@ def bake_cloth(ob, cloth, mats, rest_inv, rest_caps, lcaps, root, fps, settings,
     import numpy as np
     if not cloth['nodes']:
         return []
-    world = {k: cloth_goals(cloth, mats[k], rest_inv) for k in seq}
+    mw = ob.matrix_world.copy()
+    world = {k: cloth_goals(cloth, mats[k], rest_inv, mw) for k in seq}
 
     def to_local(k, P):
         m = np.array(root[k].inverted())
         return P @ m[:3, :3].T + m[:3, 3]
     goals = {k: to_local(k, world[k]) for k in seq}
-    rest_p = [Vector(nd['rest']) for nd in cloth['nodes']]
+    rest_p = [mw @ Vector(nd['rest']) for nd in cloth['nodes']]
     allow = [[(p - seg_closest(p, a, b)[0]).length for a, b in rest_caps] for p in rest_p] if rest_caps else \
         np.zeros((len(rest_p), 0))
     sim = simulate_cloth(cloth, goals, lcaps, fps, settings, allow, seq)
