@@ -1,7 +1,8 @@
 {
  "eyes": {"gaze": [0, -1, 0], "lid_axis": [1, 0, 0], "up": 14, "down": 14, "in": 18, "out": 18},
  "regions": {
-  "seam": {"not": {"ramp": [0.85, 1.0], "of": {"bone": "head"}}},
+  "seam": {"all": [{"not": {"ramp": [0.85, 1.0], "of": {"bone": "head"}}},
+                   {"not": {"box": [0, -95, -40], "size": [60, 35, 30], "soft": 0.3}}]},
   "lashes_{s}": {"pieces_near": {"box": [48, -132, 58], "size": [20, 12, 8], "soft": 0.2}},
   "brow_card_{s}": {"pieces_near": {"box": [50, -140, 80], "size": [14, 14, 8], "soft": 0.2}},
   "lower_teeth": {"pieces_near": {"box": [0, -124, -56], "size": [8, 8, 6], "soft": 0.2}},
