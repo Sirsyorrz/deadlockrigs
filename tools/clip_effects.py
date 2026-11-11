@@ -28,13 +28,16 @@ from deadlock_bridge.core import resource
 # preview their effects on other models, whose sequence names can collide with the hero's clips
 OWN_SLOTS = ('ESlot_Signature_', 'ESlot_Weapon_')
 ATTACHED = ('PATTACH_POINT', 'PATTACH_POINT_FOLLOW')
+# where a cast's flash goes when the effect itself doesn't say (its preview sits at the world origin)
+CAST_DRIVER = {'cp': 0, 'type': 'PATTACH_POINT_FOLLOW', 'attachment': 'ability_cast', 'offset': (0.0, 0.0, 0.0),
+               'angles': (0.0, 0.0, 0.0), 'entity': 'self'}
 # a legacy animation event's attachment types
 LEGACY_ATTACH = {'point': 'PATTACH_POINT', 'point_follow': 'PATTACH_POINT_FOLLOW', 'absorigin': 'PATTACH_ABSORIGIN',
                  'absorigin_follow': 'PATTACH_ABSORIGIN_FOLLOW', 'worldorigin': 'PATTACH_WORLDORIGIN'}
 # vdata keys and effect names for what enemies see, what shows on targets, what's drawn only while aiming, or only
 # for the hero's own player (first person beams, screen overlays)
 SKIP = ('enemy', 'preview', 'status', 'tgt', 'target', 'impact', 'tracer', 'projectile', 'miss', 'local', '_player',
-        'owner', 'screen')
+        'owner', 'screen', 'debug')
 # artists also preview buffs and debuffs on idles, runs and the bind pose: those say nothing about when it plays
 ABILITY_WORDS = {'ability', 'ult'}
 GENERIC_WORDS = {'idle', 'idle1', 'run', 'walk', 'sprint', 'stand', 'crouch', 'bindpose', 'bind', 'pose', 'ref',
@@ -165,6 +168,20 @@ def _same_stage(key, path, clips):
 
 
 _shared = {}
+_titles = {}
+
+
+def titles(content):
+    """{ability: its English name} from the game's localization files (outside the VPKs)."""
+    if content.install not in _titles:
+        path = os.path.join(content.game, 'citadel', 'resource', 'localization', 'citadel_heroes',
+                            'citadel_heroes_english.txt')
+        try:
+            with open(path, encoding='utf-8', errors='replace') as f:
+                _titles[content.install] = dict(re.findall(r'^\s*"([^"]+)"\s+"([^"]*)"', f.read(), re.M))
+        except OSError:
+            _titles[content.install] = {}
+    return _titles[content.install]
 
 
 def for_model(content, model):
@@ -186,6 +203,7 @@ class ClipEffects:
         self._legacy = None
         self._graph = None
         self._nm = None
+        self._catalog = None
 
     def clip_file(self, name):
         """The compiled clip called name (as the rig's actions are, game_<name>) on this model's skeleton. Clips
@@ -367,9 +385,7 @@ class ClipEffects:
                       and _stages(key) | _stages(value.rsplit('/', 1)[-1])):
                     # placed by the game code alone (preview at the world origin): a cast's flash goes where
                     # the model says casts come from
-                    drivers = [{'cp': 0, 'type': 'PATTACH_POINT_FOLLOW', 'attachment': 'ability_cast',
-                                'offset': (0.0, 0.0, 0.0), 'angles': (0.0, 0.0, 0.0), 'entity': 'self'}]
-                    drivers += [d for d in _drivers(cfg) if d['cp'] != 0]
+                    drivers = [CAST_DRIVER] + [d for d in drivers if d['cp'] != 0]
                     found, guessed = _same_stage(key, value, clips), True
                 else:
                     continue
@@ -383,6 +399,54 @@ class ClipEffects:
                                     if o is not e and o['root'] == e['root'] and not o['guessed']))
             e['clips'] = e['clips'] | (e.pop('extra') - claimed)
         return self._ability
+
+    def catalog(self):
+        """[(ability, title, [effect])]: every effect of each of the hero's abilities (and what they name), for
+        adding by hand where no clip says when it plays. Each effect's 'kind' says where it's put: 'hero' (on the
+        attachments it was previewed on), 'cast' (a flash with no placement, on the ability_cast attachment),
+        'target' (what shows on whoever is hit or buffed: put on this rig), 'area' (laid out around the rig's
+        origin as previewed: domes, walls, beams)."""
+        if self._catalog is not None:
+            return self._catalog
+        abilities = resource_data(self.content, 'scripts/abilities.vdata') or {}
+        modifiers = resource_data(self.content, 'scripts/modifiers.vdata') or {}
+        names = titles(self.content)
+        attachments = self.attachments()
+        self._catalog = []
+        slots = sorted(self.hero_abilities().items(), key=lambda s: (not s[0].startswith('ESlot_Signature_'), s[0]))
+        for slot, root in slots:
+            if not slot.startswith(OWN_SLOTS):
+                continue
+            effects, queue, named = {}, [root], set()
+            while queue:
+                name = queue.pop()
+                if name in named:
+                    continue
+                named.add(name)
+                block = abilities.get(name) or modifiers.get(name)
+                for key, value in _walk(block if isinstance(block, dict) else {}):
+                    if value in abilities or value in modifiers:
+                        queue.append(value)
+                    if not value.endswith('.vpcf') or value in effects or _skipped(key, value.rsplit('/', 1)[-1]):
+                        continue
+                    if self.effect(value) is None:
+                        continue
+                    cfg = _config(self.effect(value), 'preview')
+                    drivers, kind = _drivers(cfg), 'area'
+                    if _status(key, value):
+                        kind = 'target'
+                    elif _on_hero(cfg, attachments):
+                        kind = 'hero'
+                    elif (not any(d['type'] != 'PATTACH_WORLDORIGIN' for d in drivers)
+                          and 'ability_cast' in attachments and _stages(key) | _stages(value.rsplit('/', 1)[-1])):
+                        kind = 'cast'
+                        drivers = [CAST_DRIVER] + [d for d in drivers if d['cp'] != 0]
+                    effects[value] = {'path': value, 'source': 'ability', 'ability': name, 'key': key, 'kind': kind,
+                                      'start': 0.0, 'loop': True, 'drivers': drivers, 'guessed': kind == 'cast'}
+            if effects:
+                title = names.get(root) or root.replace('citadel_', '').replace('ability_', '').replace('_', ' ')
+                self._catalog.append((root, title, list(effects.values())))
+        return self._catalog
 
     def _specific(self, sequence, ability_clips):
         """Whether a preview's sequence says when the effect plays: a clip of this hero that isn't one artists

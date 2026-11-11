@@ -127,12 +127,13 @@ class RigPoints:
         return position, rotation
 
 
-def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None):
+def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None, effects=None):
     """Builds every effect clip ``clip`` starts onto the rig, the clip playing from ``start_frame`` for ``duration``
-    seconds (the game's clip length if None). Returns the effects' empties."""
+    seconds (the game's clip length if None). Returns the effects' empties. ``effects`` (picked from
+    ClipEffects.catalog()) are built instead, ``clip`` then only names them."""
     content = session.content()
     fx = for_model(content, model_of(arm))
-    effects = fx.effects(clip)
+    effects = fx.effects(clip) if effects is None else effects
     duration = duration or fx.duration(clip)
     if not effects or duration <= 0:
         return []

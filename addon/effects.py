@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Clip Effects: the particle effects a hero's clip plays in the game (ability effects such as Dynamo's singularity,
-the clip's own sparks and glows) added to its rig for the clip it plays (tools/rig_effects.py)."""
+the clip's own sparks and glows) added to its rig for the clip it plays (tools/rig_effects.py), and any of its
+abilities' effects added by hand from the current frame (Ability Effects)."""
 import re
 
 import bpy
@@ -8,7 +9,12 @@ import bpy
 from . import particles
 
 TAG = 'dlr_clip_effect'
+# set on effects added from Ability Effects: Add Clip Effects leaves them be
+PICKED = 'dlr_picked_effect'
+KINDS = {'hero': 'on hero', 'cast': 'cast (guess)', 'target': 'hit target', 'area': 'area'}
 _found = {}
+_catalogs = {}
+_ability_items = []
 
 
 def _is_rig(ob):
@@ -61,6 +67,55 @@ def effects_of(arm, clip):
     return _found[key]
 
 
+def catalog_of(arm):
+    """[(ability, title, [effect])] of the rig's hero (ClipEffects.catalog), cached per hero."""
+    from . import tools_module
+    if arm['dlrig'] not in _catalogs:
+        particles.bridge_particles()
+        rig_effects = tools_module('rig_effects')
+        clip_effects = tools_module('clip_effects')
+        from deadlock_bridge import session
+        try:
+            _catalogs[arm['dlrig']] = clip_effects.for_model(session.content(), rig_effects.model_of(arm)).catalog()
+        except Exception as e:
+            print(f'Ability effects of {arm["dlrig"]}: {e}')
+            return []
+    return _catalogs[arm['dlrig']]
+
+
+def ability_items(self, context):
+    arm = rig_of(context.active_object)
+    # Blender keeps only the strings of the list it was last given
+    _ability_items[:] = [(a, title, '') for a, title, _ in catalog_of(arm)] if arm else []
+    return _ability_items or [('NONE', 'No abilities', '')]
+
+
+def listed_for(context):
+    arm = rig_of(context.active_object)
+    return f'{arm.name}|{context.window_manager.dlr_fx_ability}' if arm else ''
+
+
+def fill_list(self, context):
+    wm = context.window_manager
+    wm.dlr_fx_list.clear()
+    arm = rig_of(context.active_object)
+    found = next((fx for a, _, fx in catalog_of(arm) if a == wm.dlr_fx_ability), []) if arm else []
+    for e in found:
+        item = wm.dlr_fx_list.add()
+        item.path, item.kind = e['path'], e['kind']
+        folder, stem = e['path'].removesuffix('.vpcf').rsplit('/', 2)[-2:]
+        item.label = stem.removeprefix(folder + '_').replace('_', ' ')
+        item.use = e['kind'] != 'target'
+    wm.dlr_fx_for = listed_for(context)
+
+
+class DLR_PG_ability_effect(bpy.types.PropertyGroup):
+    path: bpy.props.StringProperty()
+    label: bpy.props.StringProperty()
+    kind: bpy.props.StringProperty()
+    use: bpy.props.BoolProperty(name='Add', description='Add this effect')
+
+
 def merged(clips, arm):
     """Back to back copies of a clip whose effects all loop (a channel inserted twice) as one span, so the effect
     carries on instead of starting over."""
@@ -95,7 +150,7 @@ class DLR_OT_clip_effects(bpy.types.Operator):
             return {'CANCELLED'}
         particles.bridge_particles()
         rig_effects = tools_module('rig_effects')
-        old = [o for o in arm.children if o.get(TAG)]
+        old = [o for o in arm.children if o.get(TAG) and not o.get(PICKED)]
         sc = context.scene
         fps = sc.render.fps / sc.render.fps_base
         wm = context.window_manager
@@ -112,7 +167,7 @@ class DLR_OT_clip_effects(bpy.types.Operator):
             return {'CANCELLED'}
         finally:
             wm.progress_end()
-        rig_effects.remove_holders(old)
+        rig_effects.remove_holders([o for o in old if not o.get(PICKED)])
         for holder in holders:
             # built while the old ones still held their names
             holder.name = re.sub(r'\.\d{3}$', '', holder.name)
@@ -120,6 +175,63 @@ class DLR_OT_clip_effects(bpy.types.Operator):
         names = ', '.join(dict.fromkeys(c[0] for c in clips))
         self.report({'INFO'}, f'{len(holders)} effects added for {names}' if holders
                     else f'The effects of {names} draw nothing here')
+        return {'FINISHED'}
+
+
+class DLR_OT_list_ability_effects(bpy.types.Operator):
+    bl_idname = 'dlr.list_ability_effects'
+    bl_label = 'List Effects'
+    bl_description = "List the chosen ability's effects"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        fill_list(None, context)
+        return {'FINISHED'}
+
+
+class DLR_OT_ability_effects(bpy.types.Operator):
+    bl_idname = 'dlr.ability_effects'
+    bl_label = 'Add Ability Effects'
+    bl_description = ("Add the ticked effects of the ability to the rig, playing from the current frame to the end of "
+                      "the action (or the scene). For effects no clip says the timing of: buffs, domes, walls, "
+                      "what a hit hero shows")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        wm = context.window_manager
+        return (rig_of(context.active_object) is not None and wm.dlr_fx_for == listed_for(context)
+                and any(i.use for i in wm.dlr_fx_list))
+
+    def execute(self, context):
+        from . import tools_module
+        wm = context.window_manager
+        arm = rig_of(context.active_object)
+        ability = next(((a, title, fx) for a, title, fx in catalog_of(arm) if a == wm.dlr_fx_ability), None)
+        if ability is None:
+            return {'CANCELLED'}
+        ticked = {i.path for i in wm.dlr_fx_list if i.use}
+        picked = [e for e in ability[2] if e['path'] in ticked]
+        sc = context.scene
+        fps = sc.render.fps / sc.render.fps_base
+        start = float(sc.frame_current)
+        ends = [last for _, _, last in clips_of(arm) if last > start + 1]
+        end = max(ends) if ends else float(sc.frame_end)
+        if end <= start + 1:
+            end = start + 2 * fps
+        particles.bridge_particles()
+        rig_effects = tools_module('rig_effects')
+        try:
+            holders = rig_effects.add(context, arm, ability[1], start, (end - start) / fps, effects=picked)
+        except Exception as e:
+            self.report({'ERROR'}, f'Ability effects failed: {e}')
+            return {'CANCELLED'}
+        for holder in holders:
+            holder[PICKED] = ability[0]
+            holder.name = re.sub(r'\.\d{3}$', '', holder.name)
+            particles.jitter(holder)
+        self.report({'INFO'}, f'{len(holders)} effects of {ability[1]} added' if holders
+                    else f'The effects of {ability[1]} draw nothing here')
         return {'FINISHED'}
 
 
@@ -166,6 +278,19 @@ class DLR_PT_clip_effects(bpy.types.Panel):
                 col.label(text=f'{int(first)}-{int(round(last))}  {clip}' + ('  (no effects)' if none else ''),
                           icon='ACTION')
             layout.operator('dlr.clip_effects', icon='PARTICLES')
+        wm = context.window_manager
+        box = layout.box()
+        box.label(text='Ability Effects', icon='SHADERFX')
+        box.prop(wm, 'dlr_fx_ability', text='')
+        if wm.dlr_fx_for != listed_for(context):
+            box.operator('dlr.list_ability_effects', icon='VIEWZOOM')
+        else:
+            col = box.column(align=True)
+            for item in wm.dlr_fx_list:
+                row = col.row(align=True).split(factor=0.7)
+                row.prop(item, 'use', text=item.label)
+                row.label(text=KINDS.get(item.kind, item.kind))
+            box.operator('dlr.ability_effects', icon='PARTICLES')
         added = sorted({o[TAG] for o in arm.children if o.get(TAG)})
         if added:
             row = layout.row()
@@ -173,7 +298,14 @@ class DLR_PT_clip_effects(bpy.types.Panel):
             row.operator('dlr.remove_clip_effects', text='', icon='X')
 
 
-CLASSES = (DLR_OT_clip_effects, DLR_OT_remove_clip_effects)
+CLASSES = (DLR_PG_ability_effect, DLR_OT_clip_effects, DLR_OT_list_ability_effects, DLR_OT_ability_effects,
+           DLR_OT_remove_clip_effects)
+WM_PROPS = {
+    'dlr_fx_ability': lambda: bpy.props.EnumProperty(name='Ability', items=ability_items, update=fill_list,
+                                                     description="The hero ability whose effects to list"),
+    'dlr_fx_list': lambda: bpy.props.CollectionProperty(type=DLR_PG_ability_effect),
+    'dlr_fx_for': lambda: bpy.props.StringProperty(),
+}
 
 
 _parent = [None]
@@ -202,6 +334,8 @@ def _watch_parent():
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
+    for name, prop in WM_PROPS.items():
+        setattr(bpy.types.WindowManager, name, prop())
     attach_panel()
     bpy.app.timers.register(_watch_parent, first_interval=1.0, persistent=True)
 
@@ -211,5 +345,7 @@ def unregister():
         bpy.app.timers.unregister(_watch_parent)
     if DLR_PT_clip_effects.is_registered:
         bpy.utils.unregister_class(DLR_PT_clip_effects)
+    for name in WM_PROPS:
+        delattr(bpy.types.WindowManager, name)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
