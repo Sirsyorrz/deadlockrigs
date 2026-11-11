@@ -9,7 +9,7 @@ are during it.
 Once (an effect placed to play from a frame): every step from the effect's start, as it is.
 
 Both take ``moving``: control points that move while the effect plays (a rig's bones), a function of the seconds
-since the start giving {number: (position, rotation or None)}, set before each step.
+since the start giving {number: (position, rotation or None[, model])}, set before each step.
 """
 from contextlib import contextmanager
 
@@ -62,15 +62,15 @@ def _drawn(simulation, ambient, masks=None):
 def _new(definition, control_points, seed, unset_value):
     simulation = Simulation(definition, seed)
     simulation.unset_value = unset_value
-    for index, (position, rotation) in control_points.items():
-        simulation.set_control_point(index, position, rotation)
+    for index, (position, rotation, *model) in control_points.items():
+        simulation.set_control_point(index, position, rotation, *model)
     return simulation
 
 
 def _step(simulation, step, moving):
     if moving is not None:
-        for index, (position, rotation) in moving(simulation.age).items():
-            simulation.set_control_point(index, position, rotation)
+        for index, (position, rotation, *model) in moving(simulation.age).items():
+            simulation.set_control_point(index, position, rotation, *model)
     simulation.update(step)
 
 

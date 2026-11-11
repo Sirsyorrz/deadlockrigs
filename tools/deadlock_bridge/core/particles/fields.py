@@ -39,6 +39,7 @@ INTEGER = {SEQUENCE, SEQUENCE1, PARTICLE_ID, PARENT_INDEX, PARENT_ID, ROPE_SEGME
 DEFAULTS = {
     "lifetime": 1.0, "radius": 5.0, "alpha": 1.0, "alpha_alternate": 1.0, "color": (1.0, 1.0, 1.0),
     "trail_length": 0.1, "force_scale": 1.0, "normal": (0.0, 0.0, 1.0), "parent_index": -1.0, "parent_id": -1.0,
+    "hitbox_index": -1.0,
 }
 
 # Arrays the simulation keeps that aren't attributes of their own.

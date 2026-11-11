@@ -629,7 +629,7 @@ class _ObjectBuilder:
     def _holder(self, name, effect, points, time, seed, ambient, holder, local):
         """The effect's empty (a new one at its first control point, or the given one emptied by the caller) with
         what a rebuild needs, and the parent inverse its objects take."""
-        origin, rotation = points[0]
+        origin, rotation = points[0][:2]
         if holder is None:
             holder = bpy.data.objects.new(name, None)
             holder.empty_display_type = "SPHERE"
@@ -649,7 +649,7 @@ class _ObjectBuilder:
         holder["dl_ambient"] = [float(x) for x in ambient]
         # The other control points in the first one's frame, so a rebuild carries them along with the empty.
         relative = {}
-        for index, (position, cp_rotation) in points.items():
+        for index, (position, cp_rotation, *_model) in points.items():
             if index == 0:
                 continue
             # not called local: that would overwrite the parameter the inverse below depends on

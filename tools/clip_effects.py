@@ -212,6 +212,15 @@ class ClipEffects:
                                                          tuple(a['m_vInfluenceRotations'][0]))
         return out
 
+    def hitbox_sets(self):
+        """{set name: [{bone, mins, maxs, radius, shape}]} of the model's hitboxes, game units in the bone's space."""
+        mdat = resource_data(self.content, self.model, 'MDAT') or {}
+        return {item['key']: [{'bone': h['m_sBoneName'], 'mins': tuple(h['m_vMinBounds']),
+                               'maxs': tuple(h['m_vMaxBounds']), 'radius': float(h.get('m_flShapeRadius', 0.0)),
+                               'shape': int(h.get('m_nShapeType', 0))}
+                              for h in (item.get('value') or {}).get('m_HitBoxes') or []]
+                for item in mdat.get('m_hitboxsets') or []}
+
     def bind_pose(self):
         """{bone: (rotation 3x3, position)} of the model's skeleton in model space, game units."""
         import numpy as np

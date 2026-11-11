@@ -5,8 +5,8 @@ import math
 import numpy as np
 
 from . import fields as F
-from . import noise
-from .initializers import column, path_evaluate, path_points, rows3, _path_parameters
+from . import models, noise
+from .initializers import column, models_control_point, path_evaluate, path_points, rows3, _path_parameters
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
                      SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, lerp, remap, saturate,
@@ -1100,3 +1100,90 @@ class ConstrainDistance(Constraint):
         scale = np.divide(target, distance, out=np.ones_like(distance), where=distance > 0)
         v.set("position", np.where(outside[:, None], center + delta * scale[:, None], v.get("position")))
         return True
+
+
+ROTATION_LOCKS = {"PARTICLE_ROTATION_LOCK_NONE": 0, "PARTICLE_ROTATION_LOCK_ROTATIONS": 1,
+                  "PARTICLE_ROTATION_LOCK_NORMAL": 2}
+
+
+@register(OPERATORS, "C_OP_LockToBone")
+class LockToBone(Operator):
+    """Keeps particles on the bone of the hitbox they were created in: each step they move by the bone's motion,
+    fading out over their life (a rigid lock puts them on the bone's point outright)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.model_cp = models_control_point(p)
+        self.transform = p.transform("m_transformInput")
+        self.fade_start = p.float("m_flLifeTimeFadeStart")
+        self.fade_end = p.float("m_flLifeTimeFadeEnd")
+        self.jump_threshold = p.float("m_flJumpThreshold", 100.0)
+        self.previous_scale = p.float("m_flPrevPosScale", 1.0)
+        self.set_name = p.str("m_HitboxSetName", "default")
+        self.rigid = p.bool("m_bRigid")
+        self.use_bones = p.bool("m_bUseBones")
+        self.rotation_type = p.enum("m_nRotationSetType", ROTATION_LOCKS, 0)
+        self.rigid_rotation = p.bool("m_bRigidRotationLock")
+        self.rotation_lerp = p.number("m_flRotLerp", 1.0)
+        if self.rotation_type == 1:
+            p.note("C_OP_LockToBone rotation lock of the rotation angles")
+        self._followed = None
+
+    def operate(self, sim, v, dt, strength):
+        point = sim.control_point(self.model_cp) if self.model_cp >= 0 else None
+        if dt <= 0 or point is None or point.model is None or v.n == 0:
+            return
+        # a frame split into substeps would move the particles by the bones' motion once per substep
+        if not self.rigid and point.model["bones"] is self._followed:
+            return
+        self._followed = point.model["bones"]
+        boxes = models.hitbox_list(point.model, self.set_name, self.use_bones)
+        index = v.get("hitbox_index").astype(np.int64)
+        age = v.get("age")
+        _, position = self.transform(sim)
+        jumped = False
+        if self.transform.control_point is not None:
+            moved = position - sim.control_point(self.transform.control_point).previous_position
+            jumped = float(moved @ moved) > self.jump_threshold ** 2
+        fade_end = self.fade_end if self.fade_end > 0 else np.inf
+        active = (index >= 0) & (index < len(boxes)) & ((age < fade_end) | jumped)
+        if not active.any():
+            return
+        rows = np.flatnonzero(active)
+        idx = index[rows]
+        current = models.matrices(point.model["bones"], boxes)
+        before = models.matrices(point.previous_bones or point.model["bones"], boxes)
+        local = v.get("hitbox_offset")[rows]
+        target = models.transform_points(current[idx], local)
+        step = np.minimum(age[rows], dt) / dt
+        inverse = 1.0 / (self.fade_end - self.fade_start) if self.fade_end > self.fade_start else 0.0
+        weight = (1.0 - (age[rows] - self.fade_start) * inverse) * strength
+        positions, previous = v.get("position"), v.get("previous")
+        if self.rigid:
+            positions[rows] = target
+            previous[rows] = target
+        else:
+            delta = (target - models.transform_points(before[idx], local)) * step[:, None]
+            if not jumped:
+                delta = np.where((self.fade_start < age[rows])[:, None], delta * weight[:, None], delta)
+            positions[rows] += delta
+            previous[rows] += delta * (1.0 if jumped else self.previous_scale)
+        if self.rotation_type == 2:
+            self.lock_normal(sim, v, rows, idx, current, before, step, weight)
+
+    def lock_normal(self, sim, v, rows, idx, current, before, step, weight):
+        now = unit_rotation(current[idx])
+        if self.rigid_rotation:
+            target = now[:, :, 0]
+            blend = column(self.rotation_lerp(sim, v), v.n)[rows]
+        else:
+            target = np.einsum("nij,nj->ni", now @ np.swapaxes(unit_rotation(before[idx]), 1, 2), v.get("normal")[rows])
+            blend = step if self.rigid else step * weight
+        normals = v.get("normal")
+        normals[rows] += (target - normals[rows]) * blend[:, None]
+
+
+def unit_rotation(matrices):
+    basis = matrices[:, :3, :3]
+    length = np.linalg.norm(basis, axis=1, keepdims=True)
+    return basis / np.maximum(length, 1e-9)

@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 from . import fields as F
-from . import noise
+from . import models, noise
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
                      SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, lerp, remap_clamped, saturate)
@@ -803,3 +803,161 @@ class RemapInitialDirectionToTransformToVector(Initializer):
             length = np.linalg.norm(direction, axis=1, keepdims=True)
             direction = np.divide(direction, length, out=np.zeros_like(direction), where=length > 0)
         v.set_field(self.field, direction * self.scale)
+
+
+@initializer("C_INIT_CreateOnModel")
+class CreateOnModel(Initializer):
+    """Places particles at random points inside the hitboxes (or bones) of the model a control point carries, and
+    records the box and the point in its bone's space for C_OP_LockToBone."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.model_cp = models_control_point(p)
+        self.transform = p.transform("m_transformInput")
+        self.tries = p.int("m_nForceInModel", 0)
+        self.desired = p.number("m_nDesiredHitbox", -1.0)
+        self.desired_from_cp = p.int("m_nHitboxValueFromControlPointIndex", -1)
+        self.scale = p.vec("m_vecHitBoxScale", (1.0, 1.0, 1.0))
+        self.bone_velocity = p.float("m_flBoneVelocity")
+        self.max_bone_velocity = p.float("m_flMaxBoneVelocity")
+        self.bias = p.vec("m_vecDirectionBias", (0.0, 0.0, 0.0))
+        self.set_name = p.str("m_HitboxSetName", "default")
+        self.local = p.bool("m_bLocalCoords")
+        self.use_bones = p.bool("m_bUseBones")
+        self.shell = p.number("m_flShellSize", 1.0)
+        if p.bool("m_bUseMesh"):
+            p.note("C_INIT_CreateOnModel m_bUseMesh")
+
+    def initialize(self, sim, v):
+        model = models.model_of(sim, self.model_cp)
+        boxes = models.hitbox_list(model, self.set_name, self.use_bones) if model else []
+        rotation, origin = self.transform(sim)
+        if not boxes or v.n == 0:
+            v.set("position", origin)
+            return
+        n = v.n
+        desired = int(column(self.desired(sim, v), n)[0])
+        if self.desired_from_cp >= 0:
+            desired = int(sim.control_point(self.desired_from_cp).position[0])
+        scale = rows3(self.scale(sim, v), n)[0]
+        bias = rows3(self.bias(sim, v), n)[0]
+        if self.local:
+            bias = rotation @ bias
+        shell = float(column(self.shell(sim, v), n)[0])
+        index, local, world = pick_on_model(sim, boxes, model["bones"], n, desired, scale, bias, shell, origin,
+                                            self.tries)
+        v.set("position", world)
+        v.set("hitbox_index", index)
+        v.set("hitbox_offset", local)
+        if self.bone_velocity:
+            add_bone_velocity(sim, v, boxes, sim.control_point(self.model_cp), index, local, self.bone_velocity,
+                              self.max_bone_velocity)
+
+
+def models_control_point(p: Params) -> int:
+    """The control point a function's model input reads (m_modelInput, else m_nControlPointNumber, else 0)."""
+    data = p.get("m_modelInput")
+    if isinstance(data, dict) and data:
+        nested = p.nested(data)
+        if nested.str("m_nType", "PM_TYPE_CONTROL_POINT") == "PM_TYPE_CONTROL_POINT":
+            return nested.int("m_nControlPoint")
+        return -1
+    return p.int("m_nControlPointNumber", 0)
+
+
+def pick_on_model(sim, boxes, bones, n, desired, scale, bias, shell, origin, tries):
+    """For n particles, a random point in a hitbox each: (hitbox index (n,), bone space point (n, 3), simulation
+    space point (n, 3)). With a direction bias, or ``tries`` above 1, the best scoring of several candidates."""
+    random = sim.random
+    count = len(boxes)
+    if np.abs(bias).max() >= 1e-4:
+        tries = max(tries, 5)
+    rounds = max(tries, 0) + 1
+    low, high = 0.5 - scale * 0.5, 0.5 + scale * 0.5
+    arrays = models.box_arrays(boxes)
+    mats = models.matrices(bones, boxes)
+    pick = random.next(rounds * n).reshape(rounds, n)
+    if desired >= 0:
+        index = np.full((rounds, n), min(desired, count - 1))
+    else:
+        index = np.minimum((pick * count).astype(np.int64), count - 1)
+    fraction = low + (high - low) * random.next(rounds * n * 3).reshape(rounds, n, 3)
+    spread = random.next(rounds * n * 3).reshape(rounds * n, 3)
+    if shell != 1.0:
+        axis = np.minimum((random.next(rounds * n) * 3).astype(np.int64), 2).reshape(rounds, n)
+        sign = np.where((random.next(rounds * n) * 2).astype(np.int64).reshape(rounds, n) == 1, 1.0, -1.0)
+        depth = scale[axis] * shell * 0.5 * random.next(rounds * n).reshape(rounds, n)
+        start = np.where(sign >= 0, low[axis], high[axis])
+        np.put_along_axis(fraction, axis[..., None], (depth * sign + start)[..., None], axis=2)
+    flat = index.reshape(-1)
+    local = models.local_points(arrays, flat, fraction.reshape(-1, 3), spread)
+    world = models.transform_points(mats[flat], local)
+    if tries > 1:
+        score = ((world - origin) @ bias).reshape(rounds, n) + random.next(rounds * n).reshape(rounds, n) * 72.0
+        best = score.argmax(axis=0)
+    else:
+        best = np.zeros(n, np.int64)
+    rows = best * n + np.arange(n)
+    return flat[rows].astype(np.float64), local[rows], world[rows]
+
+
+def add_bone_velocity(sim, v, boxes, point, index, local, scale, limit):
+    if point.previous_bones is None or sim.frame_time <= 0:
+        return
+    idx = index.astype(np.int64)
+    now = models.transform_points(models.matrices(point.model["bones"], boxes)[idx], local)
+    before = models.transform_points(models.matrices(point.previous_bones, boxes)[idx], local)
+    velocity = (now - before) / sim.frame_time * scale
+    if limit > 0:
+        speed = np.linalg.norm(velocity, axis=1, keepdims=True)
+        velocity = velocity * np.minimum(1.0, limit / np.maximum(speed, 1e-9))
+    v.set("velocity", v.get("velocity") + velocity)
+
+
+@initializer("C_INIT_CreateOnModelAtHeight")
+class CreateOnModelAtHeight(Initializer):
+    """Places particles inside the hitboxes of a control point's model that reach across a height; a particle with
+    no box reaching it dies at birth."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.control_point = p.int("m_nControlPointNumber")
+        self.height_cp = p.int("m_nHeightCP", -1)
+        self.height = p.number("m_flDesiredHeight", 0.0)
+        self.scale = p.vec("m_vecHitBoxScale", (1.0, 1.0, 1.0))
+        self.force_z = p.bool("m_bForceZ")
+        self.set_name = p.str("m_HitboxSetName", "default")
+        self.use_bones = p.bool("m_bUseBones")
+
+    def initialize(self, sim, v):
+        n = v.n
+        point = sim.control_point(self.control_point)
+        boxes = models.hitbox_list(point.model, self.set_name, self.use_bones) if point.model else []
+        if not boxes or n == 0:
+            return
+        base = sim.control_point(self.height_cp if self.height_cp >= 0 else self.control_point).position[2]
+        height = base + float(column(self.height(sim, v), n)[0])
+        scale = rows3(self.scale(sim, v), n)[0]
+        low, high = 0.5 - scale * 0.5, 0.5 + scale * 0.5
+        arrays = models.box_arrays(boxes)
+        mats = models.matrices(point.model["bones"], boxes)
+        mins, maxs, radius, _ = arrays
+        corners = np.array([[(c >> k) & 1 for k in range(3)] for c in range(8)], np.float64)
+        local = mins[:, None, :] + (maxs - mins)[:, None, :] * corners[None]
+        world_z = np.einsum("hj,hcj->hc", mats[:, 2, :3], local) + mats[:, 2, 3][:, None]
+        reach = (world_z.min(axis=1) - radius <= height) & (world_z.max(axis=1) + radius >= height)
+        candidates = np.flatnonzero(reach)
+        random = sim.random
+        if not len(candidates):
+            v.set("lifetime", 0.0)
+            return
+        index = candidates[np.minimum((random.next(n) * len(candidates)).astype(np.int64), len(candidates) - 1)]
+        fraction = low + (high - low) * random.next(n * 3).reshape(n, 3)
+        spread = random.next(n * 3).reshape(n, 3)
+        points = models.local_points(arrays, index, fraction, spread)
+        world = models.transform_points(mats[index], points)
+        if self.force_z:
+            world[:, 2] = height
+        v.set("position", world)
+        v.set("hitbox_index", index.astype(np.float64))
+        v.set("hitbox_offset", points)

@@ -49,9 +49,23 @@ class RigPoints:
             at[:3, 3] = FRAME3 @ (t + r @ np.asarray(offset, np.float64)) * UNIT
             # kept relative to the rig's own bone: its rest frame is turned from the game's (mirror.py, rolls)
             self.attach[name] = (bone, np.linalg.inv(np.array(rest.matrix_local)) @ at)
+        # the body effects spawn on and stick to (C_INIT_CreateOnModel, C_OP_LockToBone)
+        self.hitboxes = fx.hitbox_sets()
+        self.body = {}
+        for bone in {h['bone'] for boxes in self.hitboxes.values() for h in boxes}:
+            rest = arm.data.bones.get(bone)
+            if rest is None or bone not in bind:
+                continue
+            r, t = bind[bone]
+            at = np.eye(4)
+            at[:3, :3] = FRAME3 @ r
+            at[:3, 3] = FRAME3 @ t * UNIT
+            self.body[bone] = np.linalg.inv(np.array(rest.matrix_local)) @ at
         self.root = 'root_motion' if 'root_motion' in arm.pose.bones else None
-        self._wanted = {bone for bone, _ in self.attach.values()} | ({self.root} if self.root else set())
+        self._wanted = ({bone for bone, _ in self.attach.values()} | set(self.body)
+                        | ({self.root} if self.root else set()))
         self._cache = {}
+        self.model_needed = False
 
     def _pose(self, frame):
         key = round(frame, 3)
@@ -73,10 +87,24 @@ class RigPoints:
         if first[0][1] is None:
             # the effect's origin needs a frame even when its driver is a literal
             first[0] = (first[0][0], np.eye(3))
-        out = {frames[0]: first}
-        for frame in frames[1:]:
-            out[frame] = {**first, **{d['cp']: self._point(d, self._pose(frame)) for d in follow}} if follow \
-                else first
+        out = {}
+        for frame in frames:
+            points = {**first, **{d['cp']: self._point(d, self._pose(frame)) for d in follow}}
+            if self.body and self.model_needed:
+                # a new dict each step: LockToBone moves particles by the change from the last step's bones
+                model = {'hitboxes': self.hitboxes, 'bones': self._bones(self._pose(frame))}
+                points = {cp: (*value[:2], model) for cp, value in points.items()}
+            out[frame] = points
+        return out
+
+    def _bones(self, pose):
+        out = {}
+        for bone, rel in self.body.items():
+            m = pose[bone] @ rel
+            g = np.eye(4)
+            g[:3, :3] = FRAME3.T @ m[:3, :3]
+            g[:3, 3] = FRAME3.T @ m[:3, 3] / UNIT
+            out[bone] = g
         return out
 
     def _point(self, d, pose):
@@ -144,6 +172,7 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None):
                     return min(begin + age * fps, end)
             # the clip's frames the bake samples, on its own steps
             frames = sorted({round(clip_frame(warm + k / RATE), 3) for k in range(steps + 1)})
+            rig_points.model_needed = uses_model(definition)
             sampled = rig_points.sample(effect, frames)
 
             def moving(age, sampled=sampled, clip_frame=clip_frame):
@@ -169,6 +198,21 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None):
     finally:
         scene.frame_set(frame_was[0], subframe=frame_was[1])
     return holders
+
+
+MODEL_FUNCTIONS = ('C_INIT_CreateOnModel', 'C_INIT_CreateOnModelAtHeight', 'C_OP_LockToBone')
+
+
+def uses_model(definition, seen=None):
+    """Whether a system tree places particles on its control point's body."""
+    seen = set() if seen is None else seen
+    if definition is None or definition.path in seen:
+        return False
+    seen.add(definition.path)
+    for key in ('m_Initializers', 'm_Operators'):
+        if any(f.str('_class') in MODEL_FUNCTIONS for f in definition.params.functions(key)):
+            return True
+    return any(uses_model(definition.library.get(c.path), seen) for c in definition.children if c.path)
 
 
 def show_between(holder, first, last):

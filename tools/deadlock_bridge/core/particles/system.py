@@ -69,10 +69,14 @@ class ControlPoint:
     """A control point: a position and, when something placed it with one, a rotation (columns: forward, left,
     up). Change time is when its value last changed (-1 for never)."""
 
-    __slots__ = ("position", "rotation", "oriented", "change_time")
+    __slots__ = ("position", "rotation", "oriented", "change_time", "model", "previous_bones", "previous_position")
 
     def __init__(self):
         self.position = np.zeros(3)
+        self.previous_position = np.zeros(3)
+        # {'hitboxes': {set: [box, ...]}, 'bones': {name: 4x4 bone to simulation space}} of the model it carries
+        self.model = None
+        self.previous_bones = None
         self.rotation = np.eye(3)
         self.oriented = False
         self.change_time = -1.0
@@ -347,9 +351,16 @@ class Simulation:
             point = points[index] = ControlPoint()
         return point
 
-    def set_control_point(self, index: int, position, rotation=None):
+    def set_control_point(self, index: int, position, rotation=None, model=None):
         point = self.control_point(index)
         position = np.asarray(position, np.float64)
+        point.previous_position = point.position.copy() if point.change_time >= 0 else position.copy()
+        if model is not None:
+            if point.model is None:
+                point.previous_bones = model["bones"]
+            elif point.model["bones"] is not model["bones"]:
+                point.previous_bones = point.model["bones"]
+            point.model = model
         if not np.array_equal(position, point.position) or point.change_time < 0:
             point.change_time = self.root.age
         point.position = position.copy()
@@ -498,8 +509,8 @@ def simulate(definition: Definition, control_points: dict, time: float, seed: in
     (position, rotation or None), in game units."""
     simulation = Simulation(definition, seed)
     simulation.unset_value = unset_value
-    for index, (position, rotation) in control_points.items():
-        simulation.set_control_point(index, position, rotation)
+    for index, (position, rotation, *model) in control_points.items():
+        simulation.set_control_point(index, position, rotation, *model)
     simulation.run(time, step)
     return simulation
 
@@ -533,8 +544,8 @@ def busiest_moment(definition: Definition, control_points: dict, seed: int, mome
     from . import draw
     simulation = Simulation(definition, seed)
     simulation.unset_value = unset_value
-    for index, (position, rotation) in control_points.items():
-        simulation.set_control_point(index, position, rotation)
+    for index, (position, rotation, *model) in control_points.items():
+        simulation.set_control_point(index, position, rotation, *model)
     best, best_count, frames = None, 0, 0
     for moment in moments:
         # Frame for frame as simulate() plays the moment it is then built at.
