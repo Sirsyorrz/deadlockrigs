@@ -23,12 +23,19 @@ Weights 0..1 per vertex, by name in `"regions"` or inline:
 | `{"lid": "{s}", "part": "upper"\|"lower", "soft": deg}` | above or below the middle line of an eye's opening |
 | `{"mat": name}` | a material |
 | `{"piece": "skin"\|"balls"\|"other"}` | the main skin, the eyeballs, or every other piece (teeth, cards) |
+| `{"bag": "upper"\|"lower"}` | the generated mouth bag (`"open"`): its side from the upper or lower lip, with that lip's edge |
 | `{"pieces_near": region}` | whole separate pieces reaching into a region |
 | `{"all": [...]}`, `{"any": [...]}`, `{"not": r}` | product, max, 1 - r |
 | `{"times": k, "of": r}`, `{"smooth": n, "of": r}` | scaled; averaged over neighbours n times |
 | `{"whole": r}` | r on the skin; each other piece (a tooth) takes its mean, so it moves without stretching |
 | `{"ramp": [lo, hi], "of": r}` | 0 where r is below lo, 1 above hi (a hold along the split from the body: the head bones' weight ramping from 0.5) |
 | `{"harmonic": {"one": r, "zero": r}}` | smooth 1 to 0 across the skin between two regions |
+
+## open
+
+`"open": true`: for lips sculpted shut (one surface, nothing inside), keys.py's lip split and generated mouth bag
+(`keys.open_mouth`) run first, so the keys see the split lips and the bag (material `mouth_bag`). Lock the bag's upper
+side with the upper lip and give its lower side to the jaw (`{"bag": ...}` regions in the jaw harmonic).
 
 ## keys
 
