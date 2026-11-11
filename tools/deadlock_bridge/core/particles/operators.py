@@ -650,6 +650,210 @@ class LerpEndCapScalar(Operator):
         return
 
 
+@register(OPERATORS, "C_OP_RampScalarLinear")
+class RampScalarLinear(Operator):
+    """Adds a per particle random rate per second to a float attribute over a per particle random window of its life."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.rate_min, self.rate_max = p.float("m_RateMin"), p.float("m_RateMax")
+        self.start_min, self.start_max = p.float("m_flStartTime_min"), p.float("m_flStartTime_max")
+        self.end_min, self.end_max = p.float("m_flEndTime_min", 1.0), p.float("m_flEndTime_max", 1.0)
+        self.proportional = p.bool("m_bProportionalOp", True)
+        self.field = p.int("m_nField", F.RADIUS)
+        self.windowed = (self.start_min, self.start_max, self.end_min, self.end_max) != (0.0, 0.0, 1.0, 1.0) or not self.proportional
+
+    def operate(self, sim, v, dt, strength):
+        if F.name(self.field) is None or F.is_vector(self.field):
+            return
+        ids = v.get("particle_id")
+        r = sim.random
+        mask = v.get("lifetime") > 0
+        if self.windowed:
+            window = v.normalized_age if self.proportional else v.get("age")
+            start = lerp(self.start_min, self.start_max, r.for_particle(ids, 11))
+            end = lerp(self.end_min, self.end_max, r.for_particle(ids, 12))
+            mask = mask & (window >= start) & (window < end)
+        if not mask.any():
+            return
+        rate = lerp(self.rate_min, self.rate_max, r.for_particle(ids, 0))
+        current = v.field(self.field)
+        low, high = _float_range(self.field)
+        v.set_field(self.field, np.where(mask, np.clip(current + rate * dt * strength, low, high), current))
+
+
+@register(OPERATORS, "C_OP_OscillateScalar")
+class OscillateScalar(Operator):
+    """Adds a sine wave to a float attribute, each particle with its own rate and frequency, over a window of its life."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.field = p.int("m_nField", F.ALPHA)
+        self.rate_min, self.rate_max = p.float("m_RateMin"), p.float("m_RateMax")
+        self.frequency_min, self.frequency_max = p.float("m_FrequencyMin", 1.0), p.float("m_FrequencyMax", 1.0)
+        self.start_min, self.start_max = p.float("m_flStartTime_min"), p.float("m_flStartTime_max")
+        self.end_min, self.end_max = p.float("m_flEndTime_min", 1.0), p.float("m_flEndTime_max", 1.0)
+        self.multiplier = p.float("m_flOscMult", 2.0)
+        self.add = p.float("m_flOscAdd", 0.5)
+        self.proportional = p.bool("m_bProportional", True)
+        self.proportional_window = p.bool("m_bProportionalOp", True)
+        self.clamp = self.field in (F.ALPHA, F.ALPHA_ALTERNATE)
+
+    def operate(self, sim, v, dt, strength):
+        if F.name(self.field) is None or F.is_vector(self.field):
+            return
+        ids = v.get("particle_id")
+        r = sim.random
+        age = v.normalized_age
+        window = age if self.proportional_window else v.get("age")
+        start = lerp(self.start_min, self.start_max, r.for_particle(ids, 11))
+        end = lerp(self.end_min, self.end_max, r.for_particle(ids, 12))
+        mask = (v.get("lifetime") > 0) & (window >= start) & (window < end)
+        if not mask.any():
+            return
+        frequency = lerp(self.frequency_min, self.frequency_max, r.for_particle(ids, 0))
+        rate = lerp(self.rate_min, self.rate_max, r.for_particle(ids, 1))
+        if self.proportional:
+            phase = age * frequency * self.multiplier + self.add
+        else:
+            phase = frequency * (self.multiplier * sim.age + self.add)
+        current = v.field(self.field)
+        result = current + np.sin(math.pi * phase) * rate * dt * strength
+        if self.clamp:
+            result = np.clip(result, 0.0, 1.0)
+        v.set_field(self.field, np.where(mask, result, current))
+
+
+def _axis_rotation(axis, angle: float) -> np.ndarray:
+    x, y, z = axis
+    c, s = math.cos(angle), math.sin(angle)
+    k = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+    return np.eye(3) * c + (1.0 - c) * np.outer(axis, axis) + s * k
+
+
+@register(OPERATORS, "C_OP_MovementRotateParticleAroundAxis")
+class MovementRotateParticleAroundAxis(Operator):
+    """Turns particles (both ends of their position pair, so it doesn't read back as velocity) about an axis through
+    a transform's origin; the axis is the world's unless local, then it follows the transform's orientation."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.axis = p.vec("m_vecRotAxis", (0.0, 0.0, 1.0))
+        self.rate = p.number("m_flRotRate", 180.0)
+        self.transform = p.transform("m_TransformInput", Transform(0))
+        self.local = p.bool("m_bLocalSpace")
+
+    def operate(self, sim, v, dt, strength):
+        axis = np.asarray(self.axis(sim), np.float64)
+        length = np.linalg.norm(axis)
+        axis = axis / length if length > 1e-9 else np.array([0.0, 0.0, 1.0])
+        rotation, center = self.transform(sim)
+        if self.local:
+            axis = rotation @ axis
+        turn = _axis_rotation(axis, math.radians(float(np.mean(self.rate(sim)))) * dt)
+        for name in ("position", "previous"):
+            points = v.get(name)
+            rotated = (points - center) @ turn.T + center
+            v.set(name, lerp(points, rotated, strength))
+
+
+def matrix_angles(rotation) -> np.ndarray:
+    """Source angles (pitch, yaw, roll in degrees) of a rotation matrix whose columns are forward, left and up."""
+    forward, left, up = rotation[:, 0], rotation[:, 1], rotation[:, 2]
+    horizontal = math.hypot(forward[0], forward[1])
+    if horizontal > 1e-4:
+        yaw = math.atan2(forward[1], forward[0])
+        pitch = math.atan2(-forward[2], horizontal)
+        roll = math.atan2(left[2], up[2])
+    else:
+        yaw = math.atan2(-left[0], left[1])
+        pitch = math.atan2(-forward[2], horizontal)
+        roll = 0.0
+    return np.degrees([pitch, yaw, roll])
+
+
+@register(OPERATORS, "C_OP_RemapTransformOrientationToRotations")
+class RemapTransformOrientationToRotations(Operator):
+    """Writes a transform's orientation (plus an offset in degrees) to every particle's pitch, yaw and roll, or its
+    forward direction to their normal."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.transform = p.transform("m_TransformInput", Transform(0))
+        self.offset = p.vector("m_vecRotation")
+        self.use_quat = p.bool("m_bUseQuat")
+        self.write_normal = p.bool("m_bWriteNormal")
+
+    def operate(self, sim, v, dt, strength):
+        from ..probes import rotation_matrix
+        rotation = self.transform(sim)[0]
+        if self.use_quat:
+            # The offset's x, y, z turn roll, pitch, yaw on this path.
+            rotation = rotation @ rotation_matrix((self.offset[1], self.offset[2], self.offset[0]))
+            angles, forward = matrix_angles(rotation), rotation[:, 0]
+        else:
+            angles = matrix_angles(rotation) + self.offset
+            forward = rotation_matrix(angles)[:, 0]
+        if self.write_normal:
+            v.set_field(F.NORMAL, forward)
+        else:
+            pitch, yaw, roll = np.radians(angles)
+            v.set("pitch", pitch)
+            v.set("yaw", yaw)
+            v.set("roll", roll)
+
+
+@register(OPERATORS, "C_OP_NormalLock")
+class NormalLock(Operator):
+    """Turns particles' normals by however much a control point's rotation changed since the last step, so they stay
+    locked to its frame; a particle younger than the step gets the share of it that it was alive for."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.transform = Transform(p.int("m_nControlPointNumber"))
+        self.reset()
+
+    def reset(self):
+        self.last = None
+
+    def operate(self, sim, v, dt, strength):
+        rotation = self.transform(sim)[0].copy()
+        last = rotation if self.last is None else self.last
+        self.last = rotation
+        delta = rotation @ last.T
+        if np.allclose(delta, np.eye(3)):
+            return
+        ratio = (np.minimum(v.get("age"), dt) / dt)[:, None] if dt > 0 else 1.0
+        normal = v.get("normal")
+        v.set("normal", lerp(normal, normal @ delta.T, ratio))
+
+
+@register(OPERATORS, "C_OP_RemapVelocityToVector")
+class RemapVelocityToVector(Operator):
+    """Writes each particle's velocity over the last step to a vector attribute: per second and scaled, or with
+    m_bNormalize only its direction times the scale (particles that haven't moved keep their value)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.field = p.int("m_nFieldOutput", F.POSITION)
+        self.scale = p.float("m_flScale", 1.0)
+        self.normalize = p.bool("m_bNormalize")
+
+    def operate(self, sim, v, dt, strength):
+        if self.field in (F.POSITION, F.PREVIOUS_POSITION) or not F.is_vector(self.field) or F.name(self.field) is None:
+            return
+        step = v.get("position") - v.get("previous")
+        if self.normalize:
+            length = np.linalg.norm(step, axis=1, keepdims=True)
+            moved = length[:, 0] > 0
+            direction = np.divide(step, length, out=np.zeros_like(step), where=length > 0)
+            current = v.field(self.field)
+            v.set_field(self.field, np.where(moved[:, None], direction * self.scale, current))
+        else:
+            frame = sim.previous_frame_time if sim.previous_frame_time > 0 else dt
+            v.set_field(self.field, step * (self.scale / frame))
+
+
 # Pre-emission operators -------------------------------------------------------------------------------------------
 
 class PreEmission(Function):
@@ -763,6 +967,32 @@ class SetControlPointToVectorExpression(PreEmission):
                      else a if e == 4 else np.minimum(a, b) if e == 5 else np.maximum(a, b) if e == 6
                      else np.cross(a, b) if e == 7 else lerp(a, b, float(self.lerp(sim))) if e == 8 else np.zeros(3))
         sim.set_control_point(self.control_point, value)
+
+
+@register(PRE_EMISSION, "C_OP_SetControlPointOrientation")
+class SetControlPointOrientation(PreEmission):
+    """Turns a control point to given angles (in degrees, between two sets when randomized), in another control
+    point's frame unless the world's; the point keeps its position."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.control_point = p.int("m_nCP")
+        self.angles = p.vector("m_vecRotation")
+        self.angles_b = p.vector("m_vecRotationB")
+        self.randomize = p.bool("m_bRandomize")
+        self.world = p.bool("m_bUseWorldLocation")
+        self.head = p.int("m_nHeadLocation")
+
+    def operate(self, sim, dt):
+        if self.set_once and self.done:
+            return
+        from ..probes import rotation_matrix
+        angles = lerp(self.angles, self.angles_b, sim.random.next1()) if self.randomize else self.angles
+        rotation = rotation_matrix(angles)
+        if not self.world:
+            rotation = Transform(self.head)(sim)[0] @ rotation
+        sim.set_control_point(self.control_point, sim.control_point(self.control_point).position, rotation)
+        self.done = True
 
 
 # Force generators -------------------------------------------------------------------------------------------------

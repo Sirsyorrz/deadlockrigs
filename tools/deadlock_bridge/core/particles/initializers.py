@@ -773,3 +773,33 @@ class PositionWarpScalar(Initializer):
     def initialize(self, sim, v):
         t = column(self.input(sim, v), v.n)[:, None]
         _warp_about(sim, v, self.control_point, lerp(self.low, self.high, t), self.previous_scale)
+
+
+@initializer("C_INIT_RemapInitialDirectionToTransformToVector")
+class RemapInitialDirectionToTransformToVector(Initializer):
+    """Writes the direction from a transform's origin to each new particle (turned by m_flOffsetRot degrees about
+    m_vecOffsetAxis) to a vector attribute, normalized or not, times a scale."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.transform = p.transform("m_TransformInput", Transform(0))
+        self.field = p.int("m_nFieldOutput", F.POSITION)
+        self.scale = p.float("m_flScale", 1.0)
+        self.normalize = p.bool("m_bNormalize")
+        angle = math.radians(p.float("m_flOffsetRot"))
+        # The axis is used as authored, not normalized: with the default zero axis this scales by cos(angle).
+        x, y, z = p.vector("m_vecOffsetAxis")
+        c, s = math.cos(angle), math.sin(angle)
+        r = 1.0 - c
+        self.rows = np.array([[(1 - x * x) * c + x * x, x * y * r - z * s, x * z * r + y * s],
+                              [y * x * r + z * s, (1 - y * y) * c + y * y, y * z * r - x * s],
+                              [x * z * r - y * s, y * z * r + x * s, (1 - z * z) * c + z * z]])
+
+    def initialize(self, sim, v):
+        if not F.is_vector(self.field) or F.name(self.field) is None:
+            return
+        direction = (v.get("position") - self.transform(sim)[1]) @ self.rows.T
+        if self.normalize:
+            length = np.linalg.norm(direction, axis=1, keepdims=True)
+            direction = np.divide(direction, length, out=np.zeros_like(direction), where=length > 0)
+        v.set_field(self.field, direction * self.scale)
