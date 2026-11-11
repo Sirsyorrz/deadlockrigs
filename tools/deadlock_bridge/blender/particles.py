@@ -49,7 +49,9 @@ _LUMA = (0.2125, 0.7154, 0.0721)
 _LUMA_601 = (0.299, 0.587, 0.114)
 
 # Bumped when the node groups change, so files made by an older version get new ones.
-_GROUP_VERSION = 3
+_GROUP_VERSION = 4
+# tan(half the vertical field of view) of the game's default camera: 90 degrees across a 4:3 frame
+_GAME_TAN_HALF_FOV = 0.75
 
 
 def _srgb(c: float) -> float:
@@ -1090,12 +1092,21 @@ def _sprite_group() -> bpy.types.NodeTree:
 
 
 def _size_bounds(b: Builder, i):
-    """The spritecard's size clamp and fade (radii per unit of camera distance, so the same on any lens): a card
-    fades out as its radius grows from Fade Start to Fade End times its distance, and its radius is held between
-    Min Size and Max Size times it. A lens flare filling the view is faded away so, as the game does."""
+    """The spritecard's size clamp and fade: a card fades out as its radius grows from Fade Start to Fade End times
+    its distance, and its radius is held between Min Size and Max Size times it. A lens flare filling the view is
+    faded away so, as the game does. The bounds are taken as sizes on screen at the game's field of view, so a
+    longer lens framing the same shot from further away fades the same cards."""
     b.frame("Size clamp and fade")
     location, _, _, _ = _camera(b)
     distance = b.vmath("DISTANCE", b.node("GeometryNodeInputPosition").outputs[0], location)
+    info = b.node("GeometryNodeCameraInfo")
+    b.set(info.inputs["Camera"], b.node("GeometryNodeInputActiveCamera").outputs[0])
+    matrix = b.node("FunctionNodeSeparateMatrix")
+    b.set(matrix.inputs[0], info.outputs["Projection Matrix"])
+    focal = matrix.outputs["Column 2 Row 2"]  # 1 / tan(half the vertical field of view)
+    perspective = b.mul(b.math("GREATER_THAN", focal, 0.0), b.sub(1.0, info.outputs["Is Orthographic"]))
+    lens = b.select(perspective, b.div(1.0, b.mul(_GAME_TAN_HALF_FOV, b.math("MAXIMUM", focal, 1e-6))), 1.0)
+    distance = b.mul(distance, lens)
     radius = _named(b, "dl_half_width", "FLOAT")
     span = b.math("MAXIMUM", b.mul(distance, b.sub(i["Fade End"], i["Fade Start"])), 1e-9)
     fade = b.sub(1.0, b.saturate(b.div(b.sub(radius, b.mul(i["Fade Start"], distance)), span)))
