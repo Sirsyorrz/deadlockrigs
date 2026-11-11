@@ -644,10 +644,22 @@ class EndCapTimedDecay(Operator):
 
 @register(OPERATORS, "C_OP_LerpEndCapScalar")
 class LerpEndCapScalar(Operator):
-    """Moves a float attribute to a value over a time once the end cap starts (never reached in a snapshot)."""
+    """Moves a float attribute to a value over a time once the end cap starts (alpha, by default)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.field = p.int("m_nFieldOutput", F.ALPHA)
+        self.output = p.float("m_flOutput")
+        self.time = p.float("m_flLerpTime", 1.0)
 
     def operate(self, sim, v, dt, strength):
-        return
+        if not sim.in_end_cap or F.name(self.field) is None or F.is_vector(self.field):
+            return
+        # the share of the way left this step, so the value lands on the output at the lerp time
+        left = self.time - sim.end_cap_age + dt
+        share = 1.0 if left <= dt else dt / left
+        current = v.field(self.field)
+        v.set_field(self.field, current + (self.output - current) * share * strength)
 
 
 @register(OPERATORS, "C_OP_RampScalarLinear")

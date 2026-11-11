@@ -392,9 +392,22 @@ class Simulation:
         if definition.stop_after > 0 and self.age >= definition.stop_after:
             return
         for child in self.children:
-            if child.end_cap_child or self.age < child.delay:
+            if (child.end_cap_child and not child.started) or self.age < child.delay:
                 continue
             child.update(frame_time)
+
+    def end_cap(self):
+        """Stops the tree as the game stops an effect: emitters stop, the end cap's own functions start running
+        and the end cap children start."""
+        if self.in_end_cap:
+            return
+        self.in_end_cap = True
+        self.end_cap_age = 0.0
+        for child in self.children:
+            if child.end_cap_child:
+                child.start()
+            else:
+                child.end_cap()
 
     def start(self):
         self.started = True
@@ -419,6 +432,8 @@ class Simulation:
         dt = min(dt, definition.max_step)
         self.frame_time = dt
         self.age += dt
+        if self.in_end_cap:
+            self.end_cap_age += dt
         particles = self.particles
         if particles.count:
             particles.array("age")[:] = self.age - particles.array("creation_time")
@@ -436,6 +451,8 @@ class Simulation:
             random.operator_offset += Random.STRIDE
 
         for emitter in self.emitters:
+            if self.in_end_cap and emitter.end_cap != 1:
+                continue
             strength = emitter.run_strength(self)
             if strength > 0.0:
                 ages = emitter.emit(self, dt, strength)

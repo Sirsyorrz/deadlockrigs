@@ -158,18 +158,20 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None):
             if definition is None:
                 continue
             begin = start_frame + effect['start'] * duration * fps
+            stop_at = None
             if effect['loop']:
-                warm, length = 2.0, duration
-                steps = round(length * RATE)
-
-                def clip_frame(age, warm=warm, length=length):
-                    return start_frame + ((age - warm) % length) * fps
+                # an ability's effect: started with the channel and stopped when it ends (its end cap plays out),
+                # not a seamless loop; a loop drops what is born before its window and dies in it (the glow at the
+                # singularity's heart)
+                length = duration + TAIL
+                stop_at = duration
             else:
-                warm, length = 0.0, min(duration * (1.0 - effect['start']) + TAIL, LONGEST)
-                steps = round(length * RATE)
+                length = min(duration * (1.0 - effect['start']) + TAIL, LONGEST)
+            warm = 0.0
+            steps = round(length * RATE)
 
-                def clip_frame(age, begin=begin, end=start_frame + duration * fps):
-                    return min(begin + age * fps, end)
+            def clip_frame(age, begin=begin, end=start_frame + duration * fps):
+                return min(begin + age * fps, end)
             # the clip's frames the bake samples, on its own steps
             frames = sorted({round(clip_frame(warm + k / RATE), 3) for k in range(steps + 1)})
             rig_points.model_needed = uses_model(definition)
@@ -181,7 +183,7 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None):
             points = sampled[frames[0]]
             ambient = bridge._scene_light(context, np.array(arm.matrix_world.translation) / target.scale,
                                           target.scale, target)
-            playback = {'loop': effect['loop'], 'length': length, 'start': begin / fps, 'rate': RATE}
+            playback = {'loop': False, 'length': length, 'start': begin / fps, 'rate': RATE, 'stop_at': stop_at}
             holder = bridge._build_played(builder, f'{clip} {bridge._stem(effect["path"])}', definition, points,
                                           warm, seed + n, ambient, playback, local=True, unset_value=1.0,
                                           moving=moving)
@@ -192,8 +194,7 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None):
             holder.matrix_basis = FRAME
             holder[TAG] = clip
             holder['dlr_clip_start'] = float(start_frame)
-            show_between(holder, begin if not effect['loop'] else start_frame,
-                         start_frame + duration * fps if effect['loop'] else begin + length * fps)
+            show_between(holder, begin, begin + length * fps)
             holders.append(holder)
     finally:
         scene.frame_set(frame_was[0], subframe=frame_was[1])

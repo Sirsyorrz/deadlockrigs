@@ -142,12 +142,15 @@ def loop(definition, control_points, seed, start, length=None, rate=30.0, ambien
 
 
 def once(definition, control_points, seed, length, rate=30.0, ambient=(0.0, 0.0, 0.0), unset_value=0.0,
-         moving=None):
-    """The draws of an effect played from its start for ``length`` seconds, a list of steps as loop() gives."""
+         moving=None, stop_at=None):
+    """The draws of an effect played from its start for ``length`` seconds, a list of steps as loop() gives.
+    ``stop_at``: seconds at which the effect is stopped (its end cap plays out in the rest)."""
     step = 1.0 / rate
     simulation = _new(definition, control_points, seed, unset_value)
     frames = []
-    for _ in range(max(1, int(round(length * rate)))):
+    for k in range(max(1, int(round(length * rate)))):
+        if stop_at is not None and k * step >= stop_at - 1e-6:
+            simulation.end_cap()
         _step(simulation, step, moving)
         frames.append(_drawn(simulation, ambient))
     return frames

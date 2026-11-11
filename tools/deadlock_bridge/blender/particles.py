@@ -144,7 +144,7 @@ def _build_played(builder, name, definition, points, time, seed, ambient, playba
                              unset_value, moving)
     else:
         frames = baking.once(definition, points, seed, playback["length"], playback["rate"], ambient, unset_value,
-                             moving)
+                             moving, playback.get("stop_at"))
     return builder.build_animated(name, definition.path, frames, points, time, seed, ambient, playback, holder, local)
 
 
