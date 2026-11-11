@@ -19,7 +19,7 @@ A Blender add-on that builds animation rigs of Deadlock heroes, NPCs and maps fr
 | | |
 |---|---|
 | ![Violet's face controls](docs/violet_face_controls.png) | ![Vyper's tail](docs/vyper_tail.png) |
-| ![Dynamo's Singularity with its effects](docs/dynamo_effects.png) | ![Midtown in Blender](docs/midtown.jpg) |
+| ![Dynamo's Singularity with its effects](docs/dynamo_effects.png) | ![Midtown in Blender](docs/midtown_street.jpg) |
 
 ## Install
 
@@ -44,13 +44,24 @@ The first build downloads Source2Viewer-CLI (about 60 MB) to read the game files
 
 ## Maps
 
+Midtown and the Hideout, built from your own install so they match your game version. They're lit the way the game
+lights them, with its fog, moving textures, animated props, particles and post-processing.
+
+| | |
+|---|---|
+| ![Midtown, Catalyst](docs/midtown_catalyst.jpg) | ![Midtown, Chinatown](docs/midtown_red.jpg) |
+| ![Midtown, the patron's base](docs/midtown_patron.jpg) | ![Midtown, the shrine](docs/midtown_shrine.jpg) |
+| ![Midtown, the park](docs/midtown_park.jpg) | ![The Hideout's fireplace](docs/hideout_fireplace.jpg) |
+| ![The Hideout's hall](docs/hideout_hall.jpg) | ![The Hideout's seance table](docs/hideout_ritual.jpg) |
+
 Under **Map** in the Deadlock Rigs panel: Build Map, then Link Map or Append Map to add it to your scene.
 
 - Midtown takes about 20 minutes to build and needs about 12 GB of free RAM. The Hideout takes a couple of minutes.
 - Midtown is big. Use **Crop** (to the camera or to boxes) before rendering.
 - Mods you have installed that change map textures are included. Untick Include Mods for the stock map.
+- With a map in the scene you can also add the game's NPCs and ziplines, and light your rigs from the map.
 
-![The Hideout in Blender](docs/hideout.jpg)
+![The Hideout's projector room](docs/hideout_projector.jpg)
 
 ## Faces
 
