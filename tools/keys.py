@@ -1628,10 +1628,50 @@ def add_bag(d, h, rig, rings=10):
     out['nrm'] = np.concatenate([d['nrm'], nrm]).astype(d['nrm'].dtype)
     out['tris'] = np.concatenate([d['tris'], tris + n0])
     out['matnames'] = np.append(d['matnames'], 'mouth_bag')
+    # which lip's side of the bag each vertex is on (1 upper, -1 lower, 0 the head and the back cap), for handkeys
+    out['bag_side'] = np.r_[np.zeros(n0, np.int8), np.tile(np.where(is_up, 1, -1), rings + 1), 0].astype(np.int8)
     out['mats'] = np.concatenate([d['mats'], np.full(len(tris), len(d['matnames']))])
     for side in 'LR':
         out['ball_' + side] = np.concatenate([d['ball_' + side], np.zeros(len(co), bool)])
     return out, co, tris
+
+
+def open_mouth(arrays):
+    """Opens sculpted closed lips (drops the faces joining them, or splits them along the lip line) and builds a
+    mouth bag on a mouth that is a hole into nothing. Returns (arrays, h, n_head, cut, split, bag_mesh): n_head
+    counts the head's vertices with the split's copies, before the bag's; the game weights (w_*) cover them all."""
+    h = fg.from_arrays(arrays)
+    n_head = len(h.co)
+    bag_mesh = cut = split = None
+    probe = Rig(h)
+    if probe.fused is not None:
+        # build.py drops the same faces
+        cut = probe.fused
+        arrays['tris'] = np.delete(arrays['tris'], cut, axis=0)
+        arrays['mats'] = np.delete(arrays['mats'], cut)
+        h = fg.from_arrays(arrays)
+        probe = Rig(h)
+        print('opened the lips:', len(cut), 'faces')
+    weights = [k for k in arrays if k.startswith('w_')]
+    if probe.lip_cut is not None:
+        arrays, split = cut_lips(arrays, h, probe)
+        for k in weights:
+            arrays[k] = np.concatenate([arrays[k], arrays[k][split['src']]])
+        h = fg.from_arrays(arrays)
+        n_head = len(h.co)
+        probe = Rig(h)
+        print('split the lips along', len(split['src']), 'vertices')
+    if probe.hole is not None:
+        arrays, bco, btris = add_bag(arrays, h, probe)
+        arrays.pop('lip_loop', None)
+        # build.py skins the bag like the nearest head vertex
+        _, near = cKDTree(arrays['co'][:n_head]).query(bco)
+        for k in weights:
+            arrays[k] = np.concatenate([arrays[k], arrays[k][near]])
+        h = fg.from_arrays(arrays)
+        bag_mesh = (bco, btris)
+        print('mouth bag built on the lips\' edge:', len(bco), 'verts')
+    return arrays, h, n_head, cut, split, bag_mesh
 
 
 if __name__ == '__main__':
@@ -1642,32 +1682,7 @@ if __name__ == '__main__':
     JAW_DEG = float(arrays.pop('jaw_deg', JAW_DEG))
     GAIN = json.loads(str(arrays.pop('gain'))) if 'gain' in arrays else {}
     CARD_FOLLOW = arrays.pop('card_follow', CARD_FOLLOW)
-    h = fg.from_arrays(arrays)
-    n_head = len(h.co)
-    bag_mesh = None
-    probe = Rig(h)
-    cut = None
-    if probe.fused is not None:
-        # open the sculpted closed lips by dropping the faces joining them; build.py drops the same faces
-        cut = probe.fused
-        arrays['tris'] = np.delete(arrays['tris'], cut, axis=0)
-        arrays['mats'] = np.delete(arrays['mats'], cut)
-        h = fg.from_arrays(arrays)
-        probe = Rig(h)
-        print('opened the lips:', len(cut), 'faces')
-    split = None
-    if probe.lip_cut is not None:
-        arrays, split = cut_lips(arrays, h, probe)
-        h = fg.from_arrays(arrays)
-        n_head = len(h.co)
-        probe = Rig(h)
-        print('split the lips along', len(split['src']), 'vertices')
-    if probe.hole is not None:
-        arrays, bco, btris = add_bag(arrays, h, probe)
-        arrays.pop('lip_loop', None)
-        h = fg.from_arrays(arrays)
-        bag_mesh = (bco, btris)
-        print('mouth bag built on the lips\' edge:', len(bco), 'verts')
+    arrays, h, n_head, cut, split, bag_mesh = open_mouth(arrays)
     keys, rig = build(h)
     base = sys.argv[2][:-len('.npz')]
     # the dark mouth interior starts a little in from the lip line, so the inner lips keep their colour

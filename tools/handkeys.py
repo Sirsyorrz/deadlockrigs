@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import facegeo as fg  # noqa: E402
 from facebones import FaceBones  # noqa: E402
 from hero import ROOT, Hero  # noqa: E402
-from keys import (fib_sphere, harmonic, ray_cast, rot_axis, smoothstep, sphere_fit, tongue_profile,  # noqa: E402
-                  tongue_tube)
+from keys import (fib_sphere, harmonic, open_mouth, ray_cast, rot_axis, smoothstep, sphere_fit,  # noqa: E402
+                  tongue_profile, tongue_tube)
 
 SIDES = {'L': 'Left', 'R': 'Right'}
 
@@ -67,6 +67,9 @@ class Face:
             m = np.zeros(self.nw, bool)
             m[h.weld[h.vmat == i]] = True
             self.mats[str(name)] = m
+        self.bag_side = np.zeros(self.nw, np.int8)
+        if 'bag_side' in arrays:
+            self.bag_side[h.weld] = arrays['bag_side']
         self.eye_c = {}
         for s in self.ball:
             q = h.wco[self.ball[s]]
@@ -224,6 +227,9 @@ class Face:
         if 'mat' in r:
             names = r['mat'] if isinstance(r['mat'], list) else [r['mat']]
             return np.any([self.mats[m] for m in names], axis=0).astype(float)
+        if 'bag' in r:
+            # the generated bag's side from the upper or lower lip, its first ring on that lip's edge
+            return (self.bag_side == (1 if r['bag'] == 'upper' else -1)).astype(float)
         if 'piece' in r:
             return {'skin': self.skin, 'balls': self.balls, 'other': ~self.skin & ~self.balls}[r['piece']].astype(float)
         if 'pieces_near' in r:
@@ -574,18 +580,28 @@ def main():
     hero = Hero(args[0])
     spec = json.load(open(os.path.join(ROOT, 'faces', hero.slug + '.json')))
     arrays = dict(np.load(os.path.join(hero.data, 'head.npz')))
-    h = fg.from_arrays(arrays)
+    n_head, cut, split, bag_mesh = len(arrays['co']), None, None, None
+    if spec.get('open'):
+        arrays, h, n_head, cut, split, bag_mesh = open_mouth(arrays)
+    else:
+        h = fg.from_arrays(arrays)
     face = Face(h, spec, arrays)
     keys = face.build()
     if 'tongue' in spec:
         for k in ('tongueOut', 'tongueOut_mid'):
             keys.setdefault(k, np.zeros((len(h.co), 3), np.float32))
         tongue = face.tongue(spec['tongue'], keys)
-    np.savez(os.path.join(hero.data, 'keys.npz'), **keys)
-    # keys.py's lip split, cut, generated mouth and tongue add vertices these keys don't have
+    np.savez(os.path.join(hero.data, 'keys.npz'), **{k: v[:n_head] for k, v in keys.items()})
     for f in ('keys_split.npz', 'keys_cut.npy', 'keys_mouth.npz', 'keys_tongue.npz'):
         if os.path.exists(os.path.join(hero.data, f)):
             os.remove(os.path.join(hero.data, f))
+    if cut is not None:
+        np.save(os.path.join(hero.data, 'keys_cut.npy'), cut)
+    if split is not None:
+        np.savez_compressed(os.path.join(hero.data, 'keys_split.npz'), **split)
+    if bag_mesh is not None:
+        np.savez_compressed(os.path.join(hero.data, 'keys_mouth.npz'), co=bag_mesh[0], tris=bag_mesh[1],
+                            **{'key_' + k: v[n_head:] for k, v in keys.items()})
     if 'tongue' in spec:
         tco, ttris, tk = tongue
         np.savez_compressed(os.path.join(hero.data, 'keys_tongue.npz'), co=tco, tris=ttris,
@@ -593,7 +609,7 @@ def main():
         print('tongue', len(tco), 'verts')
     bag_path = os.path.join(hero.data, 'keys_bag.npy')
     if 'bag' in spec:
-        np.save(bag_path, face.bag(spec['bag'])[h.weld])
+        np.save(bag_path, face.bag(spec['bag'])[h.weld][:n_head])
     elif os.path.exists(bag_path):
         os.remove(bag_path)
     cap_path = os.path.join(hero.data, 'keys_bag_cap.npy')

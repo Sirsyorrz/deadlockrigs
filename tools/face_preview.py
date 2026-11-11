@@ -38,6 +38,8 @@ base = np.empty(n * 3, np.float32)
 base = base.reshape(-1, 3)
 inv = np.array(head.matrix_world.inverted().to_3x3())
 keys = np.load(os.path.join(hero.data, 'keys.npz'))
+mouth_path = os.path.join(hero.data, 'keys_mouth.npz')
+mouth = np.load(mouth_path) if os.path.exists(mouth_path) else None
 if not me.shape_keys:
     head.shape_key_add(name='Basis', from_mix=False)
 for name in keys.files:
@@ -45,6 +47,8 @@ for name in keys.files:
     # the generated tongue sits after the head's own vertices and doesn't move here
     off = np.zeros((n, 3), np.float32)
     k = keys[name][:n]
+    if mouth is not None and 'key_' + name in mouth.files:
+        k = np.concatenate([k, mouth['key_' + name]])[:n]
     off[:len(k)] = k
     kb.data.foreach_set('co', (base + off @ inv.T).astype(np.float32).ravel())
 
