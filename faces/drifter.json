@@ -51,7 +51,7 @@
                     {"half": [0, 0, -12], "n": [0, 0, 1], "soft": 5}]}
  },
  "hold": "seam",
- "tongue": {"tip": -112, "root": -55, "top": -40, "width": 50, "height": 14, "gap": 1, "lift": -15, "reach": 35, "droop": 8,
+ "tongue": {"tip": -112, "root": -55, "top": -40, "width": 50, "height": 14, "gap": 1, "lift": -30, "reach": 45, "droop": 16, "hold": 0.5,
             "follow": ["jawOpen", "mouthClose", "jawForward", "jawLeft", "jawRight", "tongueOut"]},
  "keys": {
   "jawOpen": [{"turn": "jaw", "about": [0, -20, 24], "axis": [1, 0, 0], "deg": 14}, {"move": "jaw", "by": [0, -7, 0]}],
@@ -83,9 +83,9 @@
   "mouthRollLower": [{"turn": "roll_lo", "about": [0, -120, -46], "axis": [1, 0, 0], "deg": -20}],
   "mouthShrugUpper": [{"move": "lip_up_mid", "by": [0, -2, 3]}],
   "mouthShrugLower": [{"move": "lip_lo_mid", "by": [0, -3, 4]}],
-  "tongueOut": [{"key": "jawOpen", "times": 0.8}, {"move": "lip_lo_mid", "by": [0, -3, -6]}, {"move": "lip_lo_{s}", "by": [0, -2, -4], "sym": true}]
+  "tongueOut": [{"key": "jawOpen", "times": 0.8, "mid": 0.9}, {"move": "lip_lo_mid", "by": [0, -3, -6]}, {"move": "lip_lo_{s}", "by": [0, -2, -4], "sym": true}]
  },
- "mid": ["jawOpen"],
+ "mid": ["jawOpen", "tongueOut"],
  "controls": {
   "scale": 1.0,
   "landmarks": {"lid": [44, -134, 76], "lidlow": [45, -128, 40], "brow": [50, -138, 84], "cheek": [58, -110, 15],

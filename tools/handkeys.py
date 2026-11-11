@@ -270,7 +270,9 @@ class Face:
         p = self.p
         out = np.zeros((self.nw, 3))
         if 'key' in o:
-            return self.key(sub(o['key'], side), t) * o.get('times', 1.0)
+            # "mid": how far in the borrowed key is at half of this one (a jaw that opens ahead of the tongue)
+            tt = o['mid'] if t == 0.5 and 'mid' in o else t
+            return self.key(sub(o['key'], side), tt) * o.get('times', 1.0)
         kind = next(k for k in ('move', 'turn', 'scale', 'push', 'lid') if k in o)
         w = self.region(o[kind], side, mirror)
         if not o.get('balls'):
@@ -522,8 +524,11 @@ class Face:
         out['tongueOut'] = out['tongueOut'] + np.stack([-0.1 * (co[:, 0] - o[0]) * lead, -cfg['reach'] / 1000 * slide,
                                                         (lift + thin) * slide - droop], 1)
         # rig.py peaks it at tongueOut 0.5: the tip reaches lip height before it slides through the lower lip
-        out['tongueOut_mid'] = out['tongueOut_mid'] + np.stack([np.zeros(len(co)), np.zeros(len(co)),
-                                                                0.5 * lift * slide], 1)
+        # "hold": share of the half-way slide and droop held back, for teeth the tip must clear before it drops
+        hold = cfg.get('hold', 0)
+        out['tongueOut_mid'] = out['tongueOut_mid'] + np.stack([np.zeros(len(co)),
+                                                                hold * 0.5 * cfg['reach'] / 1000 * slide,
+                                                                0.5 * lift * slide + hold * 0.5 * droop], 1)
         return co, tris, out
 
     def controls(self):
