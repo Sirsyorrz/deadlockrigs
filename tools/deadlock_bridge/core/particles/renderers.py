@@ -819,7 +819,46 @@ class RenderModels(Renderer):
         return out
 
 
+class Lights:
+    """Lights to place: per particle a position (game units), linear colour, intensity and radius (game units)."""
+
+    def __init__(self, renderer, n):
+        self.renderer = renderer
+        self.count = n
+        self.position = np.zeros((n, 3))
+        self.color = np.ones((n, 3))
+        self.intensity = np.zeros(n)
+        self.radius = np.zeros(n)
+
+
+class RenderStandardLight:
+    """A light per particle (C_OP_RenderStandardLight): its colour times the colour scale, the intensity times its
+    alpha, reaching its radius times the radius multiplier. Hosts that don't place lights leave these out."""
+
+    kind = "light"
+
+    def __init__(self, p: Params, library, index: int):
+        self.index = index
+        self.hidden = False
+        self.intensity = p.number("m_flIntensity", 1.0)
+        self.radius_scale = p.number("m_flRadiusMultiplier", 1.0)
+        self.color_scale = p.vec("m_vecColorScale", (1.0, 1.0, 1.0))
+
+    def build(self, sim, ambient) -> Lights | None:
+        n = sim.particles.count
+        if n == 0:
+            return None
+        v = F.View(sim.particles, slice(0, n))
+        out = Lights(self, n)
+        out.position = v.get("position").copy()
+        out.color = v.get("color") * _rows3(self.color_scale(sim, v), n)
+        out.intensity = _per(self.intensity(sim, v), n) * v.get("alpha")
+        out.radius = v.get("radius") * _per(self.radius_scale(sim, v), n)
+        return out
+
+
 RENDERERS = {
+    "C_OP_RenderStandardLight": RenderStandardLight,
     "C_OP_RenderSprites": RenderSprites,
     "C_OP_RenderRopes": RenderRopes,
     "C_OP_RenderTrails": RenderTrails,

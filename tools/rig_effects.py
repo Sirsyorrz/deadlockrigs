@@ -118,6 +118,7 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None):
         # for_scene makes one for loose effects; these go with the rig
         bpy.data.collections.remove(target.collection)
     target.collection = arm.users_collection[0]
+    target.lights = True
     builder = bridge._ObjectBuilder(target)
     frame_was = scene.frame_current, scene.frame_subframe
     holders = []

@@ -29,6 +29,7 @@ Point attributes the meshes carry, read by the node groups and materials:
     ribbons:  dl_axis (along the strip), dl_width (signed half width), dl_facing (the strip's plane normal when it
               doesn't face the camera)
 """
+import math
 import time as _time
 import zlib
 
@@ -205,7 +206,7 @@ def unsupported_renderers(path: str) -> list[str]:
         seen.add(definition.path)
         for block in definition.params.functions("m_Renderers"):
             kind = block.str("_class")
-            if kind not in R.RENDERERS:
+            if kind not in R.RENDERERS or R.RENDERERS[kind].kind == "light":
                 found.add(kind.replace("C_OP_Render", ""))
         queue.extend(child.path for child in definition.children if child.path)
     return sorted(found)
@@ -268,6 +269,13 @@ def rebuild_particle_system(context, holder, time: float | None = None, seed: in
         simulation = plib.simulate(definition, points, time, seed)
         builder.build(holder.name, path, simulation, points, time, seed, np.asarray(ambient), holder)
     return bool(holder.children)
+
+
+def _fcurves(action):
+    for layer in action.layers:
+        for strip in layer.strips:
+            for bag in strip.channelbags:
+                yield from bag.fcurves
 
 
 def _frame(holder) -> Matrix:
@@ -431,6 +439,9 @@ class _Target:
         # Where game space (scaled to Blender units) sits in the scene: a host whose maps are turned (Deadlock
         # Rigs' are a quarter turn about Z) builds a map's effects into its frame.
         self.frame = Matrix.Identity(4)
+        # Whether light renderers become Blender lights (keyed per step, so played effects only): a rig's clip
+        # effects; a map's hundreds of flames would swamp EEVEE's light count.
+        self.lights = False
 
     @classmethod
     def for_scene(cls, context, scale: float | None = None) -> "_Target":
@@ -492,6 +503,8 @@ class _ObjectBuilder:
         self._ambient = ambient
         # Each object sits at the system with its vertices around it: EEVEE sorts blended objects by their origins.
         for system, renderer, batch in drawn:
+            if isinstance(batch, R.Lights):
+                continue
             if isinstance(batch, R.Models):
                 self._models(_stem(system.definition.path), batch, holder, inverse, system.definition.path, renderer)
                 continue
@@ -511,6 +524,8 @@ class _ObjectBuilder:
         groups = {}
         for step, drawn in enumerate(frames):
             for system, renderer, batch in drawn:
+                if isinstance(batch, R.Lights) and not self.target.lights:
+                    continue
                 groups.setdefault((id(system), renderer.index), (system, renderer, []))[2].append((step, batch))
         if not groups and holder is None:
             return None
@@ -526,6 +541,13 @@ class _ObjectBuilder:
             stem = _stem(system.definition.path)
             steps = np.array([step for step, _ in entries], np.int32)
             batches = [batch for _, batch in entries]
+            if isinstance(batches[0], R.Lights):
+                obj = self._animated_light(f"{stem} light", batches, steps, holder)
+                obj["dl_effect"] = system.definition.path
+                obj.parent = holder
+                obj.matrix_parent_inverse = inverse
+                self.target.collection.objects.link(obj)
+                continue
             if isinstance(batches[0], R.Models):
                 obj = self._animated_models(f"{stem} models", batches, steps, origin)
                 if obj is None:
@@ -545,6 +567,47 @@ class _ObjectBuilder:
             self._set_playback(obj, holder)
             self._place(obj, system, renderer, holder, inverse, origin)
         return holder
+
+    def _animated_light(self, name, batches, steps, holder):
+        """A point light for a light renderer's particles, keyed on every bake step: at their intensity weighted
+        centre, with their summed intensity, reaching the furthest. Light at a quarter of the reach is the
+        particles' intensity times their colour (the game's falloff isn't known; a guess), nothing past it."""
+        light = bpy.data.lights.new(name, "POINT")
+        light.use_custom_distance = True
+        light.shadow_soft_size = 0.0
+        obj = bpy.data.objects.new(name, light)
+        scene = bpy.context.scene
+        fps = scene.render.fps / scene.render.fps_base
+        rate = float(holder["dl_rate"])
+        start = float(holder["dl_start"])
+        k = 4.0 * math.pi ** 2 * self.scale ** 2
+        keyed = dict(zip(steps.tolist(), batches))
+        for step in range(int(holder["dl_steps"])):
+            batch = keyed.get(step)
+            frame = (start + step / rate) * fps
+            if batch is None or not batch.count or batch.intensity.sum() <= 0:
+                light.energy = 0.0
+            else:
+                weight = np.maximum(batch.intensity, 0.0)
+                total = float(weight.sum())
+                centre = (batch.position * weight[:, None]).sum(0) / total
+                color = (batch.color * weight[:, None]).sum(0) / total
+                reach = float(batch.radius.max())
+                peak = max(float(color.max()), 1e-6)
+                obj.location = tuple(centre * self.scale)
+                light.color = tuple(np.clip(color / peak, 0.0, 1.0))
+                light.energy = k * (0.25 * reach) ** 2 * total * peak
+                light.cutoff_distance = max(reach * self.scale, 1e-3)
+                obj.keyframe_insert("location", frame=frame)
+                light.keyframe_insert("color", frame=frame)
+                light.keyframe_insert("cutoff_distance", frame=frame)
+            light.keyframe_insert("energy", frame=frame)
+        if holder["dl_loop"]:
+            for owner in (obj, light):
+                if owner.animation_data and owner.animation_data.action:
+                    for fc in _fcurves(owner.animation_data.action):
+                        fc.modifiers.new("CYCLES")
+        return obj
 
     def _place(self, obj, system, renderer, holder, inverse, origin):
         obj["dl_effect"] = system.definition.path
