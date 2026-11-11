@@ -21,14 +21,24 @@ What the game does for the ambient part, and so does the group:
   material asks (F_NO_SPECULAR_AT_FULL_ROUGHNESS). Every term checks out against the shader, yet that reads about
   ten times too shiny next to the game, which also has screen space AO on it and its direct and rim light under
   it; REFLECTION_STRENGTH is matched to in-game screenshots by eye.
+
+Everything else in the scene that isn't part of the map (the user's own models, the default cube) gets the group
+'Deadlock object light' instead: the plain probe irradiance at the normal and the cubemap specular, as the game
+lights its props (map props bake the same probes per vertex, map_lighting.bake_probes). No toon step, no exposure
+control: those are for heroes only.
 """
 import bpy
+from bpy.app.handlers import persistent
 
 PROBE_GROUP = 'Deadlock probe light'
 REFLECTION_GROUP = 'Deadlock reflections'
 RIG_GROUP = 'Deadlock rig light'
 NODE = 'dlr_rig_light'
 VERSION = 5
+OBJECT_GROUP = 'Deadlock object light'
+OBJECT_NODE = 'dlr_object_light'
+OBJECT_VERSION = 1
+MAP_BAKED_GROUP = 'Deadlock baked light'
 REFLECTION_STRENGTH = 0.1
 
 # materials/dev/npr_dummy.vmat, which the engine feeds to every NPR material (game version 6821)
@@ -263,9 +273,67 @@ def build_rig_group(tree, probes, reflections=None):
     return tree
 
 
+def build_object_group(tree, probes, reflections=None):
+    """The map's light for props, per pixel: albedo times the probe irradiance, plus the cubemaps as
+    map_lighting.add_env_specular does them (without the lightmap part)."""
+    for name, kind, default in (('Base Color', 'NodeSocketColor', None), ('Alpha', 'NodeSocketFloat', 1.0),
+                                ('Metallic', 'NodeSocketFloat', 0.0), ('Roughness', 'NodeSocketFloat', 0.5),
+                                ('Normal', 'NodeSocketVector', None)):
+        sock = tree.interface.new_socket(name=name, in_out='INPUT', socket_type=kind)
+        if default is not None:
+            sock.default_value = default
+    tree.interface.new_socket(name='Emission', in_out='OUTPUT', socket_type='NodeSocketColor')
+    g = Graph(tree)
+    inp, out = g.nodes.new('NodeGroupInput'), g.nodes.new('NodeGroupOutput')
+    strength = g.value('Strength', 1.0)
+    normal = g.vec('NORMALIZE', inp.outputs['Normal'])
+    n = g.nodes.new('ShaderNodeGroup')
+    n.name = n.label = 'Probes'
+    n.node_tree = probes
+    g.put(n.inputs['Normal'], normal)
+    irradiance = n.outputs['Irradiance']
+    albedo, metallic = inp.outputs['Base Color'], inp.outputs['Metallic']
+    diffuse = g.vec('MULTIPLY', g.vec('SCALE', albedo, scale=g.math('SUBTRACT', 1.0, metallic)), irradiance)
+    total = diffuse
+    if reflections is not None:
+        rough = g.math('MAXIMUM', g.sat(inp.outputs['Roughness']), 0.05)
+        f0 = g.vlerp((0.04, 0.04, 0.04), albedo, metallic)
+        ax, ay, az = g.split(albedo)
+        f0 = g.vec('SCALE', f0, scale=g.sat(g.math('MULTIPLY', g.math('MAXIMUM', ax, g.math('MAXIMUM', ay, az)),
+                                                   25.0)))
+        node = g.nodes.new('ShaderNodeGroup')
+        node.name = node.label = 'Reflections'
+        node.node_tree = reflections
+        g.put(node.inputs['Normal'], normal)
+        g.put(node.inputs['Roughness'], rough)
+        g.put(node.inputs['Specular Color'], f0)
+        single, multi = node.outputs['Single Scatter'], node.outputs['Multi Scatter']
+        luma = g.vec('DOT_PRODUCT', irradiance, (0.2125, 0.7154, 0.0721))
+        baked = node.outputs['Baked Luma']
+        norm = g.math('MINIMUM', g.math('DIVIDE', luma, g.math('MAXIMUM', baked, 1e-6)), 1.0)
+        norm = g.select(g.math('GREATER_THAN', baked, 0.0), norm, 1.0)
+        specular = g.vec('ADD', g.vec('MULTIPLY', g.vec('SCALE', node.outputs['Radiance'], scale=norm), single),
+                         g.vec('MULTIPLY', multi, irradiance))
+        keep = g.vec('MAXIMUM', g.vec('SUBTRACT', (1.0, 1.0, 1.0), g.vec('ADD', single, multi)), (0.0, 0.0, 0.0))
+        total = g.vec('ADD', g.vec('MULTIPLY', diffuse, keep), specular)
+    total = g.vec('SCALE', total, scale=g.math('MULTIPLY', inp.outputs['Alpha'], strength))
+    g.links.new(total, out.inputs['Emission'])
+    tree['dlr_version'] = OBJECT_VERSION
+    tree['dlr_reflections'] = reflections is not None
+    return tree
+
+
 def rig_group(probes, reflections=None):
-    tree = bpy.data.node_groups.get(RIG_GROUP)
-    if tree is not None and tree.library is None and tree.get('dlr_version') == VERSION and \
+    return current_group(RIG_GROUP, VERSION, build_rig_group, probes, reflections)
+
+
+def object_group(probes, reflections=None):
+    return current_group(OBJECT_GROUP, OBJECT_VERSION, build_object_group, probes, reflections)
+
+
+def current_group(name, version, build, probes, reflections):
+    tree = bpy.data.node_groups.get(name)
+    if tree is not None and tree.library is None and tree.get('dlr_version') == version and \
             tree.get('dlr_reflections') == (reflections is not None):
         for n in tree.nodes:
             if n.name.startswith('Probes'):
@@ -274,8 +342,8 @@ def rig_group(probes, reflections=None):
                 n.node_tree = reflections
         return tree
     if tree is not None and tree.library is None:
-        tree.name = RIG_GROUP + ' (old)'
-    return build_rig_group(bpy.data.node_groups.new(RIG_GROUP, 'ShaderNodeTree'), probes, reflections)
+        tree.name = name + ' (old)'
+    return build(bpy.data.node_groups.new(name, 'ShaderNodeTree'), probes, reflections)
 
 
 def principled(mat):
@@ -319,13 +387,14 @@ def npr_inputs(mat):
     return rim, transmissive, no_rough_spec
 
 
-def light_material(mat, group):
+def light_material(mat, group, node_name=NODE):
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    if NODE in nodes:
-        node = nodes[NODE]
+    rig = node_name == NODE
+    if node_name in nodes:
+        node = nodes[node_name]
         node.node_tree = group
         for name in ('Base Color', 'Alpha', 'Metallic', 'Roughness', 'Occlusion', 'Normal'):
-            if node.inputs[name].is_linked:
+            if name not in node.inputs or node.inputs[name].is_linked:
                 continue
             found = principled(mat)
             src = source_of(found[2].inputs[name]) if found and name in found[2].inputs else None
@@ -339,7 +408,7 @@ def light_material(mat, group):
             return False
         output, surface, bsdf = found
         node = nodes.new('ShaderNodeGroup')
-        node.name = node.label = NODE
+        node.name = node.label = node_name
         node.node_tree = group
         node.location = bsdf.location.x, bsdf.location.y - 700
         for name in ('Base Color', 'Alpha', 'Metallic', 'Roughness'):
@@ -348,7 +417,7 @@ def light_material(mat, group):
                 links.new(src, node.inputs[name])
             else:
                 node.inputs[name].default_value = bsdf.inputs[name].default_value
-        occlusion = occlusion_source(mat)
+        occlusion = occlusion_source(mat) if rig else None
         if occlusion:
             links.new(occlusion, node.inputs['Occlusion'])
         normal = source_of(bsdf.inputs['Normal']) or nodes.new('ShaderNodeNewGeometry').outputs['Normal']
@@ -361,6 +430,8 @@ def light_material(mat, group):
         links.new(surface, add.inputs[0])
         links.new(emission.outputs[0], add.inputs[1])
         links.new(add.outputs[0], output.inputs['Surface'])
+    if not rig:
+        return True
     rim, transmissive, no_rough_spec = npr_inputs(mat)
     node.inputs['Rim Mask'].default_value = rim
     node.inputs['Transmissive'].default_value = (*transmissive, 1.0)
@@ -378,6 +449,30 @@ def rig_meshes(scene):
             parent = parent.parent
         if parent is not None or any(m.type == 'ARMATURE' and m.object in rigs for m in ob.modifiers):
             yield ob
+
+
+MAP_COLLECTION_KEYS = ('dlr_map', 'dlr_crop_of', 'dlr_npcs')
+MAP_OBJECT_KEYS = ('dlr_barn_mask', 'dlr_crop_box')
+
+
+def other_objects(scene, rigs):
+    """Objects with materials that are neither rig meshes nor part of a map (its collection, a cropped copy of it,
+    its NPCs)."""
+    skip = set(rigs)
+    for c in scene.collection.children_recursive:
+        if any(k in c for k in MAP_COLLECTION_KEYS):
+            skip.update(c.all_objects)
+    for ob in scene.objects:
+        if ob in skip or ob.library is not None or not hasattr(ob, 'material_slots') or not ob.material_slots:
+            continue
+        if any(k in ob for k in MAP_OBJECT_KEYS):
+            continue
+        yield ob
+
+
+def map_lit(mat):
+    return any(n.type == 'GROUP' and n.node_tree is not None and n.node_tree.name.startswith(MAP_BAKED_GROUP)
+               for n in mat.node_tree.nodes)
 
 
 def map_exposure(scene):
@@ -421,24 +516,94 @@ def exclude_barn_masks(scene):
 
 
 def light_rigs(scene):
-    """Adds the probe light to the scene's rig materials and keeps the scene's own lights from seeing the barn light
-    masks. Returns the number of materials, or None if no map in the file has light probes for rigs."""
+    """Adds the probe light to the scene's rig materials and to every other object's that isn't the map's, and keeps
+    the scene's own lights from seeing the barn light masks. Returns the number of rig and other materials, or None
+    if no map in the file has light probes."""
     exclude_barn_masks(scene)
     probes = probe_group()
     if probes is None:
         return None
-    group = rig_group(probes, reflection_group())
+    reflections = reflection_group()
+    group = rig_group(probes, reflections)
     group.nodes['Tonemap scale'].outputs[0].default_value = 2.0 ** map_exposure(scene)
-    mats = {slot.material for ob in rig_meshes(scene) for slot in ob.material_slots if slot.material}
-    return sum(light_material(m, group) for m in mats)
+    rigs = set(rig_meshes(scene))
+    rig_mats = {slot.material for ob in rigs for slot in ob.material_slots if slot.material}
+    done = sum(light_material(m, group) for m in rig_mats)
+    others = {slot.material for ob in other_objects(scene, rigs) for slot in ob.material_slots if slot.material}
+    others = [m for m in others - rig_mats if m.use_nodes and m.library is None and NODE not in m.node_tree.nodes
+              and not map_lit(m)]
+    if not others:
+        return done, 0
+    group = object_group(probes, reflections)
+    return done, sum(light_material(m, group, OBJECT_NODE) for m in others)
+
+
+_counts = None
+_edited = set()
+
+
+def sync_defaults(mat):
+    """Copies the BSDF's unlinked values into the light node, which got copies of them when it was added."""
+    found = principled(mat)
+    if found is None:
+        return
+    bsdf = found[2]
+    for node in (mat.node_tree.nodes.get(NODE), mat.node_tree.nodes.get(OBJECT_NODE)):
+        if node is None:
+            continue
+        for name in ('Base Color', 'Alpha', 'Metallic', 'Roughness'):
+            src, dst = bsdf.inputs[name], node.inputs[name]
+            if not src.is_linked and not dst.is_linked:
+                value = src.default_value if isinstance(src.default_value, float) else tuple(src.default_value)
+                current = dst.default_value if isinstance(dst.default_value, float) else tuple(dst.default_value)
+                if value != current:
+                    dst.default_value = value
+
+
+def sync_edited():
+    while _edited:
+        mat = bpy.data.materials.get(_edited.pop())
+        if mat is not None and mat.library is None and mat.node_tree is not None:
+            sync_defaults(mat)
+
+
+def relight():
+    if probe_group() is not None:
+        light_rigs(bpy.context.scene)
+        try:
+            bpy.ops.ed.undo_push(message='Probe light')
+        except RuntimeError:
+            pass
+
+
+@persistent
+def on_depsgraph(_scene, depsgraph):
+    """Lights objects and materials added after the map (a new model, a new material on the cube) and keeps lit
+    materials' colours in step with their BSDF. From timers: depsgraph handlers run often and shouldn't edit data
+    themselves."""
+    global _counts
+    for update in depsgraph.updates:
+        mat = update.id.original if isinstance(update.id, bpy.types.Material) else None
+        if mat is not None and mat.node_tree is not None and (NODE in mat.node_tree.nodes or
+                                                              OBJECT_NODE in mat.node_tree.nodes):
+            _edited.add(mat.name)
+    if _edited and not bpy.app.timers.is_registered(sync_edited):
+        bpy.app.timers.register(sync_edited, first_interval=0.0)
+    counts = len(bpy.data.objects), len(bpy.data.materials)
+    if counts == _counts:
+        return
+    _counts = counts
+    if probe_group() is not None and not bpy.app.timers.is_registered(relight):
+        bpy.app.timers.register(relight, first_interval=0.0)
 
 
 class DLR_OT_light_rigs(bpy.types.Operator):
     bl_idname = 'dlr.light_rigs'
-    bl_label = 'Light Rigs'
-    bl_description = ("Light the scene's rigs with the map's light probes, as the game lights heroes, and keep "
-                      "lights you added from casting the map's barn light masks. Linking or appending a map, or "
-                      'appending a rig with a map in the scene, does this already')
+    bl_label = 'Light Scene'
+    bl_description = ("Light the scene's rigs with the map's light probes, as the game lights heroes, and your "
+                      'own objects as it lights props, and keep lights you added from casting the map\'s barn light '
+                      'masks. Linking or appending a map, appending a rig, or adding objects or materials with a '
+                      'map in the scene does this already')
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -447,7 +612,7 @@ class DLR_OT_light_rigs(bpy.types.Operator):
             self.report({'ERROR'}, 'No map with light probes for rigs in this file; rebuild the map and link or '
                                    'append it again')
             return {'CANCELLED'}
-        self.report({'INFO'}, f'Rig light on {done} materials')
+        self.report({'INFO'}, f'Probe light on {done[0]} rig and {done[1]} other materials')
         return {'FINISHED'}
 
 
@@ -465,7 +630,13 @@ def draw(layout, context):
 
 def register():
     bpy.utils.register_class(DLR_OT_light_rigs)
+    bpy.app.handlers.depsgraph_update_post.append(on_depsgraph)
 
 
 def unregister():
+    if on_depsgraph in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(on_depsgraph)
+    for timer in (relight, sync_edited):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)
     bpy.utils.unregister_class(DLR_OT_light_rigs)
