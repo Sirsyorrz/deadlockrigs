@@ -112,9 +112,9 @@ class DLR_OT_remove_clip_effects(bpy.types.Operator):
 class DLR_PT_clip_effects(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Deadlock Rigs'
+    bl_category = 'Hero Rig'
     bl_label = 'Clip Effects'
-    bl_parent_id = 'DLR_PT_main'
+    bl_parent_id = 'DLRIG_PT_game'
 
     @classmethod
     def poll(cls, context):
@@ -140,14 +140,27 @@ class DLR_PT_clip_effects(bpy.types.Panel):
             row.operator('dlr.remove_clip_effects', text='', icon='X')
 
 
-CLASSES = (DLR_OT_clip_effects, DLR_OT_remove_clip_effects, DLR_PT_clip_effects)
+CLASSES = (DLR_OT_clip_effects, DLR_OT_remove_clip_effects)
+
+
+def attach_panel():
+    """(Re)registers the panel under the rig panel's Game Animations. That panel is registered by rig_ui.py,
+    whenever a rig is opened or appended (and by a rig's own text block), and a sub-panel registered before its
+    parent, or left over from a parent that was replaced, doesn't show."""
+    if DLR_PT_clip_effects.is_registered:
+        bpy.utils.unregister_class(DLR_PT_clip_effects)
+    if hasattr(bpy.types, DLR_PT_clip_effects.bl_parent_id):
+        bpy.utils.register_class(DLR_PT_clip_effects)
 
 
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
+    attach_panel()
 
 
 def unregister():
+    if DLR_PT_clip_effects.is_registered:
+        bpy.utils.unregister_class(DLR_PT_clip_effects)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)

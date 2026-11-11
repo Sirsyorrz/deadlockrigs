@@ -340,6 +340,7 @@ def register_rig_ui():
     ns = {'__name__': 'dlrig_ui'}
     with open(path) as f:
         exec(compile(f.read(), path, 'exec'), ns)
+    effects.attach_panel()
     return ns
 
 
