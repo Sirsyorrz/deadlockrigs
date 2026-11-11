@@ -89,7 +89,10 @@
   "mouthShrugUpper": [{"move": "lip_up_mid", "by": [0, -2, 3]}],
   "mouthShrugLower": [{"move": "lip_lo_mid", "by": [0, -3, 4]}],
   "tongueOut": [{"key": "jawOpen", "times": 0.8, "mid": 0.9}, {"move": "lip_lo_mid", "by": [0, -3, -6]}, {"move": "lip_lo_{s}", "by": [0, -2, -4], "sym": true}],
-  "tongueOut_jawOpen": [{"key": "jawOpen", "times": -0.8}]
+  "tongueOut_jawOpen": [{"key": "jawOpen", "times": -0.8}],
+  "jawOpen_mouthClose": [{"turn": "close_lo", "about": [0, -20, 24], "axis": [1, 0, 0], "deg": -8},
+                         {"move": "close_up", "by": [0, -2, -13]},
+                         {"scale": "close_corner_{s}", "about": [36, -102, -13], "by": [1, 1, 0.3], "sym": true}]
  },
  "mid": ["jawOpen", "tongueOut"],
  "controls": {
