@@ -459,7 +459,8 @@
     0.046,
     -0.19,
     1.932
-   ]
+   ],
+   "builder": "handkeys.py"
   },
   "extra_models": {
    "Spirit Owl": {
