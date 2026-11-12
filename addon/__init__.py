@@ -365,10 +365,21 @@ def idle_pose(ui, objects):
 _idle_on_load = False
 
 
+def pick_open_hero(scene):
+    """Points the hero menu at the file's rig (the active one if there are several); a newly opened file's scene
+    starts at the first hero, so Export Animations would otherwise export Abrams."""
+    rigs = [o for o in scene.objects if o.type == 'ARMATURE' and 'dlrig' in o]
+    active = bpy.context.view_layer.objects.active
+    rig = active if active in rigs else next(iter(rigs), None)
+    if rig is not None and any(item and item[0] == rig['dlrig'] for item in hero_items(scene, bpy.context)):
+        scene.dlr_hero = rig['dlrig']
+
+
 @persistent
 def on_load(_dummy):
     global _idle_on_load
     if has_rigs():
+        pick_open_hero(bpy.context.scene)
         ui = register_rig_ui()
         if _idle_on_load:
             idle_pose(ui, bpy.data.objects)
