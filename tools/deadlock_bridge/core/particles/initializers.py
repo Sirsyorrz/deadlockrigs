@@ -1154,6 +1154,30 @@ class RemapTransformOrientationToRotations(Initializer):
         self.orientation.write(sim, v)
 
 
+@initializer("C_INIT_RemapInitialTransformDirectionToRotation")
+class RemapInitialTransformDirectionToRotation(Initializer):
+    """Sets one rotation field of every new particle to an offset minus one of a transform's angles (behaviour
+    version 7 on), or plus its forward direction's heading before that."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.transform = p.transform("m_TransformInput", Transform(0))
+        self.field = p.int("m_nFieldOutput", F.YAW)
+        self.offset = math.radians(p.float("m_flOffsetRot"))
+        self.component = min(max(p.int("m_nComponent", 1), 0), 2)
+        self.version = p.version
+
+    def initialize(self, sim, v):
+        if F.is_vector(self.field) or F.name(self.field) is None:
+            return
+        rotation = self.transform(sim)[0]
+        if self.version >= 7:
+            value = self.offset - math.radians(matrix_angles(rotation)[self.component])
+        else:
+            value = self.offset + math.atan2(rotation[1, 0], rotation[0, 0]) + (math.pi if self.version < 4 else 0.0)
+        v.set_field(self.field, np.full(v.n, value))
+
+
 @initializer("C_INIT_CreateOnModel")
 class CreateOnModel(Initializer):
     """Places particles at random points inside the hitboxes (or bones) of the model a control point carries, and
