@@ -7,7 +7,8 @@ import numpy as np
 from . import fields as F
 from . import models, noise
 from .initializers import (TRACE_MISS, TRACE_MISS_END, TRACE_MISS_KILL, TRACE_MISS_NONE, TransformOrientation, column,
-                           ground_trace, heading_from_cp, models_control_point, path_evaluate, path_points, rows3, _path_parameters)
+                           VECTOR_EXPRESSIONS, ground_trace, heading_from_cp, models_control_point, normalize_with_epsilon,
+                           path_evaluate, path_points, rows3, vector_expression, _path_parameters)
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
                      SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, enum_names, lerp, remap,
@@ -264,6 +265,37 @@ class SetVec(Operator):
         if self.normalized:
             length = np.linalg.norm(value, axis=1, keepdims=True)
             value = np.divide(value, length, out=value.copy(), where=length > 0)
+        v.set_field(self.field, value)
+
+
+@register(OPERATORS, "C_OP_SetVectorAttributeToVectorExpression")
+class SetVectorAttributeToVectorExpression(Operator):
+    """Sets a vector attribute every step to an expression of two vector inputs (VRF port). The strength scales the
+    result before the set method instead of blending toward it."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.expression = p.enum("m_nExpression", VECTOR_EXPRESSIONS, 0)
+        self.input1 = p.vec("m_vInput1")
+        self.input2 = p.vec("m_vInput2")
+        self.lerp = p.number("m_flLerp", 0.0)
+        self.field = p.int("m_nOutputField", F.NORMAL)
+        self.method = p.enum("m_nSetMethod", SET_METHODS, SET_REPLACE)
+        self.normalized = p.bool("m_bNormalizedOutput")
+
+    def operate(self, sim, v, dt, strength):
+        if not F.is_vector(self.field):
+            return
+        a = np.array(rows3(self.input1(sim, v), v.n))
+        b = np.array(rows3(self.input2(sim, v), v.n))
+        value = vector_expression(self.expression, a, b, self.lerp(sim, v), clamp_lerp=True)
+        if value is None:
+            return
+        value = set_by_method(v, self.field, value * strength, self.method, dt)
+        if self.field in F.NORMALIZED:
+            value = np.clip(value, 0.0, 1.0)
+        if self.normalized:
+            value = normalize_with_epsilon(value)
         v.set_field(self.field, value)
 
 

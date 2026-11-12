@@ -89,6 +89,73 @@ class InitVec(Initializer):
         v.set_field(self.field, set_at_spawn(value, v.field(self.field), self.method, sim.frame_time))
 
 
+VECTOR_EXPRESSIONS = {name: i for i, name in enumerate(
+    ("VECTOR_EXPRESSION_ADD", "VECTOR_EXPRESSION_SUBTRACT", "VECTOR_EXPRESSION_MUL", "VECTOR_EXPRESSION_DIVIDE",
+     "VECTOR_EXPRESSION_INPUT_1", "VECTOR_EXPRESSION_MIN", "VECTOR_EXPRESSION_MAX", "VECTOR_EXPRESSION_CROSSPRODUCT",
+     "VECTOR_EXPRESSION_LERP"))}
+
+
+def vector_expression(expression: int, a, b, amount, clamp_lerp: bool):
+    """Two (n, 3) inputs combined per particle, or None for an unknown expression. A zero divisor component divides
+    by FLT_EPSILON with its sign (the game's block form; plain division would give infinities)."""
+    if expression == 0:
+        return a + b
+    if expression == 1:
+        return a - b
+    if expression == 2:
+        return a * b
+    if expression == 3:
+        return a / np.where(np.abs(b) < 1.17549435e-38, np.copysign(1.1920929e-7, b), b)
+    if expression == 4:
+        return a.copy()
+    if expression == 5:
+        return np.minimum(a, b)
+    if expression == 6:
+        return np.maximum(a, b)
+    if expression == 7:
+        return np.cross(a, b)
+    if expression == 8:
+        amount = column(amount, len(a))
+        return lerp(a, b, (saturate(amount) if clamp_lerp else amount)[:, None])
+    return None
+
+
+def normalize_with_epsilon(values):
+    return values / np.sqrt(np.sum(values * values, axis=1, keepdims=True) + 1.1920929e-7)
+
+
+@initializer("C_INIT_SetVectorAttributeToVectorExpression")
+class SetVectorAttributeToVectorExpression(Initializer):
+    """Sets a vector attribute of new particles to an expression of two vector inputs (VRF port)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.expression = p.enum("m_nExpression", VECTOR_EXPRESSIONS, 0)
+        self.input1 = p.vec("m_vInput1")
+        self.input2 = p.vec("m_vInput2")
+        self.lerp = p.number("m_flLerp", 0.0)
+        self.field = p.int("m_nOutputField", F.NORMAL)
+        self.method = p.enum("m_nSetMethod", SET_METHODS, SET_REPLACE)
+        self.normalized = p.bool("m_bNormalizedOutput")
+
+    def initialize(self, sim, v):
+        if not F.is_vector(self.field):
+            return
+        a = np.array(rows3(self.input1(sim, v), v.n))
+        b = np.array(rows3(self.input2(sim, v), v.n))
+        # The game's per-call form takes the lerp unclamped (only whole blocks of 4 in big emissions clamp it).
+        value = vector_expression(self.expression, a, b, self.lerp(sim, v), clamp_lerp=False)
+        current = v.field(self.field)
+        if value is None:
+            return
+        value = set_at_spawn(value, current, self.method, sim.frame_time)
+        if self.field in F.NORMALIZED:
+            value = np.clip(value, 0.0, 1.0)
+        if self.normalized:
+            value = normalize_with_epsilon(value)
+        v.set_field(self.field, value)
+
+
 class _WithinSphere(Initializer):
     """Places particles in a shell around a transform (m_fRadiusMin to m_fRadiusMax), biased per axis, with a
     speed outwards and one in the transform's own coordinates."""
