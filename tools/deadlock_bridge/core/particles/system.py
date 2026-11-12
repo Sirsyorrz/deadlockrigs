@@ -186,6 +186,7 @@ class Definition:
             self.max_step = 0.1
         self.presimulation = p.float("m_flPreSimulationTime")
         self.stop_after = p.float("m_flStopSimulationAfterTime")
+        self.group = p.int("m_nGroupID")
 
         constants = {}
         if p.has("m_ConstantColor"):
@@ -328,6 +329,10 @@ class Simulation:
         self.delay = 0.0
         self.end_cap_child = False
         self._control_points: dict[int, ControlPoint] = {}
+        # Points a parent's operator set on this system alone (C_OP_SetChildControlPoints): they shadow the
+        # root's for this system and its children until something sets that point higher up the tree again.
+        self._own_points: dict[int, ControlPoint] = {}
+        self._overridden = False
         # What a control point nothing set reads as, component by component (the root's counts): 0 as in a map, 1
         # for effects previewed on their own, where the game code that sets scales and counts isn't running.
         self.unset_value = 0.0
@@ -357,6 +362,13 @@ class Simulation:
     # Control points (shared by the whole tree, held by the root) ----------------------------------------------
 
     def control_point(self, index: int) -> ControlPoint:
+        if self.root._overridden:
+            node = self
+            while node.parent is not None:
+                point = node._own_points.get(index)
+                if point is not None:
+                    return point
+                node = node.parent
         points = self.root._control_points
         point = points.get(index)
         if point is None:
@@ -379,6 +391,22 @@ class Simulation:
         if rotation is not None:
             point.rotation = np.asarray(rotation, np.float64)
             point.oriented = True
+        if self.root._overridden:
+            # the game sets a control point on a system and every system below it
+            for child in self.children:
+                for system in child.walk():
+                    system._own_points.pop(index, None)
+
+    def set_child_control_point(self, child: "Simulation", index: int, position, rotation=None):
+        """Sets a control point on one child system (and its children) only."""
+        if index not in child._own_points:
+            inherited = child.control_point(index)
+            point = child._own_points[index] = ControlPoint()
+            for slot in ControlPoint.__slots__:
+                value = getattr(inherited, slot)
+                setattr(point, slot, value.copy() if isinstance(value, np.ndarray) else value)
+            self.root._overridden = True
+        child.set_control_point(index, position, rotation)
 
     def set_control_point_component(self, index: int, component: int, value: float):
         position = self.control_point(index).position.copy()

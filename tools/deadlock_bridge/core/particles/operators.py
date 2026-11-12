@@ -835,6 +835,97 @@ class RemapVelocityToVector(Operator):
 
 # Pre-emission operators -------------------------------------------------------------------------------------------
 
+def heading_rotation(forward):
+    """VectorVectors: a rotation (columns forward, left, up) whose forward is the given direction, its up as near
+    world up as it goes; None for a zero direction."""
+    length = np.linalg.norm(forward)
+    if length < 1e-9:
+        return None
+    forward = forward / length
+    if abs(forward[0]) < 1e-6 and abs(forward[1]) < 1e-6:
+        right = np.array([0.0, -1.0, 0.0])
+        up = np.array([-forward[2], 0.0, 0.0])
+    else:
+        right = np.cross(forward, (0.0, 0.0, 1.0))
+        right /= np.linalg.norm(right)
+        up = np.cross(right, forward)
+        up /= np.linalg.norm(up)
+    return np.stack([forward, -right, up], 1)
+
+
+def particle_heading(v, row: int, field: int = F.PREVIOUS_POSITION):
+    """A particle's rotation for a control point: along its motion (position - previous position), or along a vector
+    attribute."""
+    if field in (F.POSITION, F.PREVIOUS_POSITION) or not F.is_vector(field):
+        return heading_rotation(v.get("position")[row] - v.get("previous")[row])
+    return heading_rotation(v.field(field)[row])
+
+
+def children_in_group(sim, group: int):
+    return [child for child in sim.children if child.definition.group == group]
+
+
+@register(OPERATORS, "C_OP_SetChildControlPoints")
+class SetChildControlPoints(Operator):
+    """Copies the positions of particles first..first+count to control points of every child in a group (ported
+    from CS:GO's builtin_particle_ops.cpp; m_bReverse and m_nOrientation aren't in it and aren't read)."""
+
+    def __init__(self, p):
+        super().__init__(p)
+        self.group = p.int("m_nChildGroupID")
+        self.first_point = p.int("m_nFirstControlPoint")
+        self.count = p.int("m_nNumControlPoints", 1)
+        self.first_source = p.number("m_nFirstSourcePoint", 0.0)
+        self.orient = p.bool("m_bSetOrientation")
+        if p.get("m_bReverse"):
+            p.note("C_OP_SetChildControlPoints m_bReverse")
+
+    def operate(self, sim, v, dt, strength):
+        first_point = min(max(self.first_point, 0), 63)
+        source = int(float(self.first_source(sim)))
+        count = min(v.n - source, self.count, 64 - first_point)
+        if count <= 0 or source < 0:
+            return
+        positions = v.get("position")
+        for child in children_in_group(sim, self.group):
+            for i in range(count):
+                rotation = particle_heading(v, source + i) if self.orient else None
+                sim.set_child_control_point(child, first_point + i, positions[source + i], rotation)
+
+
+@register(OPERATORS, "C_OP_SetPerChildControlPoint")
+class SetPerChildControlPoint(Operator):
+    """Sets one control point on each child of a group from its own particle (child i from particle first +
+    i * increment), for as many children as m_nNumControlPoints or, with m_bNumBasedOnParticleCount, particles."""
+
+    def __init__(self, p):
+        super().__init__(p)
+        self.group = p.int("m_nChildGroupID")
+        self.point = p.int("m_nFirstControlPoint")
+        self.count = p.int("m_nNumControlPoints", 1)
+        self.first_source = p.number("m_nFirstSourcePoint", 0.0)
+        self.increment = p.number("m_nParticleIncrement", 1.0)
+        self.by_particle_count = p.bool("m_bNumBasedOnParticleCount")
+        self.orient = p.bool("m_bSetOrientation")
+        # The default field isn't known: the ones that orient leave it out, and motion is what CS:GO's version used.
+        self.orientation_field = p.int("m_nOrientationField", F.PREVIOUS_POSITION)
+
+    def operate(self, sim, v, dt, strength):
+        children = children_in_group(sim, self.group)
+        source = int(float(self.first_source(sim)))
+        increment = max(1, int(float(self.increment(sim))))
+        count = min(v.n if self.by_particle_count else self.count, len(children))
+        if not 0 <= self.point < 64:
+            return
+        positions = v.get("position")
+        for i in range(count):
+            row = source + i * increment
+            if not 0 <= row < v.n:
+                break
+            rotation = particle_heading(v, row, self.orientation_field) if self.orient else None
+            sim.set_child_control_point(children[i], self.point, positions[row], rotation)
+
+
 class PreEmission(Function):
     def __init__(self, p: Params):
         super().__init__(p)
