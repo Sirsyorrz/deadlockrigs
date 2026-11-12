@@ -1212,6 +1212,29 @@ class SetControlPointRotation(PreEmission):
         sim.set_control_point(self.control_point, point.position, point.rotation @ turn)
 
 
+@register(PRE_EMISSION, "C_OP_SetParentControlPointsToChildCP")
+class SetParentControlPointsToChildCP(PreEmission):
+    """Hands this system's control points out to its children, one each: the i-th child of the group gets point
+    first + i as its point m_nChildControlPoint (orientation too if asked), for up to m_nNumControlPoints children.
+    Defaults and loop from Deadlock's particles.dll."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.group = p.int("m_nChildGroupID")
+        self.child_point = p.int("m_nChildControlPoint")
+        self.count = p.int("m_nNumControlPoints", 1)
+        self.first_source = p.int("m_nFirstSourcePoint")
+        self.orient = p.bool("m_bSetOrientation")
+
+    def operate(self, sim, dt):
+        source = self.first_source
+        for child in children_in_group(sim, self.group)[:max(self.count, 0)]:
+            point = sim.control_point(source)
+            sim.set_child_control_point(child, self.child_point, point.position,
+                                        point.rotation if self.orient else None)
+            source += 1
+
+
 # Force generators -------------------------------------------------------------------------------------------------
 
 class Force(Function):
