@@ -551,6 +551,11 @@ class _ObjectBuilder:
             if isinstance(batch, R.Models):
                 self._models(_stem(system.definition.path), batch, holder, inverse, system.definition.path, renderer)
                 continue
+            if isinstance(batch, R.Tubes):
+                material = self.materials.cable(batch.shading)
+                obj = self._tubes(f"{_stem(system.definition.path)} cables", batch, origin, material)
+                self._place(obj, system, renderer, holder, inverse, origin)
+                continue
             material = self.materials.get(system.definition, renderer, batch.shading)
             if isinstance(batch, R.Sprites):
                 obj = self._sprites(f"{_stem(system.definition.path)} sprites", batch, origin, material)
@@ -595,6 +600,10 @@ class _ObjectBuilder:
                 obj = self._animated_models(f"{stem} models", batches, steps, origin)
                 if obj is None:
                     continue
+            elif isinstance(batches[0], R.Tubes):
+                merged, counts = _merge_tubes(renderer, batches)
+                obj = self._tubes(f"{stem} cables", merged, origin, self.materials.cable(merged.shading), timed=True)
+                _attribute(obj.data, "dl_step", "INT", np.repeat(steps, counts))
             else:
                 shading, varying = _varying_shading([batch.shading for batch in batches])
                 material = self.materials.get(system.definition, renderer, shading)
@@ -849,6 +858,29 @@ class _ObjectBuilder:
         _set_input(modifier, "Face Camera", batch.facing is None)
         return obj
 
+    def _tubes(self, name, batch: R.Tubes, origin, material, timed=False):
+        """A cable's tube as a plain lit mesh: its vertices are final, so no geometry nodes but the bake's step."""
+        mesh = bpy.data.meshes.new(name)
+        count = len(batch.position)
+        quads = len(batch.quads)
+        mesh.vertices.add(count)
+        mesh.vertices.foreach_set("co", ((batch.position - origin) * self.scale).astype(np.float32).ravel())
+        mesh.loops.add(quads * 4)
+        mesh.loops.foreach_set("vertex_index", batch.quads.astype(np.int32).ravel())
+        mesh.polygons.add(quads)
+        mesh.polygons.foreach_set("loop_start", np.arange(0, quads * 4, 4, dtype=np.int32))
+        _attribute(mesh, "dl_card", "FLOAT_VECTOR", np.hstack([batch.card, np.zeros((count, 1))]))
+        _attribute(mesh, "dl_color", "FLOAT_COLOR", batch.color)
+        _attribute(mesh, "dl_self_illum", "FLOAT", batch.self_illum)
+        mesh.update(calc_edges=True)
+        mesh.shade_smooth()
+        mesh.normals_split_custom_set_from_vertices(batch.normal.astype(np.float32).tolist())
+        mesh.materials.append(material)
+        obj = bpy.data.objects.new(name, mesh)
+        if timed:
+            self._time_modifier(obj)
+        return obj
+
     @staticmethod
     def _shading_attributes(mesh, batch):
         _attribute(mesh, "dl_color", "FLOAT_COLOR", batch.color)
@@ -952,6 +984,18 @@ def _merge_ribbons(renderer, batches):
     starts = np.cumsum([0] + counts[:-1])
     out.quads = np.concatenate([batch.quads + start for batch, start in zip(batches, starts)])
     _merge_layers(out, batches)
+    return out, counts
+
+
+def _merge_tubes(renderer, batches):
+    """Every step's tubes as one batch, and how many vertices each step has."""
+    counts = [len(batch.position) for batch in batches]
+    out = R.Tubes(renderer)
+    for name in ("position", "normal", "card", "color", "self_illum"):
+        setattr(out, name, _stack(batches, name))
+    starts = np.cumsum([0] + counts[:-1])
+    out.quads = np.concatenate([batch.quads + start for batch, start in zip(batches, starts)])
+    out.shading = batches[0].shading
     return out, counts
 
 
@@ -1272,6 +1316,49 @@ class _Materials:
         if material is None:
             material = self._cache[key] = self._build(definition, renderer, shading)
             material["dl_particle_key"] = key
+        return material
+
+    def cable(self, shading: dict) -> bpy.types.Material:
+        """cables.vfx as a Principled BSDF: colour map times the vertex colour, the material's roughness and
+        metalness, glowing by the self illumination amount (dl_self_illum) times the albedo, as the game adds it.
+        Opaque unless the material is translucent (then the colour map's alpha times the vertex alpha)."""
+        key = f"{shading['material']}|cables"
+        material = self._cache.get(key)
+        if material is not None:
+            return material
+        material = bpy.data.materials.new(f"{_stem(shading['material'])} cable")
+        material["dl_particle_key"] = key
+        material.use_nodes = True
+        tree = material.node_tree
+        tree.nodes.clear()
+        b = Builder(tree)
+        card = b.attribute("dl_card").outputs["Vector"]
+        vertex = b.attribute("dl_color")
+        glow = b.attribute("dl_self_illum").outputs["Fac"]
+        image = self.target.textures.image(shading["texture"], color=True)
+        b.column(1)
+        color, alpha = vertex.outputs["Color"], vertex.outputs["Alpha"]
+        if image is not None:
+            texture = b.node("ShaderNodeTexImage")
+            texture.image = image
+            texture.extension = "REPEAT"
+            b.set(texture.inputs["Vector"], b.vmath("MULTIPLY_ADD", card, (1.0, -1.0, 1.0), (0.0, 1.0, 0.0)))
+            color = b.vmul(texture.outputs["Color"], color)
+            alpha = b.mul(texture.outputs["Alpha"], alpha)
+        b.column(3)
+        bsdf = b.node("ShaderNodeBsdfPrincipled")
+        b.set(bsdf.inputs["Base Color"], color)
+        bsdf.inputs["Roughness"].default_value = shading["roughness"]
+        bsdf.inputs["Metallic"].default_value = shading["metalness"]
+        b.set(bsdf.inputs["Emission Color"], color)
+        b.set(bsdf.inputs["Emission Strength"], glow)
+        if shading["translucent"]:
+            b.set(bsdf.inputs["Alpha"], b.mul(alpha, shading["opacity"]))
+            material.surface_render_method = "BLENDED"
+        b.column(4)
+        output = b.node("ShaderNodeOutputMaterial")
+        b.set(output.inputs["Surface"], bsdf.outputs[0])
+        self._cache[key] = material
         return material
 
     def gradient(self, stops) -> bpy.types.Image:

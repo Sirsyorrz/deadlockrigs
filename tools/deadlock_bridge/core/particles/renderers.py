@@ -958,6 +958,238 @@ class RenderProjected(RenderSprites):
         return out
 
 
+class Tubes:
+    """Round tubes to draw (C_OP_RenderCables): finished vertices (``position``, ``normal``, ``card`` = texture u
+    around, v along, game V down), linear vertex ``color`` with alpha, ``self_illum`` per vertex, and ``quads``.
+    ``shading`` is the cable material's: path, colour texture, roughness, metalness, translucency."""
+
+    def __init__(self, renderer):
+        self.renderer = renderer
+        self.position = np.zeros((0, 3))
+        self.normal = np.zeros((0, 3))
+        self.card = np.zeros((0, 2))
+        self.color = np.zeros((0, 4))
+        self.self_illum = np.zeros(0)
+        self.quads = np.zeros((0, 4), np.int64)
+        self.shading = {}
+
+    @property
+    def count(self):
+        return len(self.quads)
+
+
+def _safe_normalize(v, fallback):
+    length = np.linalg.norm(v, axis=-1, keepdims=True)
+    return np.where(length > 1e-6, v / np.maximum(length, 1e-12), fallback)
+
+
+class RenderCables:
+    """A lit round tube through the particles in collection order (C_OP_RenderCables, the cables.vfx shader): VRF's
+    port. Rings follow a Catmull-Rom spline through the particles, 2^level per segment; sides 4 x 2^roundness;
+    optional domed end caps. The game picks each segment's level from its size on screen: here from its length,
+    as if seen from REFERENCE_DISTANCE game units."""
+
+    kind = "cables"
+    REFERENCE_DISTANCE = 150.0
+    MAX_LEVEL = 7
+    MAX_RINGS = 8192
+
+    def __init__(self, p: Params, library, index: int):
+        self.index = index
+        self.hidden = False
+        self.footage_alpha = 1.0
+        path = p.str("m_hMaterial") or "particles/dev/dev_cables_preview_material.vmat"
+        material = library.material(path)
+        if material is None:
+            raise ValueError("no cable material")
+        self.texture = material.textures.get("g_tColor")
+        self.roughness = min(max(material.float("g_flRoughness", 1.0), 0.0), 1.0)
+        self.metalness = min(max(material.float("g_flMetalness", 0.0), 0.0), 1.0)
+        self.diffuse = material.float("g_flDiffuseAmount", 1.0)
+        self.opacity = material.float("g_flOpacityScale", 1.0)
+        self.translucent = bool(material.ints.get("F_TRANSLUCENT", 0))
+        self.material_path = path
+        # A material whose self illumination is a dynamic expression takes the renderer's $SELFILLUM variable
+        # (lash_final_strike_cable_material: 5 static, an age curve 4.8 -> 10 from the cable).
+        self.self_illum = p.number("m_flSelfIllumAmount", material.float("g_flSelfIllumAmount", 0.0))
+        if "g_flSelfIllumAmount" in material.dynamic:
+            for var in p.array("m_MaterialFloatVars"):
+                if var.str("m_strVariable").lower() == "$selfillum":
+                    self.self_illum = var.number("m_flInput", 0.0)
+        self.radius_scale = p.number("m_flRadiusScale", 1.0)
+        self.alpha_scale = p.number("m_flAlphaScale", 1.0)
+        self.color_scale = p.vec("m_vecColorScale", (1.0, 1.0, 1.0))
+        self.roundness = p.int("m_nRoundness", 1)
+        self.path_mode = p.str("m_nTextureRepetitionMode") == "TEXTURE_REPETITION_PATH"
+        self.tess_scale = p.float("m_flTessScale", 1.0)
+        self.min_tessellation = p.int("m_nMinTesselation", 1)
+        self.max_tessellation = p.int("m_nMaxTesselation", 128)
+        self.repeats = p.number("m_flTextureRepeatsPerSegment", 1.0)
+        self.circumference = p.number("m_flTextureRepeatsCircumference", 1.0)
+        self.offset_u = p.number("m_flColorMapOffsetU", 0.0)
+        self.offset_v = p.number("m_flColorMapOffsetV", 0.0)
+        self.caps = p.bool("m_bDrawCableCaps")
+        self.cap_roundness = min(max(p.float("m_flCapRoundness", 1.0), 0.0), 2.0)
+        self.cap_offset = min(max(p.float("m_flCapOffsetAmount", 1.0), 0.01), 2.0)
+
+    def _levels(self, position) -> np.ndarray:
+        """Each segment's tessellation level (VRF's, with the screen size from a fixed viewing distance)."""
+        segments = len(position) - 1
+        direction = _safe_normalize(np.diff(position, axis=0), [1.0, 0.0, 0.0])
+        length = np.linalg.norm(np.diff(position, axis=0), axis=1)
+        # VRF: screen fraction of the segment's bounding sphere (diameter 1.2 x length) x tess scale x 36 (1080p)
+        tess = length * 0.6 / self.REFERENCE_DISTANCE * self.tess_scale * 36.0
+        subdivisions = np.clip(np.minimum(np.maximum(tess.astype(np.int64), self.min_tessellation), self.max_tessellation),
+                               1, 1 << self.MAX_LEVEL)
+        levels = np.floor(np.log2(subdivisions)).astype(np.int64)
+        for i in range(segments):
+            bend_prev = direction[i] @ direction[i - 1] if i > 0 else 1.0
+            bend_next = direction[i] @ direction[i + 1] if i < segments - 1 else 1.0
+            bend = 1.0 - min(max(min(bend_prev, bend_next), -1.0), 1.0)
+            if tess[i] > 0.1 and bend > 0.8:
+                levels[i] += 2
+            elif tess[i] > 0.1 and bend > 0.1:
+                levels[i] += 1
+        levels = np.clip(levels, 0, self.MAX_LEVEL)
+        for i in range(1, segments - 1):
+            low, high = sorted((levels[i - 1], levels[i + 1]))
+            levels[i] = min(max(levels[i], low), high)
+        for _ in range(self.MAX_LEVEL):
+            if len(position) + int(((1 << levels) - 1).sum()) + self._cap_rings(levels) <= self.MAX_RINGS:
+                break
+            levels = np.maximum(levels - 1, 0)
+        return levels
+
+    def _cap_rings(self, levels) -> int:
+        if not self.caps:
+            return 0
+        return (1 << int(np.clip(levels[0], 1, 4))) + (1 << int(np.clip(levels[-1], 1, 4)))
+
+    def _cap(self, end, neighbour, radius, color, alpha, at_start, subdivisions, first_v, repeats):
+        """A cap's rings: (positions, radii, colours, alphas, vs, dome centre)."""
+        outward = _safe_normalize(end - neighbour, [0.0, 0.0, 1.0])
+        tip = end + outward * 0.01
+        tip_radius = -radius * self.cap_roundness * 3.0
+        rim = end + outward * (radius * self.cap_offset)
+        inner = end - outward * (radius * self.cap_offset * self.cap_roundness * 2.0)
+        first = 0 if at_start else 1
+        t = np.arange(first, first + subdivisions) / subdivisions
+        if at_start:
+            points = _catmull_rom(tip, rim, end, inner, t)
+            radii = _catmull_rom(tip_radius, 0.0, radius, 0.0, t)
+        else:
+            points = _catmull_rom(inner, end, rim, tip, t)
+            radii = _catmull_rom(0.0, radius, 0.0, tip_radius, t)
+        k = len(t)
+        return (points, radii, np.tile(color, (k, 1)), np.full(k, alpha), first_v + t * repeats,
+                tip if tip_radius < 0.0 else None)
+
+    def build(self, sim, ambient) -> Tubes | None:
+        n = sim.particles.count
+        if n < 2:
+            return None
+        radius_scale = float(np.mean(self.radius_scale(sim)))
+        alpha_scale = float(np.mean(self.alpha_scale(sim)))
+        if radius_scale == 0.0 or alpha_scale == 0.0:
+            return None
+        v = F.View(sim.particles, slice(0, n))
+        position = v.get("position").astype(np.float64)
+        radius = np.maximum(v.get("radius") * radius_scale, 0.0)
+        # The alpha scale goes in twice (the vertex alpha byte, then the colour blend's alpha), as VRF reads it.
+        alpha = np.clip(v.get("alpha") * alpha_scale, 0.0, 1.0) * alpha_scale
+        color = srgb_to_linear(np.clip(v.get("color") * np.asarray(self.color_scale(sim), np.float64), 0.0, 1.0))
+        levels = self._levels(position)
+
+        repeats = float(np.mean(self.repeats(sim)))
+        if self.path_mode:
+            repeats /= (n + 1) if self.caps else (n - 1)
+        ring_pos, ring_radius, ring_color, ring_alpha, ring_v, domes = [], [], [], [], [], []
+
+        def add(points, radii, colors, alphas, vs, dome):
+            ring_pos.append(points)
+            ring_radius.append(radii)
+            ring_color.append(colors)
+            ring_alpha.append(alphas)
+            ring_v.append(vs)
+            domes.extend([dome] * len(points))
+
+        if self.caps:
+            add(*self._cap(position[0], position[1], radius[0], color[0], alpha[0], True,
+                           1 << int(np.clip(levels[0], 1, 4)), 0.0, repeats))
+        last = n - 1
+        for i in range(n - 1):
+            before, after = max(i - 1, 0), min(i + 2, last)
+            t = np.arange(1 << levels[i]) / (1 << levels[i])
+            add(_catmull_rom(position[before], position[i], position[i + 1], position[after], t),
+                _catmull_rom(radius[before], radius[i], radius[i + 1], radius[after], t),
+                lerp(color[i], color[i + 1], t[:, None]), lerp(alpha[i], alpha[i + 1], t), (i + t) * repeats, None)
+        add(position[last:], radius[last:], color[last:], alpha[last:], np.array([last * repeats]), None)
+        if self.caps:
+            add(*self._cap(position[last], position[last - 1], radius[last], color[last], alpha[last], False,
+                           1 << int(np.clip(levels[-1], 1, 4)), n * repeats, repeats))
+
+        centers = np.concatenate(ring_pos)
+        radii = np.concatenate(ring_radius)
+        rings = len(centers)
+        sides = (1 << min(max(self.roundness, 0), 3)) * 4
+
+        # Ring frames: VRF's tangent (mean of the two neighbouring directions) with the normal carried along.
+        tangents = np.empty((rings, 3))
+        tangents[0] = centers[1] - centers[0]
+        tangents[-1] = centers[-1] - centers[-2]
+        if rings > 2:
+            steps = _safe_normalize(np.diff(centers, axis=0), [0.0, 0.0, 1.0])
+            tangents[1:-1] = steps[:-1] + steps[1:]
+        tangents = _safe_normalize(tangents, [1.0, 0.0, 0.0])
+        normals = np.empty((rings, 3))
+        bitangents = np.empty((rings, 3))
+
+        def initial(tangent):
+            up = np.array([1.0, 0.0, 0.0]) if abs(tangent[2]) > 0.98 else np.array([0.0, 0.0, 1.0])
+            return _safe_normalize(np.cross(tangent, up), [0.0, 0.0, 1.0])
+
+        previous = None
+        for i in range(rings):
+            tangent = tangents[i]
+            if previous is None:
+                normal = initial(tangent)
+            else:
+                projected = previous - tangent * (previous @ tangent)
+                normal = projected / np.linalg.norm(projected) if projected @ projected > 1e-12 else initial(tangent)
+            bitangent = np.cross(tangent, normal)
+            bitangent = bitangent / np.linalg.norm(bitangent) if bitangent @ bitangent > 1e-12 else initial(tangent)
+            normals[i], bitangents[i] = normal, bitangent
+            previous = normal
+
+        angle = 2.0 * math.pi * np.arange(sides + 1) / sides
+        radial = (normals[:, None, :] * np.cos(angle)[None, :, None] + bitangents[:, None, :] * np.sin(angle)[None, :, None])
+        vertices = centers[:, None, :] + radial * radii[:, None, None]
+        vertex_normals = radial.copy()
+        for i, dome in enumerate(domes):
+            if dome is not None:
+                vertex_normals[i] = _safe_normalize(vertices[i] - dome, [0.0, 0.0, 1.0])
+
+        offset = (math.fmod(float(np.mean(self.offset_u(sim))), 1.0), math.fmod(float(np.mean(self.offset_v(sim))), 1.0))
+        circumference = float(np.mean(self.circumference(sim)))
+        u = np.tile(np.arange(sides + 1) / sides * circumference, rings) + offset[0]
+        vs = np.repeat(np.concatenate(ring_v), sides + 1) + offset[1]
+        rgba = np.concatenate([np.concatenate(ring_color), np.concatenate(ring_alpha)[:, None]], axis=1)
+
+        out = Tubes(self)
+        out.position = vertices.reshape(-1, 3)
+        out.normal = vertex_normals.reshape(-1, 3)
+        out.card = np.stack([u, vs], axis=1)
+        out.color = np.repeat(np.clip(rgba, 0.0, 1.0), sides + 1, axis=0)
+        out.self_illum = np.full(len(out.position), float(np.mean(self.self_illum(sim))))
+        a = (np.arange(rings - 1)[:, None] * (sides + 1) + np.arange(sides)[None, :]).ravel()
+        b = a + sides + 1
+        out.quads = np.stack([a, a + 1, b + 1, b], axis=1)
+        out.shading = {"material": self.material_path, "texture": self.texture, "roughness": self.roughness,
+                       "metalness": self.metalness, "diffuse": self.diffuse, "opacity": self.opacity,
+                       "translucent": self.translucent}
+        return out
+
+
 RENDERERS = {
     "C_OP_RenderStandardLight": RenderStandardLight,
     "C_OP_RenderOmni2Light": RenderOmni2Light,
@@ -966,4 +1198,5 @@ RENDERERS = {
     "C_OP_RenderRopes": RenderRopes,
     "C_OP_RenderTrails": RenderTrails,
     "C_OP_RenderModels": RenderModels,
+    "C_OP_RenderCables": RenderCables,
 }
