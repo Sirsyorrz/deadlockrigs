@@ -11,6 +11,8 @@ from . import particles
 TAG = 'dlr_clip_effect'
 # set on effects added by Add Ability Effects: Add Clip Effects leaves them be
 PICKED = 'dlr_picked_effect'
+# seconds an ability's end effect is baked for
+END_LENGTH = 2.0
 _found = {}
 _catalogs = {}
 _abilities = {}
@@ -200,17 +202,23 @@ class DLR_OT_ability_effects(bpy.types.Operator):
         particles.bridge_particles()
         rig_effects = tools_module('rig_effects')
         session = tools_module('deadlock_bridge.session')
-        fx = tools_module('clip_effects').for_model(session.content(), rig_effects.model_of(arm))
+        clip_effects = tools_module('clip_effects')
+        fx = clip_effects.for_model(session.content(), rig_effects.model_of(arm))
         sc = context.scene
         fps = sc.render.fps / sc.render.fps_base
         for ability, title, first, last, clips in spans:
             # a dome or buff outlasts its cast clip
-            last = max(last, first + fx.ability_duration(ability) * fps)
+            lasts = first + fx.ability_duration(ability) * fps
+            # a channel is over when its outro clip starts (ability_vacuum_alt_end)
+            outros = [f for c, f, _ in clips_of(arm)
+                      if c in clips and first < f <= last and clip_effects.marks_end(c, c)]
+            over = max(min(outros, default=last), lasts)
+            last = max(last, lasts)
             timed = {e['path'] for clip in clips for e in effects_of(arm, clip)}
             # what shows on whoever is hit goes on someone else; the clip's own are Add Clip Effects'
             found = [e for e in effects[ability] if e['kind'] != 'target' and e['path'] not in timed]
             if found:
-                jobs.append((ability, title, first, last, found))
+                jobs.append((ability, title, first, last, over, found))
         if not jobs:
             self.report({'WARNING'}, f'All effects of {", ".join(dict.fromkeys(s[1] for s in spans))} are timed by '
                         'their clips: Add Clip Effects' if spans else 'These clips are of no ability')
@@ -220,11 +228,16 @@ class DLR_OT_ability_effects(bpy.types.Operator):
         wm.progress_begin(0, 100)
         holders = []
         try:
-            for i, (ability, title, first, last, found) in enumerate(jobs):
+            for i, (ability, title, first, last, over, found) in enumerate(jobs):
                 def progress(n, total, i=i):
                     wm.progress_update(100 * (i + n / max(total, 1)) // len(jobs))
-                added = rig_effects.add(context, arm, title, first, max(last - first, 1.0) / fps, effects=found,
-                                        progress=progress)
+                during = [e for e in found if not e.get('at_end')]
+                ends = [e for e in found if e.get('at_end')]
+                added = rig_effects.add(context, arm, title, first, max(last - first, 1.0) / fps, effects=during,
+                                        progress=progress) if during else []
+                # the singularity's collapse, a form's poof: once, when the ability is over
+                if ends:
+                    added += rig_effects.add(context, arm, title, over, END_LENGTH, effects=ends, seed=len(during))
                 for holder in added:
                     holder[PICKED] = ability
                 holders += added

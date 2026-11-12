@@ -54,6 +54,7 @@ FILLER_WORDS = {'weapon', 'arm', 'item', 'zoomed', 'open', 'close', 'center', 'c
 # the moments of an ability an effect's name and its clips' names share
 STAGES = {'cast', 'charge', 'fire', 'loop', 'attached', 'channel', 'start', 'end', 'windup', 'land', 'exit', 'intro',
           'throw', 'hold', 'release', 'jump', 'dash', 'activate'}
+END_WORDS = {'end', 'ending', 'finish', 'endcap', 'removal'}
 STAGE_ALIASES = {'precast': 'cast', 'casting': 'cast', 'charging': 'charge', 'channeling': 'channel',
                  'channelling': 'channel', 'landing': 'land', 'activation': 'activate'}
 # effects that show on whoever an ability hits, or away from the caster; generic/ and modifiers/ hold the shared
@@ -176,6 +177,15 @@ def _words(text):
 
 def _stages(text):
     return {STAGE_ALIASES.get(w, w) for w in _words(text)} & STAGES
+
+
+def marks_end(key, path):
+    """Whether an ability's effect marks its end (m_FinishParticle, m_EndcapParticle, nano_cat_form_end): the key's
+    stage says, else the effect's name (m_BuffStartParticle viper_petrify_end starts it)."""
+    words = _words(key)
+    if not words & (STAGES | END_WORDS):
+        words = _words(path.rsplit('/', 1)[-1].split('.', 1)[0])
+    return bool(words & END_WORDS)
 
 
 def _core(clip):
@@ -502,8 +512,10 @@ class ClipEffects:
                           and 'ability_cast' in attachments and _stages(key) | _stages(value.rsplit('/', 1)[-1])):
                         kind = 'cast'
                         drivers = [CAST_DRIVER] + [d for d in drivers if d['cp'] != 0]
+                    end = marks_end(key, value)
                     effects[value] = {'path': value, 'source': 'ability', 'ability': name, 'key': key, 'kind': kind,
-                                      'start': 0.0, 'loop': True, 'drivers': drivers, 'guessed': kind == 'cast'}
+                                      'start': 0.0, 'loop': not end, 'at_end': end, 'drivers': drivers,
+                                      'guessed': kind == 'cast'}
             if effects:
                 title = names.get(root) or root.replace('citadel_', '').replace('ability_', '').replace('_', ' ')
                 self._catalog.append((root, title, list(effects.values())))
