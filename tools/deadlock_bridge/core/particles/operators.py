@@ -1901,6 +1901,9 @@ class CurlNoiseForce(Force):
 # Constraints ------------------------------------------------------------------------------------------------------
 
 class Constraint(Function):
+    # runs once after the relaxation passes instead of inside them
+    final = False
+
     def apply(self, sim, v, dt: float) -> bool:
         raise NotImplementedError
 
@@ -2047,6 +2050,204 @@ class RopeSpringConstraint(Constraint):
                 points[i - 1] = [a[j] - 0.5 * c[j] for j in range(3)]
                 points[i] = [b[j] + 0.5 * c[j] for j in range(3)]
         v.set("position", np.asarray(points, np.float64))
+        return True
+
+
+COLLISION_MODES = {"COLLISION_MODE_DISABLED": -1, "COLLISION_MODE_INITIAL_TRACE_DOWN": 0,
+                   "COLLISION_MODE_PER_FRAME_PLANESET": 1, "COLLISION_MODE_USE_NEAREST_TRACE": 2,
+                   "COLLISION_MODE_PER_PARTICLE_TRACE": 3}
+COLLISION_DISABLED, COLLISION_TRACE_DOWN, COLLISION_PER_PARTICLE = -1, 0, 3
+
+
+@register(CONSTRAINTS, "C_OP_WorldTraceConstraint")
+class WorldTraceConstraint(Constraint):
+    """Collides particles with the world: a particle whose step (from its previous position to half a radius past
+    its position) crosses a surface from the front goes back to the contact, then bounces (reflected direction x
+    bounce, x step length with m_bDecayBounce) and slides (step along the surface x slide), sticks (stick field), or
+    dies (kill on contact, or slower than the minimum speed). VRF port; dll ctor 0x1800ee2ca defaults agree (mode
+    PER_PARTICLE_TRACE, min DISABLED, CP tolerance 5, retest -1, confirmation speed 24, max traces -1, min speed -1,
+    stick field 19 = none). The only world is Simulation.ground (a plane facing up); with none (a map) it does
+    nothing. Plane set modes keep the plane only while their control point is within 1000 units above it (their
+    downward traces' reach), and confirm fast contacts with a longer trace as the game does. Collision events for
+    children are not raised (the bridge has none)."""
+
+    CONFIRMATION_EXTENSION = 64.0
+    PLANE_TRACE_LENGTH = 1000.0
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.control_point = p.int("m_nCP", 0)
+        offset = p.vec("m_vecCpOffset").constant
+        self.control_point_offset = np.zeros(3) if offset is None else np.asarray(offset, np.float64).reshape(3)
+        self.mode = p.enum("m_nCollisionMode", COLLISION_MODES, COLLISION_PER_PARTICLE)
+        self.tolerance = p.float("m_flCpMovementTolerance", 5.0)
+        self.retest_rate = p.float("m_flRetestRate", -1.0)
+        self.confirmation_speed = p.float("m_flCollisionConfirmationSpeed", 24.0)
+        self.radius_scale = p.number("m_flRadiusScale", 1.0)
+        self.bounce = p.number("m_flBounceAmount", 0.0)
+        self.slide = p.number("m_flSlideAmount", 0.0)
+        self.scatter = p.number("m_flRandomDirScale", 0.0)
+        self.decay_bounce = p.bool("m_bDecayBounce")
+        self.kill_on_contact = p.bool("m_bKillonContact")
+        self.minimum_speed = p.float("m_flMinSpeed", -1.0)
+        self.bounce_killed = p.bool("m_bKillonContactBounce")
+        self.set_normal = p.bool("m_bSetNormal")
+        self.stick_field = p.int("m_nStickOnCollisionField", 19)
+        self.stop_speed = p.number("m_flStopSpeed", -1.0)
+        self.final = self.bounce.constant != 0.0 or self.slide.constant != 0.0
+        self.reset()
+
+    def reset(self):
+        self.has_plane = False
+        self.refreshed = False
+        self.last_refresh = -1.0
+        self.last_origin = np.zeros(3)
+
+    def _refresh_plane(self, sim):
+        """Whether the plane set holds the ground: retraced once for TRACE_DOWN, else when the CP moved past the
+        tolerance or the retest time passed (a retest of a full set retraces one direction; with a flat ground
+        only the downward ones can hit, so it is treated as a full retrace)."""
+        if self.mode == COLLISION_TRACE_DOWN and self.refreshed:
+            return self.has_plane
+        force = self.last_refresh == -1.0 or (self.retest_rate >= 0 and sim.age > self.retest_rate + self.last_refresh)
+        origin = sim.control_point(self.control_point).position + self.control_point_offset
+        if not force and np.sum((origin - self.last_origin) ** 2) < self.tolerance * self.tolerance:
+            return self.has_plane
+        self.refreshed = True
+        self.last_refresh = sim.age
+        self.last_origin = origin.copy()
+        # under the ground counts as on it, as the ground initializers do
+        self.has_plane = origin[2] - sim.root.ground <= self.PLANE_TRACE_LENGTH
+        return self.has_plane
+
+    def apply(self, sim, v, dt):
+        ground = sim.root.ground
+        if ground is None or self.mode == COLLISION_DISABLED or v.n == 0 or dt <= 0:
+            return False
+        plane_set = self.mode != COLLISION_PER_PARTICLE
+        if plane_set and not self._refresh_plane(sim):
+            return False
+        n = v.n
+        position = v.get("position").copy()
+        previous = v.get("previous").copy()
+        stick = None
+        if self.stick_field != 19 and F.is_vector(self.stick_field):
+            stick = v.field(self.stick_field).copy()
+            stuck = np.einsum("ij,ij->i", stick, stick) > 0.0
+            position[stuck] = stick[stuck]
+            previous[stuck] = stick[stuck]
+        else:
+            stuck = np.zeros(n, bool)
+
+        step = position - previous
+        length_sq = np.einsum("ij,ij->i", step, step)
+        moving = ~stuck & (length_sq > np.finfo(np.float32).eps)
+        length = np.sqrt(length_sq)
+        direction = np.divide(step, length[:, None], out=np.zeros_like(step), where=moving[:, None])
+        half_radius = v.get("radius") * column(self.radius_scale(sim, v), n) * 0.5
+        trace_end = position + direction * half_radius[:, None]
+        start_height = previous[:, 2] - ground
+        end_height = trace_end[:, 2] - ground
+        contact_found = moving & (start_height >= 0.0) & (end_height < 0.0)
+        fraction = np.divide(start_height, start_height - end_height, out=np.ones(n), where=contact_found)
+
+        bounce = np.array(column(self.bounce(sim, v), n), np.float64)
+        slide = np.array(column(self.slide(sim, v), n), np.float64)
+        scatter = np.array(column(self.scatter(sim, v), n), np.float64)
+        blocks = -(-n // 4)
+        padded = np.zeros(blocks * 4, bool)
+        padded[:n] = (bounce > 0) | (slide > 0)
+        block_bounces = np.repeat(padded.reshape(blocks, 4).any(axis=1), 4)[:n]
+        padded[:] = False
+        padded[:n] = scatter > 0
+        block_scatters = np.repeat(padded.reshape(blocks, 4).any(axis=1), 4)[:n]
+
+        scatter_points = np.zeros((n, 3))
+        if (not self.kill_on_contact or self.bounce_killed) and contact_found.any():
+            padded[:] = False
+            padded[:n] = contact_found & block_bounces & block_scatters
+            drawing = np.flatnonzero(padded.reshape(blocks, 4).any(axis=1))
+            if len(drawing):
+                points, _ = sim.random.in_unit_ball(len(drawing) * 4)
+                rows = (drawing[:, None] * 4 + np.arange(4)).ravel()
+                keep = rows < n
+                scatter_points[rows[keep]] = points[keep]
+
+        hit = contact_found
+        if plane_set:
+            # a fast contact is checked again by a trace from half a radius behind to 64 units past the step
+            confirm_start = previous - direction * half_radius[:, None]
+            segment_sq = np.sum((trace_end - confirm_start) ** 2, axis=1)
+            checked = hit & (self.confirmation_speed ** 2 <= segment_sq / dt)
+            if checked.any():
+                far_end = trace_end + direction * self.CONFIRMATION_EXTENSION
+                a = confirm_start[:, 2] - ground
+                b = far_end[:, 2] - ground
+                found = (a >= 0.0) & (b < 0.0)
+                along = np.divide(a, a - b, out=np.ones(n), where=checked & found)
+                confirmed = (np.linalg.norm(far_end - confirm_start, axis=1) * along
+                             / np.sqrt(np.maximum(segment_sq, 1e-30)))
+                rejected = checked & (~found | (confirmed >= 1.0))
+                hit = hit & ~rejected
+                fraction = np.where(checked & ~rejected, confirmed, fraction)
+        if not hit.any():
+            if stuck.any():
+                v.set("position", position)
+                v.set("previous", previous)
+            return bool(contact_found.any())
+
+        remaining = np.maximum(0.0, 1.0 - fraction)
+        too_slow = (length < self.minimum_speed * dt) if self.minimum_speed >= 0 else np.zeros(n, bool)
+        contact = previous + step * fraction[:, None]
+        normal = np.array([0.0, 0.0, 1.0])
+        lifetime = None
+        if self.kill_on_contact or self.minimum_speed >= 0:
+            lifetime = v.get("lifetime").copy()
+        if self.kill_on_contact:
+            if self.minimum_speed < 0:
+                lifetime[hit] = 0.0
+            else:
+                lifetime[hit & too_slow] = 0.0
+            position[hit] = contact[hit]
+            previous[hit] = contact[hit]
+        elif lifetime is not None:
+            lifetime[hit & too_slow] = 0.0
+
+        write_normal = hit & self.set_normal
+        if not self.kill_on_contact or self.bounce_killed:
+            bouncing = hit & block_bounces
+            if bouncing.any():
+                reflected = direction - 2.0 * direction[:, 2:3] * normal
+                scattered = reflected + scatter_points * scatter[:, None]
+                size = np.linalg.norm(scattered, axis=1, keepdims=True)
+                scattered = np.divide(scattered, size, out=np.zeros_like(scattered), where=size > 0)
+                reflected = np.where(block_scatters[:, None], scattered, reflected)
+                if self.decay_bounce:
+                    reflected = reflected * length[:, None]
+                along_surface = step - step[:, 2:3] * normal
+                outgoing = reflected * bounce[:, None] + along_surface * slide[:, None]
+                bounced = contact + outgoing * remaining[:, None]
+                position[bouncing] = bounced[bouncing]
+                previous[bouncing] = (bounced - outgoing)[bouncing]
+            resting = hit & ~block_bounces
+            position[resting] = contact[resting]
+            if stick is not None:
+                stop = np.array(column(self.stop_speed(sim, v), n), np.float64) * dt
+                moved_sq = np.sum((position - previous) ** 2, axis=1)
+                sticks = hit & ((stop < 0) | (moved_sq < stop * stop))
+                stick[sticks] = position[sticks]
+                v.set_field(self.stick_field, stick)
+                write_normal = sticks & self.set_normal
+
+        v.set("position", position)
+        v.set("previous", previous)
+        v.set("velocity", np.where(hit[:, None], (position - previous) / dt, v.get("velocity")))
+        if lifetime is not None:
+            v.set("lifetime", lifetime)
+        if write_normal.any():
+            normals = v.get("normal").copy()
+            normals[write_normal] = normal
+            v.set("normal", normals)
         return True
 
 

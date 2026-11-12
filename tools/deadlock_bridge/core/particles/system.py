@@ -599,14 +599,15 @@ class Simulation:
             parent_ids[linked & ~found] = DEAD_PARENT
 
     def _constrain(self, view: View, dt: float):
-        """Constraints run from a work list: each once, then again only while another one moved particles."""
+        """Constraints run from a work list: each once, then again only while another one moved particles; final ones
+        (bouncing or sliding world collision) run once after that."""
         if not self.constraints:
             return
         satisfied = [False] * len(self.constraints)
         for _ in range(3):
             changed = False
             for i, constraint in enumerate(self.constraints):
-                if satisfied[i]:
+                if satisfied[i] or constraint.final:
                     continue
                 satisfied[i] = True
                 if constraint.run_strength(self) <= 0.0:
@@ -616,6 +617,9 @@ class Simulation:
                     satisfied = [j == i for j in range(len(satisfied))]
             if not changed:
                 break
+        for constraint in self.constraints:
+            if constraint.final and constraint.run_strength(self) > 0.0:
+                constraint.apply(self, view, dt)
 
     def _spawn(self, ages):
         """Emits particles of the given ages (seconds already lived this step) and initializes them."""
