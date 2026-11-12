@@ -7,7 +7,7 @@ import numpy as np
 from . import fields as F
 from . import models, noise
 from .initializers import (TRACE_MISS, TRACE_MISS_END, TRACE_MISS_KILL, TRACE_MISS_NONE, TransformOrientation, column,
-                           ground_trace, models_control_point, path_evaluate, path_points, rows3, _path_parameters)
+                           ground_trace, heading_from_cp, models_control_point, path_evaluate, path_points, rows3, _path_parameters)
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
                      SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, enum_names, lerp, remap,
@@ -382,6 +382,26 @@ class Spin(Operator):
             decayed = self.rate * strength * left
             rate = np.maximum(decayed, self.minimum) if self.rate >= 0 else np.minimum(decayed, self.minimum)
         v.set("roll", v.get("roll") + np.radians(rate) * math.tau * dt)
+
+
+@register(OPERATORS, "C_OP_Orient2DRelToCP")
+class Orient2DRelToCP(Operator):
+    """Turns particles' roll (or another angle) toward facing away from a control point in the XY plane, by the spin
+    strength per step (not by time or operator strength, and without wrapping, as CS:GO and VRF)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.control_point = p.int("m_nCP")
+        self.field = p.int("m_nFieldOutput", F.ROLL)
+        self.offset = math.radians(p.float("m_flRotOffset"))
+        self.spin = p.float("m_flSpinStrength", 1.0)
+
+    def operate(self, sim, v, dt, strength):
+        if F.is_vector(self.field):
+            return
+        angle, has = heading_from_cp(v.get("position"), sim.control_point(self.control_point).position)
+        current = v.field(self.field)
+        v.set_field(self.field, np.where(has, lerp(current, angle + self.offset, self.spin), current))
 
 
 @register(OPERATORS, "C_OP_OscillateVector")

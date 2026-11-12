@@ -510,6 +510,31 @@ class RandomYawFlip(Initializer):
         v.set("yaw", v.get("yaw") + np.where(flip, math.pi, 0.0))
 
 
+def heading_from_cp(positions, center):
+    """The XY heading from a control point to each particle plus pi (CS:GO's Orient2DRelToCP), and which particles
+    have one (not straight above or below the point)."""
+    direction = positions - center
+    has = (direction[:, 0] != 0) | (direction[:, 1] != 0)
+    return np.arctan2(direction[:, 1], direction[:, 0]) + math.pi, has
+
+
+@initializer("C_INIT_Orient2DRelToCP")
+class Orient2DRelToCP(Initializer):
+    """Turns new particles' roll (or another angle) to face away from a control point in the XY plane."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.control_point = p.int("m_nCP")
+        self.field = p.int("m_nFieldOutput", F.ROLL)
+        self.offset = math.radians(p.float("m_flRotOffset"))
+
+    def initialize(self, sim, v):
+        if F.is_vector(self.field):
+            return
+        angle, has = heading_from_cp(v.get("position"), sim.control_point(self.control_point).position)
+        v.set_field(self.field, np.where(has, angle + self.offset, v.field(self.field)))
+
+
 @initializer("C_INIT_RemapParticleCountToScalar")
 class RemapParticleCountToScalar(Initializer):
     """Sets a float attribute from how many particles the initializer has seen, remapped (and biased)."""
