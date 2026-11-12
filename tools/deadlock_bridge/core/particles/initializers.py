@@ -806,6 +806,49 @@ class CreateSequentialPathV2(Initializer):
             v.set("hitbox_offset", offsets)
 
 
+@initializer("C_INIT_CreateAlongPath")
+class CreateAlongPath(Initializer):
+    """Places particles at a path parameter (random by default) on the path between two control points, or between
+    a random neighbouring pair of the control points from start to end, optionally jittered."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.max_distance = p.number("m_fMaxDistance", 0.0)
+        if "m_fMaxDistance" not in p.data:
+            self.max_distance = p.number("m_flMaxDistance", 0.0)
+        block = p.get("m_fT")
+        if "m_fT" not in p.data or (isinstance(block, dict) and "m_nType" not in block):
+            # an unset or untyped m_fT is a varying uniform 0..1 draw; Deadlock never authors it
+            self.parameter = None
+        else:
+            self.parameter = p.number("m_fT", 0.0)
+        self.random_pairs = p.bool("m_bUseRandomCPs")
+        self.save_offset = p.bool("m_bSaveOffset")
+        self.path = _path_parameters(p)
+        self.path["start"] = min(max(self.path["start"], 0), 63)
+        self.path["end"] = min(max(self.path["end"], 0), 63)
+        self.path["mid"] = min(max(self.path["mid"], -1), 63)
+
+    def initialize(self, sim, v):
+        n = v.n
+        jitter = column(self.max_distance(sim, v), n)
+        t = sim.random.next(n) if self.parameter is None else column(self.parameter(sim, v), n)
+        path = self.path
+        positions = np.zeros((n, 3))
+        offsets = np.zeros((n, 3))
+        for i in range(n):
+            first, last = path["start"], path["end"]
+            if self.random_pairs:
+                last = first + 1 + int(sim.random.next1() * (path["end"] - path["start"]))
+                first = last - 1
+            positions[i] = path_evaluate(path_points(sim, path, first, last), t[i])
+            offsets[i] = (t[i], first, last)
+        positions += (sim.random.next(n * 3).reshape(n, 3) * 2.0 - 1.0) * jitter[:, None]
+        v.set("position", positions)
+        if self.save_offset:
+            v.set("hitbox_offset", offsets)
+
+
 @initializer("C_INIT_DistanceToCPInit")
 class DistanceToCPInit(Initializer):
     """Sets a float attribute from the particle's distance to a control point, remapped."""
