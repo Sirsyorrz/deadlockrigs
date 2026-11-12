@@ -389,6 +389,30 @@ class NormalAlignToCP(Initializer):
             v.set_field(F.NORMAL, normal / length)
 
 
+@initializer("C_INIT_NormalOffset")
+class NormalOffset(Initializer):
+    """Adds a random offset between two corners (in a control point's frame when local) to the particle normal,
+    normalized or not (CS:GO's C_INIT_NormalOffset)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.low = p.vector("m_OffsetMin")
+        self.high = p.vector("m_OffsetMax")
+        self.transform = Transform(p.int("m_nControlPointNumber"))
+        self.local = p.bool("m_bLocalCoords")
+        self.normalize = p.bool("m_bNormalize")
+
+    def initialize(self, sim, v):
+        offset = _range_sample(sim, v, None, self.low, self.high)
+        if self.local:
+            offset = transform_directions(self.transform(sim), offset)
+        normal = v.get("normal") + offset
+        if self.normalize:
+            length = np.linalg.norm(normal, axis=1, keepdims=True)
+            normal = np.divide(normal, length, out=np.zeros_like(normal), where=length > 0)
+        v.set_field(F.NORMAL, normal)
+
+
 @initializer("C_INIT_RandomYawFlip")
 class RandomYawFlip(Initializer):
     """Turns some particles half way round in yaw (mirroring their cards)."""
