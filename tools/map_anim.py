@@ -19,7 +19,7 @@ from map_lighting import Graph, load_image, param, vmat_dict, vmat_params
 
 MOTION_GROUP = 'Deadlock motion'
 # bumped when the motion group changes, so a file's older one is replaced
-MOTION_VERSION = 2
+MOTION_VERSION = 3
 TIME_GROUP = 'Deadlock time'
 UV2_ATTR = '_UV2'
 UNIT = 0.0254
@@ -210,7 +210,8 @@ def motion_group():
     normals = g.node('GeometryNodeCaptureAttribute', domain='CORNER')
     normals.capture_items.new('VECTOR', 'Normal')
     g.links.new(inp['Geometry'], normals.inputs['Geometry'])
-    g.links.new(g.node('GeometryNodeInputNormal').outputs[0], normals.inputs[1])
+    # by name: Blender 5.3 put a Selection socket at index 1
+    g.links.new(g.node('GeometryNodeInputNormal').outputs[0], normals.inputs['Normal'])
     selection = g.node('GeometryNodeMaterialSelection')
     g.links.new(inp['Material'], selection.inputs['Material'])
     move = g.node('GeometryNodeSetPosition')
@@ -219,7 +220,7 @@ def motion_group():
     g.links.new(offset, move.inputs['Offset'])
     keep = g.node('GeometryNodeSetMeshNormal', mode='FREE', domain='CORNER')
     g.links.new(move.outputs['Geometry'], keep.inputs['Mesh'])
-    g.links.new(normals.outputs[1], keep.inputs['Custom Normal'])
+    g.links.new(normals.outputs['Normal'], keep.inputs['Custom Normal'])
     g.links.new(keep.outputs['Mesh'], out.inputs[0])
     if old is not None:
         old.user_remap(tree)
