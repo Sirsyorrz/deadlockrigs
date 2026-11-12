@@ -268,19 +268,29 @@ _SOCKET_TYPES = {
 
 def new_group(name: str, inputs: list[tuple], outputs: list[tuple]) -> tuple[bpy.types.NodeTree, Builder, dict, dict]:
     """A fresh shader node group with the given sockets: (name, type[, default]). Returns the tree, a builder and
-    the group input and output sockets by name."""
-    old = bpy.data.node_groups.get(name)
-    if old is not None:
-        bpy.data.node_groups.remove(old)
-    tree = bpy.data.node_groups.new(name, "ShaderNodeTree")
-    for socket in outputs:
-        tree.interface.new_socket(socket[0], in_out="OUTPUT", socket_type=_SOCKET_TYPES[socket[1]])
+    the group input and output sockets by name. A group of that name already there is rebuilt in place (emptied,
+    its sockets kept when they're the same): removed under them, the materials built with it lost their lighting and
+    drew black."""
+    wanted = [(s[0], "OUTPUT", _SOCKET_TYPES[s[1]]) for s in outputs] + \
+             [(s[0], "INPUT", _SOCKET_TYPES[s[1]]) for s in inputs]
+    tree = bpy.data.node_groups.get(name)
+    if tree is not None and tree.bl_idname == "ShaderNodeTree":
+        tree.nodes.clear()
+        have = [(i.name, i.in_out, i.socket_type) for i in tree.interface.items_tree if i.item_type == "SOCKET"]
+        if have != wanted:
+            tree.interface.clear()
+    else:
+        tree = bpy.data.node_groups.new(name, "ShaderNodeTree")
+    if not tree.interface.items_tree:
+        for socket_name, in_out, socket_type in wanted:
+            tree.interface.new_socket(socket_name, in_out=in_out, socket_type=socket_type)
     for socket in inputs:
-        item = tree.interface.new_socket(socket[0], in_out="INPUT", socket_type=_SOCKET_TYPES[socket[1]])
         if len(socket) > 2:
             default = socket[2]
             if socket[1] == "color" and len(default) == 3:
                 default = tuple(default) + (1.0,)
+            item = next(i for i in tree.interface.items_tree
+                        if i.item_type == "SOCKET" and i.in_out == "INPUT" and i.name == socket[0])
             item.default_value = default
 
     b = Builder(tree)
