@@ -59,9 +59,10 @@ def _drawn(simulation, ambient, masks=None):
     return out
 
 
-def _new(definition, control_points, seed, unset_value):
+def _new(definition, control_points, seed, unset_value, ground):
     simulation = Simulation(definition, seed)
     simulation.unset_value = unset_value
+    simulation.ground = ground
     for index, (position, rotation, *model) in control_points.items():
         simulation.set_control_point(index, position, rotation, *model)
     return simulation
@@ -87,7 +88,7 @@ def loop_length(simulation) -> float:
 
 
 def loop(definition, control_points, seed, start, length=None, rate=30.0, ambient=(0.0, 0.0, 0.0),
-         unset_value=0.0, moving=None):
+         unset_value=0.0, moving=None, ground=None):
     """The draws of a looping effect: a list of ``length * rate`` steps (``length`` None: loop_length()'s), each a
     list of (system, renderer, batch), for the stretch from ``start`` seconds. Systems keep their identity across
     steps."""
@@ -96,7 +97,7 @@ def loop(definition, control_points, seed, start, length=None, rate=30.0, ambien
 
     # The particles born before the stretch still alive at its end, found on a run of its own (the same seed plays
     # the same).
-    probe = _new(definition, control_points, seed, unset_value)
+    probe = _new(definition, control_points, seed, unset_value, ground)
     for _ in range(warm):
         _step(probe, step, moving)
     if length is None:
@@ -110,7 +111,7 @@ def loop(definition, control_points, seed, start, length=None, rate=30.0, ambien
         _step(probe, step, moving)
     lasting = {i: early[i] & set(_ids(s).tolist()) for i, s in enumerate(probe.walk())}
 
-    simulation = _new(definition, control_points, seed, unset_value)
+    simulation = _new(definition, control_points, seed, unset_value, ground)
     for _ in range(warm):
         _step(simulation, step, moving)
     systems = list(simulation.walk())
@@ -142,11 +143,11 @@ def loop(definition, control_points, seed, start, length=None, rate=30.0, ambien
 
 
 def once(definition, control_points, seed, length, rate=30.0, ambient=(0.0, 0.0, 0.0), unset_value=0.0,
-         moving=None, stop_at=None):
+         moving=None, stop_at=None, ground=None):
     """The draws of an effect played from its start for ``length`` seconds, a list of steps as loop() gives.
     ``stop_at``: seconds at which the effect is stopped (its end cap plays out in the rest)."""
     step = 1.0 / rate
-    simulation = _new(definition, control_points, seed, unset_value)
+    simulation = _new(definition, control_points, seed, unset_value, ground)
     frames = []
     for k in range(max(1, int(round(length * rate)))):
         if stop_at is not None and k * step >= stop_at - 1e-6:

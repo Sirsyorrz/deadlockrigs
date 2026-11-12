@@ -136,17 +136,17 @@ def build_particle_systems(importer, time: float = 2.0, animate: bool = False) -
 
 
 def _build_played(builder, name, definition, points, time, seed, ambient, playback: dict, holder=None, local=False,
-                  unset_value=0.0, moving=None):
+                  unset_value=0.0, moving=None, ground=None):
     """Bakes an effect and builds it to play with the scene's time. ``playback``: loop (from ``time`` seconds in,
     for ``length`` seconds or a length that suits the effect when None, its first step at ``start``) or play once
     from its start for ``length`` seconds, beginning at ``start`` (scene seconds). ``moving``: see core bake."""
     playback = dict(playback, rate=playback.get("rate", BAKE_RATE))
     if playback["loop"]:
         frames = baking.loop(definition, points, seed, time, playback.get("length"), playback["rate"], ambient,
-                             unset_value, moving)
+                             unset_value, moving, ground)
     else:
         frames = baking.once(definition, points, seed, playback["length"], playback["rate"], ambient, unset_value,
-                             moving, playback.get("stop_at"))
+                             moving, playback.get("stop_at"), ground)
     return builder.build_animated(name, definition.path, frames, points, time, seed, ambient, playback, holder, local)
 
 
@@ -178,7 +178,7 @@ def spawn_particle_system(context, path: str, matrix_world: Matrix, time: float 
         raise LookupError(f"'{path}' isn't one of the game's particle systems")
     points = plib.preview_control_points(definition)
     if time is None and not (playback and not playback["loop"]):
-        time = plib.busiest_moment(definition, points, seed)
+        time = plib.busiest_moment(definition, points, seed, ground=0.0)
         if time is None:
             return None
     ambient = _scene_light(context, np.array(matrix_world.translation, np.float64) / target.scale, target.scale,
@@ -186,9 +186,9 @@ def spawn_particle_system(context, path: str, matrix_world: Matrix, time: float 
     builder = _ObjectBuilder(target)
     if playback:
         holder = _build_played(builder, _stem(definition.path), definition, points, time or 0.0, seed, ambient,
-                               playback, local=True, unset_value=1.0)
+                               playback, local=True, unset_value=1.0, ground=0.0)
     else:
-        simulation = plib.simulate(definition, points, time, seed, unset_value=1.0)
+        simulation = plib.simulate(definition, points, time, seed, unset_value=1.0, ground=0.0)
         holder = builder.build(_stem(definition.path), definition.path, simulation, points, time, seed, ambient,
                                local=True)
     if holder is not None:
@@ -279,9 +279,10 @@ def rebuild_particle_system(context, holder, time: float | None = None, seed: in
         _clear_children(holder)
         builder = _ObjectBuilder(target)
         if playback:
-            _build_played(builder, holder.name, definition, points, time, seed, ambient, playback, holder, True, 1.0)
+            _build_played(builder, holder.name, definition, points, time, seed, ambient, playback, holder, True, 1.0,
+                          ground=0.0)
         else:
-            simulation = plib.simulate(definition, points, time, seed, unset_value=1.0)
+            simulation = plib.simulate(definition, points, time, seed, unset_value=1.0, ground=0.0)
             builder.build(holder.name, path, simulation, points, time, seed, ambient, holder, local=True)
         place_floor(context, holder)
         return bool(holder.children)

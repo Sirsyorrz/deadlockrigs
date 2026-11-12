@@ -352,6 +352,9 @@ class Simulation:
         # What a control point nothing set reads as, component by component (the root's counts): 0 as in a map, 1
         # for effects previewed on their own, where the game code that sets scales and counts isn't running.
         self.unset_value = 0.0
+        # The ground's height (game units) for traces to the ground, a flat plane: the floor under a rig or an effect
+        # placed on its own (0, CP0's floor). None in a map, which has no world here to trace against.
+        self.ground: float | None = None
         (self.pre_emission, self.emitters, self.initializers, self.operators, self.forces,
          self.constraints) = definition.make_functions()
 
@@ -593,11 +596,12 @@ class Simulation:
 
 
 def simulate(definition: Definition, control_points: dict, time: float, seed: int,
-             step: float = 1.0 / 30.0, unset_value: float = 0.0) -> Simulation:
+             step: float = 1.0 / 30.0, unset_value: float = 0.0, ground: float | None = None) -> Simulation:
     """Runs a system tree from its start for ``time`` seconds. ``control_points`` maps control point numbers to
     (position, rotation or None), in game units."""
     simulation = Simulation(definition, seed)
     simulation.unset_value = unset_value
+    simulation.ground = ground
     for index, (position, rotation, *model) in control_points.items():
         simulation.set_control_point(index, position, rotation, *model)
     simulation.run(time, step)
@@ -627,12 +631,13 @@ PREVIEW_MOMENTS = (0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.
 
 
 def busiest_moment(definition: Definition, control_points: dict, seed: int, moments=PREVIEW_MOMENTS,
-                   unset_value: float = 1.0, step: float = 1.0 / 30.0) -> float | None:
+                   unset_value: float = 1.0, step: float = 1.0 / 30.0, ground: float | None = None) -> float | None:
     """The moment (of ``moments``) the effect draws the most at, the latest of equals, playing it once; None when it
     never draws."""
     from . import draw
     simulation = Simulation(definition, seed)
     simulation.unset_value = unset_value
+    simulation.ground = ground
     for index, (position, rotation, *model) in control_points.items():
         simulation.set_control_point(index, position, rotation, *model)
     best, best_count, frames = None, 0, 0

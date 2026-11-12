@@ -193,7 +193,7 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None, e
             playback = {'loop': False, 'length': length, 'start': begin / fps, 'rate': RATE, 'stop_at': stop_at}
             holder = bridge._build_played(builder, f'{clip} {bridge._stem(effect["path"])}', definition, points,
                                           warm, seed + n, ambient, playback, local=True, unset_value=1.0,
-                                          moving=moving)
+                                          moving=moving, ground=0.0)
             if holder is None:
                 continue
             holder.parent = arm

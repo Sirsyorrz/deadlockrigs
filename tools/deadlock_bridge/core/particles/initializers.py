@@ -8,7 +8,8 @@ from . import fields as F
 from . import models, noise
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
-                     SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, lerp, remap_clamped, saturate)
+                     SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, enum_names, lerp, remap_clamped,
+                     saturate)
 from .system import Function
 
 INITIALIZERS = {}
@@ -219,6 +220,73 @@ class PositionOffset(Initializer):
         if self.local:
             offset = transform_directions(self.transform(sim), offset)
         v.set("position", v.get("position") + offset)
+
+
+TRACE_MISS = enum_names("PARTICLE_TRACE_MISS_BEHAVIOR_NONE", "PARTICLE_TRACE_MISS_BEHAVIOR_KILL",
+                        "PARTICLE_TRACE_MISS_BEHAVIOR_TRACE_END")
+TRACE_MISS_NONE, TRACE_MISS_KILL, TRACE_MISS_END = range(3)
+# The game starts its trace this far back along the direction (particles.dll), so a particle on the ground finds it.
+TRACE_BACKOFF = 0.1
+
+
+def ground_trace(sim, start, direction, length):
+    """Traces from each start along its unit direction for up to length against the simulation's ground (a plane at
+    sim.root.ground, facing up): the distance to the hit and a hit mask. A start under the ground counts as hitting
+    it from above (a negative distance), so particles born in the floor come up onto it."""
+    down = -direction[:, 2]
+    safe = np.where(down > 1e-9, down, 1.0)
+    distance = (start[:, 2] - sim.root.ground) / safe
+    return distance, (down > 1e-9) & (distance <= length)
+
+
+@initializer("C_INIT_PositionPlaceOnGround")
+class PositionPlaceOnGround(Initializer):
+    """Traces each particle along a direction (down) to the ground and puts it there, raised by an offset, setting
+    its normal to the ground's (particles.dll; defaults: length 128, direction (0,0,-1), a miss moves the particle to
+    the trace's end). The only ground is Simulation.ground (the rig's floor); with none (a map) it does nothing.
+    Collision groups, trace sets and water mean nothing there; the radius factor and preserve-offset point are
+    never authored."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.offset = p.number("m_flOffset", 0.0)
+        self.length = p.number("m_flMaxTraceLength", 128.0)
+        self.direction = p.vec("m_vecTraceDir", (0.0, 0.0, -1.0))
+        self.miss = p.enum("m_nTraceMissBehavior", TRACE_MISS, TRACE_MISS_END)
+        self.field = p.int("m_nAttribute", F.POSITION)
+        self.previous_only = p.bool("m_bSetPXYZOnly")
+        self.set_normal = p.bool("m_bSetNormal")
+        self.normal_field = p.int("m_nGroundNormalAttribute", F.NORMAL)
+
+    def initialize(self, sim, v):
+        if sim.root.ground is None or not F.is_vector(self.field):
+            return
+        n = v.n
+        direction = np.array(rows3(self.direction(sim, v), n))
+        size = np.linalg.norm(direction, axis=1, keepdims=True)
+        direction = np.divide(direction, size, out=np.zeros_like(direction), where=(size > 1e-17) & (size < 1e17))
+        length = column(self.length(sim, v), n)
+        offset = column(self.offset(sim, v), n)
+        point = v.field(self.field)
+        distance, hit = ground_trace(sim, point - direction * TRACE_BACKOFF, direction, length)
+        if self.miss == TRACE_MISS_KILL:
+            v.set("lifetime", np.where(hit, v.get("lifetime"), -1.0))
+        moved = hit | (self.miss == TRACE_MISS_END)
+        travel = np.where(hit, distance, length) - TRACE_BACKOFF - offset
+        delta = np.where(moved[:, None], direction * travel[:, None], 0.0)
+        if self.field != F.POSITION:
+            if not self.previous_only:
+                v.set_field(self.field, point + delta)
+        elif self.previous_only:
+            # previous is rebuilt from velocity after the initializers: moving it alone is a velocity change
+            v.set("velocity", v.get("velocity") - delta / sim.frame_time)
+        else:
+            v.set("position", point + delta)
+        if self.set_normal and hit.any() and F.is_vector(self.normal_field):
+            # the game writes the trace's normal on a miss too (zero); left as it was here
+            normal = v.field(self.normal_field).copy()
+            normal[hit] = (0.0, 0.0, 1.0)
+            v.set_field(self.normal_field, normal)
 
 
 @initializer("C_INIT_RandomColor")
