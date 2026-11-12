@@ -742,6 +742,52 @@ class CreateFromParentParticles(Initializer):
             v.set("rope_segment_id", parent.particles.array("particle_id")[first])
 
 
+@initializer("C_INIT_InheritFromParentParticles")
+class InheritFromParentParticles(Initializer):
+    """Copies an attribute, scaled, from the parent system's particles: walking through them m_nIncrement at a
+    time (wrapping), or a random one each (CS:GO's C_INIT_InheritFromParentParticles; S2 adds m_nRandomSeed)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.field = p.int("m_nFieldOutput", F.RADIUS)
+        self.scale = p.float("m_flScale", 1.0)
+        self.increment = p.int("m_nIncrement", 1)
+        self.random = p.bool("m_bRandomDistribution")
+        self.random_seed = p.int("m_nRandomSeed")
+        self.reset()
+
+    def reset(self):
+        self.index = 0
+        self.counter = 0
+
+    def initialize(self, sim, v):
+        parent = sim.parent
+        key = F.name(self.field)
+        if parent is None or key is None or parent.particles.count == 0:
+            return
+        last = parent.particles.count - 1
+        picks = np.zeros(v.n, dtype=int)
+        for i in range(v.n):
+            if self.random:
+                draw = (sim.random.sample(sim.random.seed + self.random_seed + self.counter) if self.random_seed
+                        else sim.random.next1())
+                self.counter += 1
+                self.index = min(int(draw * (last + 1)), last)
+            elif self.index > last:
+                self.index = 0
+            picks[i] = min(max(self.index, 0), last)
+            self.index += self.increment
+        value = parent.particles.array(key)[picks] * self.scale
+        if self.field in F.NORMALIZED:
+            value = np.clip(value, 0.0, 1.0)
+        if self.field == F.PREVIOUS_POSITION:
+            # _spawn rebuilds the previous position from the velocity
+            if sim.frame_time > 0:
+                v.set("velocity", (v.get("position") - value) / sim.frame_time)
+            return
+        v.set_field(self.field, value)
+
+
 @initializer("C_INIT_PositionWarp")
 class PositionWarp(Initializer):
     """Scales particle positions about a control point, per axis, by a warp between two vectors (random, or ramped
