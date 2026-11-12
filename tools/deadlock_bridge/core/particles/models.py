@@ -57,3 +57,44 @@ def local_points(arrays, index, fraction, spread):
     ball = cube * (np.abs(cube).max(axis=1, keepdims=True) / np.maximum(norm, 1e-9))
     round_ = low + (high - low) * fraction[:, :1] + ball * radius[index][:, None]
     return np.where((shape[index] != SHAPE_BOX)[:, None], round_, box)
+
+
+def joint_ids(sim, joints) -> np.ndarray:
+    """(n, 4) ids for rows of four bone names (-1 for an empty slot), from the tree's own name table."""
+    table = sim.root.bone_ids
+    return np.array([[table.setdefault(name, len(table)) if name else -1 for name in row] for row in joints],
+                    np.float64).reshape(-1, 4)
+
+
+def skin_matrices(sim, model, ids, weights):
+    """Each particle's skinning matrix (n, 4, 4: rest model space to simulation space) for its bone ids (n, 4) and
+    weights (n, 4), and whether any of its bones was found. As the game: the last weight is 1 minus the first three,
+    a particle with one bone found takes that bone whole, others a plain weighted sum."""
+    n = len(ids)
+    out = np.tile(np.eye(4), (n, 1, 1))
+    if model is None or not model.get("bind") or n == 0:
+        return out, np.zeros(n, bool)
+    names = {i: name for name, i in sim.root.bone_ids.items()}
+    bones, bind = model["bones"], model["bind"]
+    skins = {}
+    for i in np.unique(ids[ids >= 0]).astype(np.int64):
+        name = names.get(int(i))
+        if name in bones and name in bind:
+            skins[int(i)] = bones[name] @ np.linalg.inv(bind[name])
+    weights = np.asarray(weights, np.float64).copy()
+    weights[:, 3] = np.clip(1.0 - weights[:, :3].sum(axis=1), 0.0, 1.0)
+    found = np.zeros((n, 4), bool)
+    mats = np.zeros((n, 4, 4, 4))
+    for k in range(4):
+        for i, matrix in skins.items():
+            rows = ids[:, k] == i
+            found[rows, k] = True
+            mats[rows, k] = matrix
+    count = found.sum(axis=1)
+    weights = np.where(found, weights, 0.0)
+    weights = np.where((count == 1)[:, None], found.astype(np.float64), weights)
+    blended = np.einsum("nk,nkij->nij", weights, mats)
+    blended[:, 3] = (0.0, 0.0, 0.0, 1.0)
+    valid = count > 0
+    out[valid] = blended[valid]
+    return out, valid

@@ -1064,6 +1064,104 @@ class CreateOnModel(Initializer):
                               self.max_bone_velocity)
 
 
+@initializer("C_INIT_InitSkinnedPositionFromCPSnapshot")
+class InitSkinnedPositionFromCPSnapshot(Initializer):
+    """Places particles on the points of a control point's snapshot (model space at rest), skinned to the bones of
+    the model another control point carries, and records each one's rest point (hitbox offset), bones and weights
+    for C_OP_SnapshotRigidSkinToBones. Rigid ones start at the origin and wait for that operator. Without a model
+    the snapshot's points are taken as they are. (ValveResourceFormat's port: points walked by the increment from
+    the start point, or picked at random.)"""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.snapshot_point = p.int("m_nSnapshotControlPointNumber", 1)
+        self.model_cp = p.int("m_nControlPointNumber", 0)
+        self.random = p.bool("m_bRandom")
+        self.random_seed = p.int("m_nRandomSeed")
+        self.rigid = p.bool("m_bRigid")
+        self.set_normal = p.bool("m_bSetNormal")
+        self.ignore_dt = p.bool("m_bIgnoreDt")
+        self.normal_speed = (p.float("m_flMinNormalVelocity"), p.float("m_flMaxNormalVelocity"))
+        self.increment = max(1, int(p.float("m_flIncrement", 1.0)))
+        self.full_loop_increment = p.int("m_nFullLoopIncrement")
+        self.start_point = p.int("m_nSnapShotStartPoint")
+        self.copy_color = p.bool("m_bCopyColor")
+        self.copy_alpha = p.bool("m_bCopyAlpha")
+        self.set_radius = p.bool("m_bSetRadius")
+        if p.str("m_nIndexType", "SNAPSHOT_INDEX_INCREMENT") != "SNAPSHOT_INDEX_INCREMENT":
+            p.note("C_INIT_InitSkinnedPositionFromCPSnapshot direct index")
+        if p.float("m_flBoneVelocity"):
+            p.note("C_INIT_InitSkinnedPositionFromCPSnapshot bone velocity")
+        self.reset()
+
+    def reset(self):
+        self.next_index = self.start_point
+        self.counter = 0
+
+    def _rows(self, sim, n, count):
+        rows = np.zeros(n, np.int64)
+        for i in range(n):
+            if self.random:
+                draw = (sim.random.sample(sim.random.seed + self.random_seed + self.counter) if self.random_seed
+                        else sim.random.next1())
+                self.counter += 1
+                rows[i] = min(int(count * draw), count - 1)
+                continue
+            index = self.next_index
+            if index >= count:
+                index = (index + self.full_loop_increment * (index // count)) % count
+            rows[i] = index
+            self.next_index = index + self.increment
+        return rows
+
+    def initialize(self, sim, v):
+        snapshot = sim.snapshot(self.snapshot_point)
+        if snapshot is None or not snapshot.skinned or snapshot.count == 0 or v.n == 0:
+            return
+        arrays = snapshot.arrays
+        if any(want and key not in arrays for want, key in ((self.set_normal, "normal"), (self.set_radius, "radius"),
+                                                            (self.copy_color, "color"), (self.copy_alpha, "opacity"))):
+            return
+        rows = self._rows(sim, v.n, snapshot.count)
+        local = arrays["position"][rows]
+        if self.copy_color:
+            v.set("color", arrays["color"][rows])
+        if self.copy_alpha:
+            v.set("alpha", arrays["opacity"][rows])
+        model = models.model_of(sim, self.model_cp)
+        if model is None or not model.get("bind"):
+            v.set("position", local)
+            if self.set_normal:
+                v.set("normal", arrays["normal"][rows])
+            if self.set_radius:
+                v.set("radius", arrays["radius"][rows])
+            return
+        ids = models.joint_ids(sim, [snapshot.joints[r] for r in rows])
+        weights = snapshot.weights[rows]
+        v.set("hitbox_offset", local)
+        v.set("bone_ids", ids)
+        v.set("bone_weights", weights)
+        skin, _ = models.skin_matrices(sim, model, ids, weights)
+        velocity = np.zeros((v.n, 3))
+        if self.set_normal:
+            normal = arrays["normal"][rows]
+            if not self.rigid:
+                normal = np.einsum("nij,nj->ni", skin[:, :3, :3], normal)
+                normal = normal / np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-9)
+            v.set("normal", normal)
+            low, high = self.normal_speed
+            if low or high:
+                speed = low + (high - low) * sim.random.next(v.n)
+                # m_bIgnoreDt: the speed is a step's move, not a per second rate
+                scale = 1.0 / max(sim.frame_time, 1e-6) if self.ignore_dt else 1.0
+                velocity = normal * (speed * scale)[:, None]
+        if self.set_radius:
+            scale = 1.0 if self.rigid else np.linalg.norm(skin[:, :3, :3], axis=1).max(axis=1)
+            v.set("radius", arrays["radius"][rows] * scale)
+        v.set("position", 0.0 if self.rigid else models.transform_points(skin, local))
+        v.set("velocity", velocity)
+
+
 def models_control_point(p: Params) -> int:
     """The control point a function's model input reads (m_modelInput, else m_nControlPointNumber, else 0)."""
     data = p.get("m_modelInput")

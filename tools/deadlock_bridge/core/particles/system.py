@@ -9,6 +9,7 @@ removed. Only the end cap (the phase a system plays when stopped) is never enter
 """
 import collections
 import math
+import struct
 import zlib
 
 import numpy as np
@@ -203,6 +204,9 @@ class Definition:
         self.presimulation = p.float("m_flPreSimulationTime")
         self.stop_after = p.float("m_flStopSimulationAfterTime")
         self.group = p.int("m_nGroupID")
+        # the snapshot this system publishes on a control point for itself and its children
+        self.snapshot_path = p.str("m_hSnapshot")
+        self.snapshot_point = p.int("m_nSnapshotControlPoint", 0)
 
         constants = {}
         if p.has("m_ConstantColor"):
@@ -280,6 +284,7 @@ class Library:
         self._read_sheet = read_sheet
         self._definitions: dict[str, Definition | None] = {}
         self._sheets: dict[str, list | None] = {}
+        self._snapshots: dict = {}
         self.unsupported = collections.Counter()
         self.missing: set[str] = set()
 
@@ -305,6 +310,18 @@ class Library:
         if key not in self._sheets:
             self._sheets[key] = self._read_sheet(key) if self._read_sheet and key else None
         return self._sheets[key]
+
+    def snapshot(self, path: str):
+        """A particle snapshot (vsnap), or None."""
+        from .snapshots import read
+        key = (path or "").replace("\\", "/").lower().removesuffix("_c")
+        if key not in self._snapshots:
+            data = self._read(key + "_c") if key else None
+            try:
+                self._snapshots[key] = read(data) if data is not None else None
+            except (ValueError, IndexError, struct.error):
+                self._snapshots[key] = None
+        return self._snapshots[key]
 
     def material(self, path: str):
         """A compiled material, or None."""
@@ -355,6 +372,8 @@ class Simulation:
         # The ground's height (game units) for traces to the ground, a flat plane: the floor under a rig or an effect
         # placed on its own (0, CP0's floor). None in a map, which has no world here to trace against.
         self.ground: float | None = None
+        # bone name -> id, for particles skinned to a model's bones (the root's is shared by the tree)
+        self.bone_ids: dict[str, int] = {}
         (self.pre_emission, self.emitters, self.initializers, self.operators, self.forces,
          self.constraints) = definition.make_functions()
 
@@ -393,6 +412,17 @@ class Simulation:
         if point is None:
             point = points[index] = ControlPoint()
         return point
+
+    def snapshot(self, index: int):
+        """The snapshot on a control point: published by the highest system above (or this one) that has one on
+        that point, as the game binds it on a system and every child, over what a child bound itself."""
+        found, node = None, self
+        while node is not None:
+            definition = node.definition
+            if definition.snapshot_path and definition.snapshot_point == index:
+                found = definition.library.snapshot(definition.snapshot_path) or found
+            node = node.parent
+        return found
 
     def set_control_point(self, index: int, position, rotation=None, model=None):
         point = self.control_point(index)

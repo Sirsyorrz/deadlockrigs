@@ -1812,3 +1812,37 @@ def unit_rotation(matrices):
     basis = matrices[:, :3, :3]
     length = np.linalg.norm(basis, axis=1, keepdims=True)
     return basis / np.maximum(length, 1e-9)
+
+
+@register(OPERATORS, "C_OP_SnapshotRigidSkinToBones")
+class SnapshotRigidSkinToBones(Operator):
+    """Re-skins particles C_INIT_InitSkinnedPositionFromCPSnapshot bound to bones: each step the rest point is put
+    through the particle's blend of the model's current bones; normals (from their initial value) and radii can
+    follow. Previous position keeps the initial step's motion (VRF adds the initial previous position to the rest
+    point instead, which only works for rigid particles that start at the origin)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.model_cp = p.int("m_nControlPointNumber", 0)
+        self.transform_normals = p.bool("m_bTransformNormals")
+        self.transform_radii = p.bool("m_bTransformRadii")
+
+    def operate(self, sim, v, dt, strength):
+        model = models.model_of(sim, self.model_cp)
+        if model is None or not model.get("bind") or v.n == 0 or not v.particles.has("bone_ids"):
+            return
+        skin, valid = models.skin_matrices(sim, model, v.get("bone_ids"), v.get("bone_weights"))
+        if not valid.any():
+            return
+        rows = np.flatnonzero(valid)
+        skin = skin[rows]
+        position = models.transform_points(skin, v.get("hitbox_offset")[rows])
+        motion = v.initial("position")[rows] - v.initial("previous")[rows]
+        positions, previous = v.get("position"), v.get("previous")
+        positions[rows] = position
+        previous[rows] = position - motion
+        if self.transform_normals:
+            normal = np.einsum("nij,nj->ni", skin[:, :3, :3], v.initial("normal")[rows])
+            v.get("normal")[rows] = normal / np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-9)
+        if self.transform_radii:
+            v.get("radius")[rows] = np.linalg.norm(skin[:, :3, :3], axis=1).max(axis=1) * v.initial("radius")[rows]

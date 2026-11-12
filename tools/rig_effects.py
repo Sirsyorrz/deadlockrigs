@@ -57,21 +57,34 @@ class RigPoints:
             self.attach[name] = (bone, np.linalg.inv(np.array(rest.matrix_local)) @ at)
         # the body effects spawn on and stick to (C_INIT_CreateOnModel, C_OP_LockToBone)
         self.hitboxes = fx.hitbox_sets()
+        self._bind = bind
+        self.bind = {}
         self.body = {}
-        for bone in {h['bone'] for boxes in self.hitboxes.values() for h in boxes}:
-            rest = arm.data.bones.get(bone)
-            if rest is None or bone not in bind:
+        self.root = 'root_motion' if 'root_motion' in arm.pose.bones else None
+        self._wanted = {bone for bone, _ in self.attach.values()} | ({self.root} if self.root else set())
+        self._cache = {}
+        self.add_bones({h['bone'] for boxes in self.hitboxes.values() for h in boxes})
+        self.model_needed = False
+
+    def add_bones(self, names):
+        """Bones the model on the effect's control points carries (hitbox bones, snapshot skinning bones)."""
+        added = False
+        for bone in set(names) - set(self.body):
+            rest = self.arm.data.bones.get(bone)
+            if rest is None or bone not in self._bind:
                 continue
-            r, t = bind[bone]
+            r, t = self._bind[bone]
+            game = np.eye(4)
+            game[:3, :3], game[:3, 3] = r, t
             at = np.eye(4)
             at[:3, :3] = FRAME3 @ r
             at[:3, 3] = FRAME3 @ t * UNIT
             self.body[bone] = np.linalg.inv(np.array(rest.matrix_local)) @ at
-        self.root = 'root_motion' if 'root_motion' in arm.pose.bones else None
-        self._wanted = ({bone for bone, _ in self.attach.values()} | set(self.body)
-                        | ({self.root} if self.root else set()))
-        self._cache = {}
-        self.model_needed = False
+            self.bind[bone] = game
+            added = True
+        if added:
+            self._wanted |= set(self.body)
+            self._cache = {}
 
     def _pose(self, frame):
         key = round(frame, 3)
@@ -98,7 +111,7 @@ class RigPoints:
             points = {**first, **{d['cp']: self._point(d, self._pose(frame)) for d in follow}}
             if self.body and self.model_needed:
                 # a new dict each step: LockToBone moves particles by the change from the last step's bones
-                model = {'hitboxes': self.hitboxes, 'bones': self._bones(self._pose(frame))}
+                model = {'hitboxes': self.hitboxes, 'bones': self._bones(self._pose(frame)), 'bind': self.bind}
                 points = {cp: (*value[:2], model) for cp, value in points.items()}
             out[frame] = points
         return out
@@ -182,6 +195,7 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None, e
             # the clip's frames the bake samples, on its own steps
             frames = sorted({round(clip_frame(warm + k / RATE), 3) for k in range(steps + 1)})
             rig_points.model_needed = uses_model(definition)
+            rig_points.add_bones(snapshot_bones(definition))
             sampled = rig_points.sample(effect, frames)
 
             def moving(age, sampled=sampled, clip_frame=clip_frame):
@@ -210,7 +224,8 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None, e
     return holders
 
 
-MODEL_FUNCTIONS = ('C_INIT_CreateOnModel', 'C_INIT_CreateOnModelAtHeight', 'C_OP_LockToBone')
+MODEL_FUNCTIONS = ('C_INIT_CreateOnModel', 'C_INIT_CreateOnModelAtHeight', 'C_OP_LockToBone',
+                   'C_INIT_InitSkinnedPositionFromCPSnapshot', 'C_OP_SnapshotRigidSkinToBones')
 
 
 def uses_model(definition, seen=None):
@@ -223,6 +238,22 @@ def uses_model(definition, seen=None):
         if any(f.str('_class') in MODEL_FUNCTIONS for f in definition.params.functions(key)):
             return True
     return any(uses_model(definition.library.get(c.path), seen) for c in definition.children if c.path)
+
+
+def snapshot_bones(definition, seen=None):
+    """The bones the snapshots a system tree publishes are skinned to."""
+    seen = set() if seen is None else seen
+    if definition is None or definition.path in seen:
+        return set()
+    seen.add(definition.path)
+    out = set()
+    snapshot = definition.library.snapshot(definition.snapshot_path) if definition.snapshot_path else None
+    if snapshot is not None and snapshot.joints:
+        out |= {name for row in snapshot.joints for name in row if name}
+    for child in definition.children:
+        if child.path:
+            out |= snapshot_bones(definition.library.get(child.path), seen)
+    return out
 
 
 def show_between(holder, first, last):

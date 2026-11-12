@@ -39,11 +39,13 @@ INTEGER = {SEQUENCE, SEQUENCE1, PARTICLE_ID, PARENT_INDEX, PARENT_ID, ROPE_SEGME
 DEFAULTS = {
     "lifetime": 1.0, "radius": 5.0, "alpha": 1.0, "alpha_alternate": 1.0, "color": (1.0, 1.0, 1.0),
     "trail_length": 0.1, "force_scale": 1.0, "normal": (0.0, 0.0, 1.0), "parent_index": -1.0, "parent_id": -1.0,
-    "hitbox_index": -1.0,
+    "hitbox_index": -1.0, "bone_ids": -1.0,
 }
 
 # Arrays the simulation keeps that aren't attributes of their own.
-_INTERNAL = {"age": 1, "velocity": 3, "force": 3, "unique_id": 1, "killed": 1, "ground_lerp_from": 3}
+_INTERNAL = {"age": 1, "velocity": 3, "force": 3, "unique_id": 1, "killed": 1, "ground_lerp_from": 3,
+             # the bones (models.joint_ids) and weights a particle is skinned to
+             "bone_ids": 4, "bone_weights": 4}
 
 
 def is_vector(field: int) -> bool:

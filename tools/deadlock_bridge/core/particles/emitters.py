@@ -23,8 +23,10 @@ class Emitter(Function):
         super().__init__(p)
         self.start_age = 0.0
         self.finished = False
-        # Emitting from a control point's snapshot: none exist here, which leaves such an emitter silent.
-        self.snapshot = p.int("m_nSnapshotControlPoint", -1) >= 0
+        # Emitting from a control point's snapshot: a burst gives one particle per snapshot point; rate emitters
+        # walk it by creation time, which no Deadlock snapshot carries, so they stay silent.
+        self.snapshot_point = p.int("m_nSnapshotControlPoint", -1)
+        self.snapshot = self.snapshot_point >= 0
 
     def start(self, sim):
         self.start_age = sim.age
@@ -209,7 +211,8 @@ class InstantaneousEmitter(Emitter):
 
     def _resolve(self, sim) -> int:
         if self.snapshot:
-            return 0
+            snapshot = sim.snapshot(self.snapshot_point)
+            return snapshot.count if snapshot is not None else 0
         count = float(self.count(sim))
         parent = sim.parent
         if self.from_killed > 0:
