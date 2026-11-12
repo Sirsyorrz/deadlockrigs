@@ -34,6 +34,43 @@ def value3(points) -> np.ndarray:
     return (c0 + (c1 - c0) * fz - 0.5) * 2.0
 
 
+def _murmur(key):
+    """particles.dll's lattice hash (MurmurHash3 steps, the top bit masked after each multiply), 0..1."""
+    mask = 0x7FFFFFFF
+    k = (key * 0xCC9E2D51) & mask
+    k = ((k << 15) | (k >> 17)) & 0xFFFFFFFF
+    k = (k * 0x1B873593) & mask
+    h = ((k << 13) | (k >> 19)) & 0xFFFFFFFF
+    h = (h * 5 + 0xE6546B64) & 0xFFFFFFFF
+    signed = h - ((h >> 31) << 32)
+    h = ((signed >> 16) ^ signed) & mask
+    h = (h * 0x04B2AE35) & 0xFFFFFFFF
+    signed = h - ((h >> 31) << 32)
+    return (((signed >> 16) ^ signed) & 0xFFFF).astype(np.float64) / 65535.0
+
+
+def game3(points) -> np.ndarray:
+    """The value noise particles.dll samples (C_OP_NoiseEmitter and others call it), -1 to 1: a hashed integer
+    lattice, trilinear without smoothing."""
+    p = np.asarray(points, np.float64).reshape(-1, 3)
+    base = np.floor(p)
+    f = p - base
+    i = base.astype(np.int64)
+
+    def corner(dx, dy, dz):
+        key = (i[:, 0] + dx) + ((i[:, 1] + dy) << 10) + ((i[:, 2] + dz) << 20)
+        return _murmur(key & 0xFFFFFFFF)
+
+    fx, fy, fz = f[:, 0], f[:, 1], f[:, 2]
+    c00 = corner(0, 0, 0) + (corner(1, 0, 0) - corner(0, 0, 0)) * fx
+    c10 = corner(0, 1, 0) + (corner(1, 1, 0) - corner(0, 1, 0)) * fx
+    c01 = corner(0, 0, 1) + (corner(1, 0, 1) - corner(0, 0, 1)) * fx
+    c11 = corner(0, 1, 1) + (corner(1, 1, 1) - corner(0, 1, 1)) * fx
+    c0 = c00 + (c10 - c00) * fy
+    c1 = c01 + (c11 - c01) * fy
+    return (c0 + (c1 - c0) * fz - 0.5) * 2.0
+
+
 def vector3(points) -> np.ndarray:
     """Three decorrelated channels of value noise, (n, 3)."""
     p = np.asarray(points, np.float64).reshape(-1, 3)

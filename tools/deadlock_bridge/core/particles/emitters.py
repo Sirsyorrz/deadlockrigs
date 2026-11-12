@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 
+from . import noise
 from .params import Params
 from .system import Function
 
@@ -99,6 +100,73 @@ class ContinuousEmitter(Emitter):
         step = (high - low) / count
         born = np.minimum(low + (np.arange(count) + 1) * step, high)
         return frame_end - born
+
+
+@emitter("C_OP_NoiseEmitter")
+class NoiseEmitter(ContinuousEmitter):
+    """Emits at a rate that wanders between m_flOutputMin and m_flOutputMax by noise over the collection's time
+    (plus, with m_nWorldNoisePoint, that point's position). Defaults, maths and noise (noise.game3) from
+    particles.dll."""
+
+    def __init__(self, p: Params):
+        Emitter.__init__(self, p)
+        self.duration = max(0.0, p.float("m_flEmissionDuration"))
+        self.start_time = p.float("m_flStartTime")
+        self.emission_scale = p.float("m_flEmissionScale")
+        self.scale_point = p.int("m_nScaleControlPoint", -1)
+        self.scale_component = p.int("m_nScaleControlPointField")
+        self.world_point = p.int("m_nWorldNoisePoint", -1)
+        self.absolute = p.bool("m_bAbsVal")
+        self.absolute_invert = p.bool("m_bAbsValInv")
+        self.offset = p.float("m_flOffset")
+        self.low = p.float("m_flOutputMin")
+        self.high = p.float("m_flOutputMax", 100.0)
+        self.time_scale = p.float("m_flNoiseScale", 0.1)
+        self.world_scale = p.float("m_flWorldNoiseScale", 0.001)
+        self.world_offset = p.vector("m_vecOffsetLoc")
+        self.world_time_scale = p.float("m_flWorldTimeScale")
+        self.limit = 0
+
+    def start(self, sim):
+        super().start(sim)
+        # The game's accumulator starts at one: the first emitting step always gives a particle.
+        self.pending = 1.0
+
+    def rate(self, sim) -> float:
+        coord = np.full(3, (sim.age + self.offset) * self.time_scale)
+        if self.world_point != -1:
+            coord += (sim.control_point(self.world_point).position + self.world_offset) * self.world_scale
+        # Plat_MSTime in the game: wall clock milliseconds, here the system's own clock.
+        coord += sim.age * 1000.0 * self.world_time_scale
+        value = float(noise.game3(coord)[0])
+        if self.absolute:
+            value = abs(value)
+            base, span = self.low, self.high - self.low
+        else:
+            base, span = self.low + 0.5 * (self.high - self.low), 0.5 * (self.high - self.low)
+        if self.absolute_invert:
+            value = 1.0 - value
+        rate = max(0.0, base + span * value)
+        if self.scale_point >= 0 and self.scale_component != -1:
+            position = sim.control_point(self.scale_point).position
+            rate *= max(0.0, float(position[self.scale_component])) if 0 <= self.scale_component <= 2 else 0.0
+        if self.emission_scale != 0.0:
+            rate *= max(sim.root._control_points, default=0) * self.emission_scale
+        return rate
+
+    def emit(self, sim, dt, strength):
+        if self.finished:
+            return None
+        elapsed = sim.age - self.start_age
+        ages = None
+        window = _window(elapsed - dt, elapsed, self.start_time, self.duration)
+        if window is not None and not self.snapshot:
+            rate = self.rate(sim) * strength
+            if rate > 0:
+                ages = self._charge(rate, window, elapsed, 0)
+        if self.duration != 0.0 and elapsed - dt > self.start_time + self.duration:
+            self.finished = True
+        return ages
 
 
 @emitter("C_OP_InstantaneousEmitter")
