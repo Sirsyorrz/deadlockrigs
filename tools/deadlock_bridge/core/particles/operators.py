@@ -9,8 +9,8 @@ from . import models, noise
 from .initializers import TransformOrientation, column, models_control_point, path_evaluate, path_points, rows3, _path_parameters
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
-                     SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, lerp, remap, remap_clamped,
-                     saturate, smoothstep)
+                     SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, enum_names, lerp, remap,
+                     remap_clamped, saturate, smoothstep)
 from .system import Function
 
 OPERATORS = {}
@@ -483,6 +483,138 @@ class PositionLock(Operator):
         else:
             v.set_field(self.previous_field, v.field(self.previous_field) + delta * amount * self.previous_scale)
             v.set_field(self.field, v.field(self.field) + delta * amount)
+
+
+PIN_SELECTIONS = enum_names("PARTICLE_SELECTION_FIRST", "PARTICLE_SELECTION_LAST", "PARTICLE_SELECTION_NUMBER")
+PIN_BREAKS = {"PARTICLE_PIN_DISTANCE_NONE": -1, "PARTICLE_PIN_DISTANCE_NEIGHBOR": 0, "PARTICLE_PIN_DISTANCE_FARTHEST": 1,
+              "PARTICLE_PIN_DISTANCE_FIRST": 2, "PARTICLE_PIN_DISTANCE_LAST": 3, "PARTICLE_PIN_DISTANCE_CENTER": 5,
+              "PARTICLE_PIN_DISTANCE_CP": 6, "PARTICLE_PIN_DISTANCE_CP_PAIR_EITHER": 7,
+              "PARTICLE_PIN_DISTANCE_CP_PAIR_BOTH": 8, "PARTICLE_PIN_SPEED": 9, "PARTICLE_PIN_COLLECTION_AGE": 10,
+              "PARTICLE_PIN_FLOAT_VALUE": 11}
+
+
+@register(OPERATORS, "C_OP_PinParticleToCP")
+class PinParticleToCP(Operator):
+    """Holds one particle (the first, last or a numbered one; rope ends) at a control point plus an offset, with no
+    velocity and force scale 0, until a break condition fires; then it is let go for good. Defaults and maths from
+    Deadlock's particles.dll (0x1801e4533). Distance breaks compare a distance now with the one first measured
+    (initial positions), so m_flBreakDistance is a stretch ratio."""
+
+    FIRST, LAST, NUMBER = range(3)
+    NEIGHBOR, FARTHEST, FIRST_PARTICLE, LAST_PARTICLE, CENTER, CP, CP_EITHER, CP_BOTH = 0, 1, 2, 3, 5, 6, 7, 8
+    SPEED, AGE, VALUE = 9, 10, 11
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.control_point = p.int("m_nControlPointNumber")
+        self.offset = p.vec("m_vecOffset")
+        self.offset_local = p.bool("m_bOffsetLocal", True)
+        self.selection = p.enum("m_nParticleSelection", PIN_SELECTIONS, self.FIRST)
+        self.number = p.number("m_nParticleNumber", 0.0)
+        self.break_type = p.enum("m_nPinBreakType", PIN_BREAKS, -1)
+        self.break_distance = p.number("m_flBreakDistance", 1.75)
+        self.break_speed = p.number("m_flBreakSpeed", 0.0)
+        self.break_age = p.number("m_flAge", 0.0)
+        self.break_points = (p.int("m_nBreakControlPointNumber", -1), p.int("m_nBreakControlPointNumber2", -1))
+        self.break_value = p.number("m_flBreakValue", 0.0)
+        self.interpolation = p.number("m_flInterpolation", 1.0)
+        if p.bool("m_bRetainInitialVelocity"):
+            p.note("pin to CP: retained velocity of a released last particle")
+        self.reset()
+
+    def reset(self):
+        self.broken = False
+        self.initial_distance = -1.0
+        self.index = -1
+        self.pinned_id = None
+
+    def _select(self, sim, v):
+        count = v.n
+        number = int(float(self.number(sim)))
+        if self.selection == self.LAST:
+            index = min(max(count - number - 1, 0), count - 1)
+            ids = v.get("unique_id")
+            if self.pinned_id is not None and ids[index] != self.pinned_id:
+                released = np.flatnonzero(ids == self.pinned_id)
+                if released.size:
+                    v.get("force_scale")[released] = 1.0
+            self.pinned_id = ids[index]
+        elif self.selection == self.NUMBER:
+            index = min(max(number, -1), count - 1)
+            if 0 <= self.index < count and index != self.index:
+                v.get("force_scale")[self.index] = 1.0
+        else:
+            index = min(max(number, 0), count - 1)
+        self.index = index
+        return index
+
+    def _neighbor(self, index, count):
+        if self.break_type == self.NEIGHBOR:
+            other = index + 1 if self.selection == self.FIRST else index - 1
+        elif self.break_type == self.FARTHEST:
+            other = count - 1 if count - index > int(count / 2) else 0
+        elif self.break_type == self.FIRST_PARTICLE:
+            other = 0
+        else:
+            other = count - 1
+        return min(max(other, 0), count - 1)
+
+    def _distance(self, sim, v, index, initial):
+        if self.break_type <= self.LAST_PARTICLE:
+            position = v.initial("position") if initial else v.get("position")
+            return float(np.linalg.norm(position[index] - position[self._neighbor(index, v.n)]))
+        if self.break_type == self.CENTER:
+            positions = v.get("position")
+            center = (positions.min(axis=0) + positions.max(axis=0)) * 0.5
+            position = v.initial("position") if initial else positions
+            return float(np.linalg.norm(position[index] - center))
+        pin = sim.control_point(self.control_point).position
+        first, second = self.break_points
+        if self.break_type == self.CP:
+            return float(np.linalg.norm(pin - sim.control_point(first).position)) if first > -1 else 0.0
+        if self.break_type in (self.CP_EITHER, self.CP_BOTH) and first > -1 and second > -1:
+            a = np.linalg.norm(pin - sim.control_point(first).position)
+            b = np.linalg.norm(pin - sim.control_point(second).position)
+            return float(max(a, b) if self.break_type == self.CP_EITHER else min(a, b))
+        return 0.0
+
+    def _breaks(self, sim, v, index):
+        if self.break_type == self.SPEED:
+            return sim.control_point(self.control_point).speed(sim) > float(self.break_speed(sim))
+        if self.break_type == self.AGE:
+            return sim.age > float(self.break_age(sim))
+        if self.break_type == self.VALUE:
+            return float(self.break_value(sim)) >= 1.0
+        limit = float(self.break_distance(sim))
+        if limit <= -1.0:
+            return False
+        if self.initial_distance == -1.0:
+            self.initial_distance = self._distance(sim, v, index, True)
+        distance = self._distance(sim, v, index, False)
+        if self.initial_distance == 0.0:
+            return distance > 0.0
+        return distance / self.initial_distance > limit
+
+    def operate(self, sim, v, dt, strength):
+        if self.broken or v.n == 0:
+            return
+        index = self._select(sim, v)
+        if index < 0:
+            return
+        if self.break_type != -1 and self._breaks(sim, v, index):
+            self.broken = True
+            v.get("force_scale")[index] = 1.0
+            return
+        v.get("force_scale")[index] = 0.0
+        point = sim.control_point(self.control_point)
+        offset = np.asarray(self.offset(sim), np.float64).reshape(3)
+        target = point.position + (point.rotation @ offset if self.offset_local else offset)
+        amount = float(column(self.interpolation(sim, v), v.n)[index])
+        position = v.get("position")
+        pinned = position[index] + (target - position[index]) * amount
+        position[index] = pinned
+        v.get("previous")[index] = pinned
+        v.get("velocity")[index] = 0.0
 
 
 @register(OPERATORS, "C_OP_VectorNoise")
