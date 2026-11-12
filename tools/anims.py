@@ -21,6 +21,19 @@ hero, _ = from_argv()
 src, out = hero.anim_glb, hero.anims_blend
 
 
+def progress(frac, part=None):
+    """For pipeline.py: PART names what runs now, PROGRESS is the share of this script done."""
+    if part:
+        print(f'PART {part}', flush=True)
+    print(f'PROGRESS {frac:.3f}', flush=True)
+
+
+# where each part ends, as a share of the script's time (haze, 404 clips: 29 s)
+IMPORTED, TURNED, EXTRA, USED, REDUCED = 0.65, 0.78, 0.8, 0.87, 0.955
+# within an import: shortening the clip names, then the importer reading the file (no hook to report from)
+SHORTENED, LOADED = 0.08, 0.48
+
+
 def short_clip_glb(path):
     """Copy of the glb with clips named by their last path part. Blender cuts action names at 63 bytes, so long
     model paths (models/npc/boss_tier_01_brazier_guardian/clips/...) lost the clip name's end. Bare duplicates of
@@ -45,11 +58,39 @@ def short_clip_glb(path):
     return tmp
 
 
+def import_clips(path, lo, hi):
+    """Imports the glb's clips with progress from lo to hi. Creating the actions is most of the import's time, so
+    the importer's per-clip call is wrapped to report each one."""
+    clip_glb = short_clip_glb(path)
+    progress(lo + (hi - lo) * SHORTENED)
+    try:
+        from io_scene_gltf2.blender.imp.animation import BlenderAnimation
+        anim = BlenderAnimation.anim
+    except (ImportError, AttributeError):
+        BlenderAnimation = None
+    if BlenderAnimation:
+        done = [0]
+
+        def anim_with_progress(gltf, anim_idx):
+            anim(gltf, anim_idx)
+            done[0] += 1
+            if done[0] % 10 == 0:
+                share = LOADED + (1 - LOADED) * done[0] / len(gltf.data.animations)
+                progress(lo + (hi - lo) * share)
+        BlenderAnimation.anim = staticmethod(anim_with_progress)
+    try:
+        bpy.ops.import_scene.gltf(filepath=clip_glb)
+    finally:
+        if BlenderAnimation:
+            BlenderAnimation.anim = staticmethod(anim)
+        os.remove(clip_glb)
+    progress(hi)
+
+
+progress(0.0, 'anims_import')
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.context.scene.render.fps = 30
-clip_glb = short_clip_glb(src)
-bpy.ops.import_scene.gltf(filepath=clip_glb)
-os.remove(clip_glb)
+import_clips(src, 0.0, IMPORTED)
 arm = next(o for o in bpy.data.objects if o.type == 'ARMATURE')
 
 REST = {'location': 0.0, 'rotation_quaternion': None, 'scale': 1.0}
@@ -60,16 +101,18 @@ keep_names = {'game_' + a.name: a for a in bpy.data.actions}
 # the rig turns these right-side rest frames (mirror.py), so the keys are stored for the turned bones
 TURNS = mirror.turns({b.name: b.matrix_local for b in arm.data.bones})
 uneven = set()
-for a in keep_names.values():
+for i, a in enumerate(keep_names.values()):
+    if i % 20 == 0:
+        progress(IMPORTED + (TURNED - IMPORTED) * i / len(keep_names))
     uneven.update(mirror.turn_keys(a.layers[0].strips[0].channelbags[0], TURNS))
+progress(TURNED)
 
 # an extra model's clips (the patrons' weakened core) key its bones as build.py named them in the hero's armature,
 # <key>__<bone>
-for key, glb in hero.extra_clips:
+for i, (key, glb) in enumerate(hero.extra_clips):
+    n = len(hero.extra_clips)
     before = set(bpy.data.actions)
-    clip_glb = short_clip_glb(glb)
-    bpy.ops.import_scene.gltf(filepath=clip_glb)
-    os.remove(clip_glb)
+    import_clips(glb, TURNED + (EXTRA - TURNED) * i / n, TURNED + (EXTRA - TURNED) * (i + 1) / n)
     own = next(o for o in bpy.data.objects if o.type == 'ARMATURE' and o != arm)
     turns = mirror.turns({b.name: b.matrix_local for b in own.data.bones})
     for a in [a for a in bpy.data.actions if a not in before]:
@@ -106,14 +149,18 @@ def at_rest(path, fs):
 
 # a channel is dropped only if it stays at rest in every clip; otherwise clips that leave it at rest still
 # key it once, so switching clips never leaves a stale value behind
+progress(EXTRA, 'anims_reduce')
 used = set()
 for a in keep_names.values():
     for path, fs in channels(a)[1].items():
         if not at_rest(path, fs):
             used.add(path)
 
+progress(USED)
 total_before = total_after = 0
-for n, a in keep_names.items():
+for i, (n, a) in enumerate(keep_names.items()):
+    if i % 10 == 0:
+        progress(USED + (REDUCED - USED) * i / len(keep_names))
     a.name = n
     a.slots[0].name_display = hero.name
     cb, by_path = channels(a)
@@ -142,4 +189,5 @@ for coll in (bpy.data.meshes, bpy.data.armatures, bpy.data.materials, bpy.data.i
     for d in list(coll):
         coll.remove(d)
 print(f'clips {len(keep_names)}, keys {total_before} -> {total_after}')
+progress(REDUCED, 'anims_save')
 bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(out), compress=True)

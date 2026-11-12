@@ -49,6 +49,8 @@ S2V_REPO = 'https://github.com/ValveResourceFormat/ValveResourceFormat'
 DEFAULT_STEPS = ['extract', 'data', 'base', 'rig']
 DEV_STEPS = ['extract', 'data', 'base', 'anims', 'rig', 'test']
 ALL_STEPS = DEV_STEPS + ['export_anims', 'clean']
+# Source2Viewer's share of export_anims (haze: 6 s of 36), the rest is anims.py
+ANIM_GLB_SHARE = 0.15
 # Blender output worth showing; the rest goes to the build log
 SHOW = re.compile(r'^(meshes|baked light|reflections:|fog:|materials:|shape keys|wrote|mesh without|collar|IK |skipping|WARNING|twist|mirror|clips|'
                   r'(morph|bone|hand-made) keys|dumped|tails|PASS|FAIL)|Error|Traceback')
@@ -219,13 +221,20 @@ class Builder:
             os.environ['DLRIG_OUT'] = os.path.abspath(args.out)
         if args.exports:
             os.environ['DLRIG_EXPORTS'] = '1'
-        self.span = (0.0, 1.0)
+        self.span = self.step_span = (0.0, 1.0)
         self.shown_progress = None
 
     def begin_step(self, i, n, name, lo=None, hi=None):
         """Logs the step for the add-on; its PROGRESS lines from here on cover lo..hi of the whole build."""
         log(f'STEP {i + 1}/{n} {name}')
-        self.span = (i / n if lo is None else lo, (i + 1) / n if hi is None else hi)
+        self.span = self.step_span = (i / n if lo is None else lo, (i + 1) / n if hi is None else hi)
+        self.progress(0.0)
+
+    def part(self, name, lo, hi):
+        """Names a part of the current step for the add-on; PROGRESS lines from here on cover lo..hi of the step."""
+        log(f'PART {name}')
+        a, b = self.step_span
+        self.span = (a + (b - a) * lo, a + (b - a) * hi)
         self.progress(0.0)
 
     def progress(self, frac):
@@ -277,6 +286,9 @@ class Builder:
                 tail = (tail + [line.rstrip()])[-20:]
                 if line.startswith('PROGRESS '):
                     self.progress(float(line.split()[1]))
+                    continue
+                if line.startswith('PART '):
+                    log(line.rstrip())
                     continue
                 if count and count[0] in line:
                     seen += 1
@@ -416,7 +428,10 @@ class Builder:
                 raise BuildError('Source2Viewer wrote no ' + glb)
 
     def anims(self, h):
-        self.anim_glb(h)
+        if not os.path.exists(h.anim_glb):
+            self.part('anim_glb', 0.0, ANIM_GLB_SHARE)
+            self.anim_glb(h)
+        self.part('anims', ANIM_GLB_SHARE, 1.0)
         os.makedirs(h.out, exist_ok=True)
         if os.path.exists(h.anims_blend):
             os.remove(h.anims_blend)
@@ -439,6 +454,7 @@ class Builder:
         open(test_log, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
 
     def export_anims(self, h):
+        self.part('anim_glb', 0.0, ANIM_GLB_SHARE)
         self.anim_glb(h)
         os.makedirs(h.out, exist_ok=True)
         dest = os.path.join(h.out, f'{h.slug}_animations.glb')
