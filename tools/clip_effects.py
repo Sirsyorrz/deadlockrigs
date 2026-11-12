@@ -30,6 +30,8 @@ else:
 # preview their effects on other models, whose sequence names can collide with the hero's clips
 OWN_SLOTS = ('ESlot_Signature_', 'ESlot_Weapon_')
 ATTACHED = ('PATTACH_POINT', 'PATTACH_POINT_FOLLOW')
+# game units in the metres ability values are given in
+METRE = 1 / 0.0254
 # where a cast's flash goes when the effect itself doesn't say (its preview sits at the world origin)
 CAST_DRIVER = {'cp': 0, 'type': 'PATTACH_POINT_FOLLOW', 'attachment': 'ability_cast', 'offset': (0.0, 0.0, 0.0),
                'angles': (0.0, 0.0, 0.0), 'entity': 'self'}
@@ -117,6 +119,40 @@ def _drivers(cfg):
                     'angles': tuple(d.get('m_angOffset', (0.0, 0.0, 0.0))),
                     'entity': d.get('m_entityName', 'self')})
     return out
+
+
+def _radius(block):
+    """The ability's radius in game units (its one ...Radius property, in metres), or None."""
+    found = set()
+    props = (block.get('m_mapAbilityProperties') or {}) if isinstance(block, dict) else {}
+    for key, prop in props.items():
+        value = str(prop.get('m_strValue') or '') if isinstance(prop, dict) else ''
+        if key.endswith('Radius') and re.fullmatch(r'[0-9.]+m', value) and float(value[:-1]) > 0:
+            found.add(float(value[:-1]) * METRE)
+    return found.pop() if len(found) == 1 else None
+
+
+def _sized(drivers, radius):
+    """The preview's literal radius (CP1's x at the world origin, Dynamo's singularity at 350) swapped for the
+    ability's own: previews are often authored bigger than the ability plays. Only a value near it is taken for
+    one, CP1 also holds lengths and counts."""
+    if radius is None:
+        return drivers
+    out = []
+    for d in drivers:
+        if d['cp'] == 1 and d['type'] == 'PATTACH_WORLDORIGIN' and radius / 2 <= d['offset'][0] <= radius * 2:
+            d = {**d, 'offset': (radius, *d['offset'][1:])}
+        out.append(d)
+    return out
+
+
+def _dicts(value):
+    if isinstance(value, dict):
+        yield value
+        value = value.values()
+    if isinstance(value, (list, tuple)) or not isinstance(value, (str, bytes, dict)) and hasattr(value, '__iter__'):
+        for v in value:
+            yield from _dicts(v)
 
 
 def _skipped(*names):
@@ -237,6 +273,19 @@ class ClipEffects:
         if path not in self._effects:
             self._effects[path] = resource_data(self.content, path)
         return self._effects[path]
+
+    def reads_cp1_value(self, path, seen=None):
+        """Whether the effect or a child takes CP1's x as a number (a radius) rather than CP1 as a place."""
+        seen = set() if seen is None else seen
+        if path in seen:
+            return False
+        seen.add(path)
+        data = self.effect(path) or {}
+        if any(v.get('m_nType') == 'PF_TYPE_CONTROL_POINT_COMPONENT' and v.get('m_nControlPoint') == 1
+               and v.get('m_nVectorComponent', 0) == 0 for v in _dicts(data)):
+            return True
+        return any(self.reads_cp1_value(c.get('m_ChildRef'), seen) for c in data.get('m_Children') or []
+                   if c.get('m_ChildRef'))
 
     def hero_abilities(self):
         """{slot: ability name} of the hero whose model this is (heroes.vdata), or {}."""
@@ -382,7 +431,7 @@ class ClipEffects:
                 sequence = ((cfg or {}).get('m_previewState') or {}).get('m_sequenceName') or ''
                 # some name the clip file (models\heroes_wip\baba\clips\x.vnmclip) instead of a sequence
                 sequence = sequence.replace('\\', '/').rsplit('/', 1)[-1].split('.', 1)[0]
-                drivers, guessed, extra = _drivers(cfg), False, set()
+                drivers, guessed, extra = _sized(_drivers(cfg), _radius(block) if self.reads_cp1_value(value) else None), False, set()
                 if self._specific(sequence, clips):
                     found = set(self.names(sequence))
                     if clips and not found & clips and _cores(found) & _cores(clips):
@@ -444,7 +493,7 @@ class ClipEffects:
                     if self.effect(value) is None:
                         continue
                     cfg = _config(self.effect(value), 'preview')
-                    drivers, kind = _drivers(cfg), 'area'
+                    drivers, kind = _sized(_drivers(cfg), _radius(block) if self.reads_cp1_value(value) else None), 'area'
                     if _status(key, value):
                         kind = 'target'
                     elif _on_hero(cfg, attachments):
