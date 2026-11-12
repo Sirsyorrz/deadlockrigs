@@ -20,7 +20,10 @@ import os
 
 import bpy
 import numpy as np
-from map_lighting import UNIT, Graph
+if __package__:
+    from .map_lighting import UNIT, Graph
+else:
+    from map_lighting import UNIT, Graph
 
 GROUP = 'Deadlock probe light'
 PARAM_TEXELS = 8

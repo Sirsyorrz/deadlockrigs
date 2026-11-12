@@ -11,7 +11,10 @@ super troopers come out where a Guardian fell), under the zipline nodes that nam
 import math
 from itertools import groupby
 
-from map_environment import num, to_blender
+if __package__:
+    from .map_environment import num, to_blender
+else:
+    from map_environment import num, to_blender
 
 TEAMS = {2: 'amber', 3: 'sapphire'}
 LANES = {1: 'yellow', 4: 'blue', 6: 'purple'}

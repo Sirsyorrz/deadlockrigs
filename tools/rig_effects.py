@@ -7,11 +7,18 @@ import math
 
 import bpy
 import numpy as np
-from clip_effects import for_model, quat_matrix
-from deadlock_bridge import session
-from deadlock_bridge.blender import particles as bridge
-from deadlock_bridge.core import particles as plib
 from mathutils import Matrix
+
+if __package__:
+    from .clip_effects import for_model, model_of as hero_model, quat_matrix
+    from .deadlock_bridge import session
+    from .deadlock_bridge.blender import particles as bridge
+    from .deadlock_bridge.core import particles as plib
+else:
+    from clip_effects import for_model, model_of as hero_model, quat_matrix
+    from deadlock_bridge import session
+    from deadlock_bridge.blender import particles as bridge
+    from deadlock_bridge.core import particles as plib
 
 UNIT = 0.0254
 # game model space -> the rig's: the glTF the rig is built from is a quarter turn about Z from it (as maps are)
@@ -27,7 +34,6 @@ TAG = 'dlr_clip_effect'
 
 
 def model_of(arm):
-    from clip_effects import model_of as hero_model
     return arm.get('dlr_model') or hero_model(arm['dlrig'])
 
 

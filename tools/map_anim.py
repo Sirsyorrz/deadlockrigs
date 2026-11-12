@@ -15,7 +15,10 @@ import os
 import bpy
 from mathutils import Matrix, Quaternion
 
-from map_lighting import Graph, load_image, param, vmat_dict, vmat_params
+if __package__:
+    from .map_lighting import Graph, load_image, param, vmat_dict, vmat_params
+else:
+    from map_lighting import Graph, load_image, param, vmat_dict, vmat_params
 
 MOTION_GROUP = 'Deadlock motion'
 # bumped when the motion group changes, so a file's older one is replaced

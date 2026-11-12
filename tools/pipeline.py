@@ -33,8 +33,11 @@ import zipfile
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
-sys.path.insert(0, TOOLS)
-import hero as hero_mod  # noqa: E402
+if __package__:
+    from . import hero as hero_mod
+else:
+    sys.path.insert(0, TOOLS)
+    import hero as hero_mod
 
 # Source2Viewer releases (up to 20.1) leave the vmdl's cloth chains and capsules out of the decompile, so builds use a
 # pinned master commit. release.py publishes its CLI for each platform under this tag.

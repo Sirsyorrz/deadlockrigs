@@ -55,7 +55,7 @@ def effects_of(arm, clip):
         particles.bridge_particles()
         rig_effects = tools_module('rig_effects')
         clip_effects = tools_module('clip_effects')
-        from deadlock_bridge import session
+        session = tools_module('deadlock_bridge.session')
         try:
             fx = clip_effects.for_model(session.content(), rig_effects.model_of(arm))
             _found[key] = fx.effects(clip) if clip else []
@@ -73,7 +73,7 @@ def catalog_of(arm):
         particles.bridge_particles()
         rig_effects = tools_module('rig_effects')
         clip_effects = tools_module('clip_effects')
-        from deadlock_bridge import session
+        session = tools_module('deadlock_bridge.session')
         try:
             _catalogs[arm['dlrig']] = clip_effects.for_model(session.content(), rig_effects.model_of(arm)).catalog()
         except Exception as e:
@@ -90,7 +90,7 @@ def abilities_of(arm, clip):
         particles.bridge_particles()
         rig_effects = tools_module('rig_effects')
         clip_effects = tools_module('clip_effects')
-        from deadlock_bridge import session
+        session = tools_module('deadlock_bridge.session')
         try:
             _abilities[key] = clip_effects.for_model(session.content(), rig_effects.model_of(arm)).clip_abilities(clip)
         except Exception as e:
@@ -199,7 +199,7 @@ class DLR_OT_ability_effects(bpy.types.Operator):
         spans = ability_spans(arm)
         particles.bridge_particles()
         rig_effects = tools_module('rig_effects')
-        from deadlock_bridge import session
+        session = tools_module('deadlock_bridge.session')
         fx = tools_module('clip_effects').for_model(session.content(), rig_effects.model_of(arm))
         sc = context.scene
         fps = sc.render.fps / sc.render.fps_base

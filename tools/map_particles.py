@@ -14,13 +14,24 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector
 
-from deadlock_bridge.blender import lighting, nodes, particles, post
-from deadlock_bridge.blender import materials as matlib
-from deadlock_bridge.blender.map_import import MapImporter
-from deadlock_bridge.blender.textures import TextureCache
-from deadlock_bridge.core import content as contentlib
-from deadlock_bridge.core import world as vworld
-from map_anim import add_jitter
+if __package__:
+    from .deadlock_bridge import session
+    from .deadlock_bridge.blender import lighting, nodes, particles, post, materials as matlib
+    from .deadlock_bridge.blender.map_import import MapImporter
+    from .deadlock_bridge.blender.textures import TextureCache
+    from .deadlock_bridge.core import content as contentlib, world as vworld
+    from .deadlock_bridge.core.material import CompiledMaterial
+    from .deadlock_bridge.preferences import cache_dir
+    from .map_anim import add_jitter
+else:
+    from deadlock_bridge import session
+    from deadlock_bridge.blender import lighting, nodes, particles, post, materials as matlib
+    from deadlock_bridge.blender.map_import import MapImporter
+    from deadlock_bridge.blender.textures import TextureCache
+    from deadlock_bridge.core import content as contentlib, world as vworld
+    from deadlock_bridge.core.material import CompiledMaterial
+    from deadlock_bridge.preferences import cache_dir
+    from map_anim import add_jitter
 
 UNIT = 0.0254
 # game space -> the map's Blender space: Source2Viewer's glTF export, re-imported, is turned -90 degrees about Z
@@ -179,7 +190,6 @@ def scene_models(context, target):
             mesh = next((m for m in bpy.data.meshes if m.get('dl_model') == contentlib.normalize(path)), None)
             if mesh is not None:
                 return mesh
-        from deadlock_bridge import session
         try:
             if _scene_models is not None:
                 _scene_models.lighting_group.name
@@ -194,9 +204,6 @@ def scene_models(context, target):
 
 def scene_jitter(objects):
     """jitter_models() for effects placed in a scene, reading the game's materials through the add-on's session."""
-    from deadlock_bridge import session
-    from deadlock_bridge.core.material import CompiledMaterial
-    from deadlock_bridge.preferences import cache_dir
     content = session.content()
 
     def compiled(path):
@@ -212,8 +219,6 @@ _probe_lights = {}
 def scene_light(context, point):
     """The ambient light and cube at a point of the scene from its map's light probes and realtime lights, read from
     the game's files (once per map and session), or None without a map."""
-    from deadlock_bridge import session
-    from deadlock_bridge.preferences import cache_dir
     slug = next((c['dlr_map'] for c in context.scene.collection.children_recursive if c.get('dlr_map')), None)
     if slug is None:
         return None

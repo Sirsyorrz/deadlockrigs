@@ -20,9 +20,11 @@ import re
 import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from deadlock_bridge.core import content as contentlib
-from deadlock_bridge.core import resource
+if __package__:
+    from .deadlock_bridge.core import content as contentlib, resource
+else:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from deadlock_bridge.core import content as contentlib, resource
 
 # slots holding the hero's own abilities and weapon; the rest (jump, slide, zipline, dash, parry) are shared and
 # preview their effects on other models, whose sequence names can collide with the hero's clips

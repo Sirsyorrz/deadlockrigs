@@ -21,10 +21,14 @@ import subprocess
 import sys
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, TOOLS)
-from pipeline import Builder, BuildError, find_pak, log  # noqa: E402
-import map_environment as env  # noqa: E402
-import map_npcs  # noqa: E402
+if __package__:
+    from . import map_environment as env, map_npcs
+    from .pipeline import Builder, BuildError, find_pak, log
+else:
+    sys.path.insert(0, TOOLS)
+    import map_environment as env
+    import map_npcs
+    from pipeline import Builder, BuildError, find_pak, log
 
 MAPS = {'dl_midtown': 'Midtown', 'dl_hideout': 'Hideout'}
 # the export, rebatched copy and saved scene of Midtown take about 11 GB together

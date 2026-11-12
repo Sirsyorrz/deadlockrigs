@@ -12,7 +12,10 @@ mesh); a geometry nodes group animates it from the scene time.
 import bpy
 from mathutils import Vector
 
-from map_lighting import Graph
+if __package__:
+    from .map_lighting import Graph
+else:
+    from map_lighting import Graph
 
 UNIT = 0.0254
 GROUP = 'DLR Zipline'

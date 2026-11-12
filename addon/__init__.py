@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Deadlock Rigs: builds a hero's rig from the user's own Deadlock install (tools/pipeline.py in a background
 process) and opens or appends it."""
+import importlib.util
 import json
 import os
 import queue
@@ -79,9 +80,17 @@ def rig_path(slug, context=None):
 
 
 def tools_module(name):
-    if tools_dir() not in sys.path:
-        sys.path.insert(0, tools_dir())
-    return __import__(name)
+    """A module of tools/, imported as <add-on>.tools.<name>. Blender's extension policy forbids adding to sys.path
+    or importing top-level modules from the extension's folder; in the repo tools/ isn't inside the add-on at all."""
+    package = f'{__package__}.tools'
+    if package not in sys.modules:
+        d = tools_dir()
+        spec = importlib.util.spec_from_file_location(package, os.path.join(d, '__init__.py'),
+                                                      submodule_search_locations=[d])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[package] = module
+        spec.loader.exec_module(module)
+    return importlib.import_module(f'{package}.{name}')
 
 
 def map_path(slug, context=None):

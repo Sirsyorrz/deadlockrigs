@@ -10,9 +10,14 @@ alpha is its glow mask. The G-buffer gets the albedo, tinted towards each emissi
 one self-illumination amount, which the lighting pass turns into albedo * amount. The emissive tints reach the
 shader as 2 ** level * linear tint (the .vfx's Expression), so the level counts twice.
 """
-from map_lighting import (Graph, average_color, cached_image, color_correct_matrix, is_identity, node_group,
-                          source_of, srgb_to_linear, transform_color, LUMINANCE_WEIGHTS)
 import numpy as np
+
+if __package__:
+    from .map_lighting import (Graph, average_color, cached_image, color_correct_matrix, is_identity, node_group,
+                               source_of, srgb_to_linear, transform_color, LUMINANCE_WEIGHTS)
+else:
+    from map_lighting import (Graph, average_color, cached_image, color_correct_matrix, is_identity, node_group,
+                              source_of, srgb_to_linear, transform_color, LUMINANCE_WEIGHTS)
 
 SHADER = 'environment_parallax_layered.vfx'
 # the second UV set as a real UV map, so the Tangent node can give its tangents (map_import makes it)

@@ -4,18 +4,15 @@ did. The simulation and shading are Divined's Deadlock Bridge (tools/deadlock_br
 directly.
 """
 import os
-import sys
 
 import bpy
 
 
 def bridge_particles():
     """The bridge's particle module, its game folder and cache set to the add-on's."""
-    from . import output_dir, prefs, tools_dir, tools_module
-    if tools_dir() not in sys.path:
-        sys.path.insert(0, tools_dir())
-    from deadlock_bridge import session
-    from deadlock_bridge.blender import particles
+    from . import output_dir, prefs, tools_module
+    session = tools_module('deadlock_bridge.session')
+    particles = tools_module('deadlock_bridge.blender.particles')
     map_particles = tools_module('map_particles')
     particles.model_source = map_particles.scene_models
     particles.light_source = map_particles.scene_light

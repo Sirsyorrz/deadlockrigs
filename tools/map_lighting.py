@@ -11,6 +11,7 @@ Fog: the map's cubemap fog (towards a blurred sky in the view direction) and gra
 camera and height, mixed over each map material for camera rays.
 """
 import glob
+import importlib
 import math
 import os
 
@@ -98,6 +99,12 @@ class Graph:
 
     def attribute(self, name, output='Vector'):
         return self.node('ShaderNodeAttribute', attribute_type='GEOMETRY', attribute_name=name).outputs[output]
+
+
+def sibling(name):
+    """A tools/ module importing this one (imported late to avoid the cycle), as a script or in the add-on's
+    package."""
+    return importlib.import_module(f'{__package__}.{name}' if __package__ else name)
 
 
 def node_group(name, inputs, outputs, build):
@@ -689,11 +696,11 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
     if is_environment(mat):
         apply_layer_contrast(mat, bsdf, dict(vmat_dict(mat).get('VectorParams') or {}))
     if vmat_dict(mat).get('ShaderName') == 'environment_blend.vfx':
-        import map_blend
+        map_blend = sibling('map_blend')
         map_blend.apply_blend(mat, bsdf, ints, floats, dict(vmat_dict(mat).get('VectorParams') or {}),
                               layer_textures or {})
     if vmat_dict(mat).get('ShaderName') == 'environment_parallax_layered.vfx':
-        import map_parallax
+        map_parallax = sibling('map_parallax')
         map_parallax.apply_parallax(mat, bsdf, ints, floats, dict(vmat_dict(mat).get('VectorParams') or {}),
                                     layer_textures or {})
     if vmat_dict(mat).get('ShaderName') == 'cosmic_veil.vfx':

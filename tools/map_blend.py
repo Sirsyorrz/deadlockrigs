@@ -8,11 +8,16 @@ stay layer 1's.
 UVs are worked in the game's convention (v down) and flipped back for Blender's image nodes; world positions are
 Source inches, from Blender metres and axes.
 """
-from map_lighting import (Graph, average_color, cached_image, color_correct_matrix, color_tint_matrix, is_identity,
-                          node_group, srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
 import numpy as np
 
-from map_environment import BLEND_TEXTURES as TEXTURES
+if __package__:
+    from .map_environment import BLEND_TEXTURES as TEXTURES
+    from .map_lighting import (Graph, average_color, cached_image, color_correct_matrix, color_tint_matrix,
+                               is_identity, node_group, srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
+else:
+    from map_environment import BLEND_TEXTURES as TEXTURES
+    from map_lighting import (Graph, average_color, cached_image, color_correct_matrix, color_tint_matrix,
+                              is_identity, node_group, srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
 SHADER = 'environment_blend.vfx'
 NO_TRANSFORM = (1.0, 0.0, 0.0, 0.0)
 
