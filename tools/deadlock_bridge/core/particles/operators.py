@@ -833,6 +833,36 @@ class RemapVelocityToVector(Operator):
             v.set_field(self.field, step * (self.scale / frame))
 
 
+@register(OPERATORS, "C_OP_RemapSpeed")
+class RemapSpeed(Operator):
+    """Sets a float attribute from each particle's speed over the last step (units per second, remapped and clamped,
+    ported from CS:GO's builtin_particle_ops.cpp)."""
+
+    # CS:GO's MIN_PARTICLE_SPEED: input ends below it are raised to it
+    MIN_SPEED = 0.001
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.field = p.int("m_nFieldOutput", F.RADIUS)
+        self.input_range = (max(self.MIN_SPEED, p.float("m_flInputMin", 0.0)),
+                            max(self.MIN_SPEED, p.float("m_flInputMax", 1.0)))
+        output_range = (p.float("m_flOutputMin", 0.0), p.float("m_flOutputMax", 1.0))
+        if self.field in (F.ALPHA, F.ALPHA_ALTERNATE):
+            output_range = tuple(min(max(x, 0.0), 1.0) for x in output_range)
+        self.output_range = output_range
+        self.method = p.enum("m_nSetMethod", SET_METHODS, SET_REPLACE)
+        if p.bool("m_bIgnoreDelta"):
+            p.note("C_OP_RemapSpeed m_bIgnoreDelta")
+
+    def operate(self, sim, v, dt, strength):
+        if dt <= 0 or F.name(self.field) is None or F.is_vector(self.field):
+            return
+        speed = np.linalg.norm(v.get("position") - v.get("previous"), axis=1) / dt
+        value = remap_clamped(speed, *self.input_range, *self.output_range)
+        current = v.field(self.field)
+        v.set_field(self.field, lerp(current, set_by_method(v, self.field, value, self.method, dt), strength))
+
+
 # Pre-emission operators -------------------------------------------------------------------------------------------
 
 def heading_rotation(forward):
