@@ -216,6 +216,7 @@ class Definition:
                 continue
             try:
                 self.renderers.append(maker(block, library, index))
+                self.renderers[-1].footage_alpha = renderers.FOOTAGE_ALPHA.get(path.replace("\\", "/").lower(), 1.0)
             except Exception as error:  # an odd renderer must not lose the rest of the system
                 library.skip("renderer", f"{kind} ({error})")
 

@@ -32,6 +32,13 @@ FEATHERING = enum_names("PARTICLE_DEPTH_FEATHERING_OFF", "PARTICLE_DEPTH_FEATHER
                         "PARTICLE_DEPTH_FEATHERING_ON_REQUIRED")
 FEATHER_OFF = 0
 
+# Opacity scales matched by eye to in-game footage, for systems whose data drawn as read (and as VRF draws it) comes
+# out far heavier than the game shows: the singularity's dust hid the ground in black clumps where the game has a
+# translucent haze.
+FOOTAGE_ALPHA = {
+    "particles/abilities/dynamo/dynamo_singularity_dust.vpcf": 0.4,
+}
+
 ANIMATION = enum_names("ANIMATION_TYPE_FIXED_RATE", "ANIMATION_TYPE_FIT_LIFETIME", "ANIMATION_TYPE_MANUAL_FRAMES")
 FIXED_RATE, FIT_LIFETIME, MANUAL_FRAMES = range(3)
 
@@ -197,6 +204,7 @@ class Renderer:
 
     kind = ""
     default_texture = "materials/particle/base_sprite.vtex"
+    footage_alpha = 1.0
 
     def __init__(self, p: Params, library, index: int):
         self.index = index
@@ -254,7 +262,7 @@ class Renderer:
         light = float(self.self_illum(sim)) + float(self.diffuse(sim)) * np.asarray(ambient, np.float64)
         out = np.empty((len(rgb), 4))
         out[:, :3] = rgb * light
-        out[:, 3] = alpha
+        out[:, 3] = np.asarray(alpha, np.float64) * self.footage_alpha
         return out
 
     def _random_offsets(self, sim, ids) -> list:
