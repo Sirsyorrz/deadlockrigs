@@ -319,6 +319,7 @@ class Simulation:
         self.restart_age = 0.0
         self.in_end_cap = False
         self.end_cap_age = 0.0
+        self.emission_stopped = False
         self.frame_time = definition.max_step
         self.previous_frame_time = 0.0
         self.emitted = 0
@@ -420,6 +421,17 @@ class Simulation:
             else:
                 child.end_cap()
 
+    def stop_emission(self, remove_all: bool, play_end_cap: bool):
+        """Stops the tree from inside (C_OP_StopAfterCPDuration): with the end cap as end_cap(), else every system's
+        emitters just stop; remove_all kills every particle in the tree now."""
+        for system in self.walk():
+            if remove_all:
+                system.particles.clear()
+            if not play_end_cap:
+                system.emission_stopped = True
+        if play_end_cap:
+            self.end_cap()
+
     def start(self):
         self.started = True
         for function in (*self.pre_emission, *self.initializers, *self.operators, *self.constraints):
@@ -462,7 +474,7 @@ class Simulation:
             random.operator_offset += Random.STRIDE
 
         for emitter in self.emitters:
-            if self.in_end_cap and emitter.end_cap != 1:
+            if self.emission_stopped or (self.in_end_cap and emitter.end_cap != 1):
                 continue
             strength = emitter.run_strength(self)
             if strength > 0.0:

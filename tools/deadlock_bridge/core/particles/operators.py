@@ -851,6 +851,24 @@ class PreEmission(Function):
         raise NotImplementedError
 
 
+@register(PRE_EMISSION, "C_OP_StopAfterCPDuration")
+class StopAfterCPDuration(PreEmission):
+    """Stops the effect once the system is older than a duration: its end cap plays (unless turned off), and with
+    m_bDestroyImmediately every particle in the tree goes at once."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.duration = p.number("m_flDuration", 1.0)
+        self.destroy = p.bool("m_bDestroyImmediately")
+        self.play_end_cap = p.bool("m_bPlayEndCap", True)
+
+    def operate(self, sim, dt):
+        if sim.in_end_cap or sim.emission_stopped:
+            return
+        if sim.age > float(self.duration(sim)):
+            sim.stop_emission(self.destroy, self.play_end_cap)
+
+
 @register(PRE_EMISSION, "C_OP_SetSingleControlPointPosition")
 class SetSingleControlPointPosition(PreEmission):
     """Places a control point at a position in a transform's frame."""
