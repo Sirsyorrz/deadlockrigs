@@ -841,7 +841,9 @@ class RenderModels(Renderer):
 
 
 class Lights:
-    """Lights to place: per particle a position (game units), linear colour, intensity and radius (game units)."""
+    """Lights to place: per particle a position (game units), linear colour, intensity and radius (game units).
+    ``reference``: per particle, the distance (game units) its light is its intensity at; None leaves it to the
+    host's guess."""
 
     def __init__(self, renderer, n):
         self.renderer = renderer
@@ -850,6 +852,7 @@ class Lights:
         self.color = np.ones((n, 3))
         self.intensity = np.zeros(n)
         self.radius = np.zeros(n)
+        self.reference = None
 
 
 class RenderStandardLight:
@@ -875,6 +878,46 @@ class RenderStandardLight:
         out.color = v.get("color") * _rows3(self.color_scale(sim, v), n)
         out.intensity = _per(self.intensity(sim, v), n) * v.get("alpha")
         out.radius = v.get("radius") * _per(self.radius_scale(sim, v), n)
+        return out
+
+
+class RenderOmni2Light:
+    """A light per particle (C_OP_RenderOmni2Light): the particle's colour blended with the colour blend, in lumens
+    (or candelas) times its alpha, out to its range. Maps' light_omni2 entities carry both units and the game's
+    2^brightness: 1000 lumens (80 candelas) is brightness 0, an intensity of 1 at 100 units."""
+
+    kind = "light"
+
+    def __init__(self, p: Params, library, index: int):
+        self.index = index
+        self.hidden = False
+        self.candelas = p.str("m_nBrightnessUnit") == "PARTICLE_LIGHT_UNIT_CANDELAS"
+        self.brightness = p.number("m_flBrightnessCandelas" if self.candelas else "m_flBrightnessLumens", 1000.0)
+        self.range = p.number("m_flRange", 512.0)
+        self.color_blend = p.vec("m_vColorBlend", (1.0, 1.0, 1.0))
+        self.blend = p.str("m_nColorBlendType") or "PARTICLE_COLOR_BLEND_MULTIPLY"
+
+    def build(self, sim, ambient) -> Lights | None:
+        n = sim.particles.count
+        if n == 0:
+            return None
+        v = F.View(sim.particles, slice(0, n))
+        out = Lights(self, n)
+        out.position = v.get("position").copy()
+        color, blend = v.get("color"), _rows3(self.color_blend(sim, v), n)
+        if self.blend == "PARTICLE_COLOR_BLEND_REPLACE":
+            color = blend
+        elif self.blend == "PARTICLE_COLOR_BLEND_ADD":
+            color = color + blend
+        elif self.blend == "PARTICLE_COLOR_BLEND_MULTIPLY2X":
+            color = color * blend * 2.0
+        else:
+            color = color * blend
+        out.color = srgb_to_linear(np.clip(color, 0.0, None))
+        unit = 4.0 * math.pi / 1000.0 if self.candelas else 1.0 / 1000.0
+        out.intensity = _per(self.brightness(sim, v), n) * unit * v.get("alpha")
+        out.radius = np.maximum(_per(self.range(sim, v), n), 0.0)
+        out.reference = np.full(n, 100.0)
         return out
 
 
@@ -911,6 +954,7 @@ class RenderProjected(RenderSprites):
 
 RENDERERS = {
     "C_OP_RenderStandardLight": RenderStandardLight,
+    "C_OP_RenderOmni2Light": RenderOmni2Light,
     "C_OP_RenderProjected": RenderProjected,
     "C_OP_RenderSprites": RenderSprites,
     "C_OP_RenderRopes": RenderRopes,

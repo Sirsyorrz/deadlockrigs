@@ -612,8 +612,8 @@ class _ObjectBuilder:
 
     def _animated_light(self, name, batches, steps, holder):
         """A point light for a light renderer's particles, keyed on every bake step: at their intensity weighted
-        centre, with their summed intensity, reaching the furthest. Light at a quarter of the reach is the
-        particles' intensity times their colour (the game's falloff isn't known; a guess), nothing past it."""
+        centre, with their summed intensity, reaching the furthest. Light at the batch's reference distance is the
+        particles' intensity times their colour; with none, at a quarter of the reach (a guess), nothing past it."""
         light = bpy.data.lights.new(name, "POINT")
         light.use_custom_distance = True
         light.shadow_soft_size = 0.0
@@ -636,9 +636,13 @@ class _ObjectBuilder:
                 color = (batch.color * weight[:, None]).sum(0) / total
                 reach = float(batch.radius.max())
                 peak = max(float(color.max()), 1e-6)
+                if batch.reference is None:
+                    weighted = (0.25 * reach) ** 2 * total
+                else:
+                    weighted = float((weight * batch.reference ** 2).sum())
                 obj.location = tuple(centre * self.scale)
                 light.color = tuple(np.clip(color / peak, 0.0, 1.0))
-                light.energy = k * (0.25 * reach) ** 2 * total * peak
+                light.energy = k * weighted * peak
                 light.cutoff_distance = max(reach * self.scale, 1e-3)
                 obj.keyframe_insert("location", frame=frame)
                 light.keyframe_insert("color", frame=frame)
