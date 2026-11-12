@@ -1032,6 +1032,35 @@ class MaxVelocity(Operator):
         v.set("previous", v.get("position") - clamped * dt)
 
 
+@register(OPERATORS, "C_OP_DampenToCP")
+class DampenToCP(Operator):
+    """Shortens each step of particles within a range of a control point by (distance / range) ^ scale, so they
+    slow to a stop at it (dll operate 0x1801e2b30 = CS:GO = VRF). Previous stays, so the damping carries into the
+    next step's velocity; the bridge's velocity cache is kept equal to that step."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.control_point = p.int("m_nControlPointNumber")
+        self.range = p.float("m_flRange", 100.0)
+        self.scale = p.float("m_flScale", 1.0)
+
+    def operate(self, sim, v, dt, strength):
+        if self.range <= 0.0:
+            return
+        position = v.get("position")
+        previous = v.get("previous")
+        distance = np.linalg.norm(position - sim.control_point(self.control_point).position, axis=1)
+        inside = distance <= self.range
+        if not inside.any():
+            return
+        factor = np.power(np.minimum(distance / self.range, 1.0), self.scale)[:, None]
+        dampened = previous + (position - previous) * factor
+        moved = np.where(inside[:, None], position + (dampened - position) * strength, position)
+        v.set("position", moved)
+        if dt > 0:
+            v.set("velocity", np.where(inside[:, None], (moved - previous) / dt, v.get("velocity")))
+
+
 @register(OPERATORS, "C_OP_EndCapTimedDecay")
 class EndCapTimedDecay(Operator):
     """Kills every particle a time into the end cap (never reached in a snapshot)."""
