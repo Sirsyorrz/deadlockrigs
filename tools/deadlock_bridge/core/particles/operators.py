@@ -1212,6 +1212,73 @@ class SetControlPointRotation(PreEmission):
         sim.set_control_point(self.control_point, point.position, point.rotation @ turn)
 
 
+def _singularity_free_rotation(forward):
+    """particles.dll's basis for m_bAvoidSingularity: left from ((1 - z) y^2 + z, 0, -x) made perpendicular to the
+    direction, so it stays defined pointing straight up or down (and rolls a level heading 90 degrees against
+    VectorVectors)."""
+    x, y, z = forward
+    left = np.array([(1.0 - z) * y * y + z, 0.0, -x])
+    left /= max(np.linalg.norm(left), 1e-12)
+    left -= (left @ forward) * forward
+    length = np.linalg.norm(left)
+    if length < 1e-9:
+        return heading_rotation(forward)
+    left /= length
+    return np.stack([forward, left, np.cross(forward, left)], 1)
+
+
+def _turn_towards(start, end, fraction: float):
+    """Rotation part way from one rotation matrix to another along the shortest arc."""
+    relative = start.T @ end
+    angle = math.acos(max(-1.0, min(1.0, (np.trace(relative) - 1.0) / 2.0)))
+    if angle < 1e-6:
+        return end
+    axis = np.array([relative[2, 1] - relative[1, 2], relative[0, 2] - relative[2, 0], relative[1, 0] - relative[0, 1]])
+    length = np.linalg.norm(axis)
+    if length < 1e-6:
+        # half a turn: the axis is the column of (relative + I) with the most in it
+        candidates = relative + np.eye(3)
+        axis = candidates[:, int(np.argmax(np.linalg.norm(candidates, axis=0)))]
+        length = np.linalg.norm(axis)
+    return start @ _axis_rotation(axis / length, angle * fraction)
+
+
+@register(PRE_EMISSION, "C_OP_SetCPOrientationToPointAtCP")
+class SetCPOrientationToPointAtCP(PreEmission):
+    """Turns a control point to face another (or away from it), keeping its position (from particles.dll: defaults
+    input CP 1, output CP 0, interpolation 1; 2D drops the height difference; nothing happens when both are the same
+    point; a zero direction faces straight up). Interpolation below 1 eases from the current orientation each
+    frame."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.input_point = p.int("m_nInputCP", 1)
+        self.output_point = p.int("m_nOutputCP", 0)
+        self.interpolation = p.number("m_flInterpolation", 1.0)
+        self.flat = p.bool("m_b2DOrientation")
+        self.avoid_singularity = p.bool("m_bAvoidSingularity")
+        self.point_away = p.bool("m_bPointAway")
+
+    def operate(self, sim, dt):
+        if self.input_point == self.output_point:
+            return
+        target = sim.control_point(self.input_point).position
+        point = sim.control_point(self.output_point)
+        direction = point.position - target if self.point_away else target - point.position
+        if self.flat:
+            direction = np.array([direction[0], direction[1], 0.0])
+        length = np.linalg.norm(direction)
+        direction = direction / length if length >= 1e-5 else np.array([0.0, 0.0, 1.0])
+        if self.avoid_singularity:
+            rotation = _singularity_free_rotation(direction)
+        else:
+            rotation = heading_rotation(direction)
+        fraction = float(np.mean(self.interpolation(sim)))
+        if fraction < 1.0:
+            rotation = _turn_towards(point.rotation, rotation, max(fraction, 0.0))
+        sim.set_control_point(self.output_point, point.position, rotation)
+
+
 @register(PRE_EMISSION, "C_OP_SetParentControlPointsToChildCP")
 class SetParentControlPointsToChildCP(PreEmission):
     """Hands this system's control points out to its children, one each: the i-th child of the group gets point
