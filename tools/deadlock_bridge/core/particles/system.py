@@ -93,13 +93,16 @@ class ControlPoint:
     def change_age(self, sim) -> float:
         return sim.root.age - self.change_time
 
-    def speed(self, sim) -> float:
-        """How fast it moved between its last two sets (units per second); 0 once nothing has set it for longer
+    def velocity(self, sim) -> np.ndarray:
+        """How it moved between its last two sets (units per second); zero once nothing has set it for longer
         than that interval (it stands still since)."""
         interval = self.set_time - self.previous_set_time
         if self.previous_set_time < 0 or interval <= 1e-9 or sim.root.age - self.set_time > interval + 1e-6:
-            return 0.0
-        return float(np.linalg.norm(self.position - self.previous_set_position)) / interval
+            return np.zeros(3)
+        return (self.position - self.previous_set_position) / interval
+
+    def speed(self, sim) -> float:
+        return float(np.linalg.norm(self.velocity(sim)))
 
 
 class Function:

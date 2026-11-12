@@ -413,6 +413,22 @@ class NormalOffset(Initializer):
         v.set_field(F.NORMAL, normal)
 
 
+@initializer("C_INIT_InheritVelocity")
+class InheritVelocity(Initializer):
+    """Adds a control point's velocity, scaled, to new particles (CS:GO's C_INIT_InheritVelocity; negative scales
+    leave trails behind a moving caster)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.control_point = p.int("m_nControlPointNumber")
+        self.scale = p.float("m_flVelocityScale", 1.0)
+
+    def initialize(self, sim, v):
+        velocity = sim.control_point(self.control_point).velocity(sim) * self.scale
+        if np.any(velocity):
+            v.set("velocity", v.get("velocity") + velocity)
+
+
 @initializer("C_INIT_RandomYawFlip")
 class RandomYawFlip(Initializer):
     """Turns some particles half way round in yaw (mirroring their cards)."""
