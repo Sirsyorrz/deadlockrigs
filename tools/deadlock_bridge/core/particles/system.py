@@ -16,7 +16,7 @@ import numpy as np
 
 from .. import kv3
 from ..resource import ResourceFile
-from .fields import Particles, View
+from .fields import DEAD_PARENT, Particles, View
 from .params import END_CAP, Params
 
 # The engine caps a collection at this many particles whatever the definition asks for.
@@ -574,7 +574,29 @@ class Simulation:
                 random.operator_offset += Random.STRIDE
             self._constrain(view, dt)
         self.killed_last = particles.remove_killed()
+        if self.killed_last:
+            self._rebind_child_parents()
         self.previous_frame_time = dt
+
+    def _rebind_child_parents(self):
+        """Points child particles' parent_index back at their parent particle (by parent_id) after this system's
+        particles moved; a child whose parent died gets parent_id DEAD_PARENT (as VRF's RebindChildParents)."""
+        ids = self.particles.array("particle_id")
+        order = np.argsort(ids, kind="stable")
+        sorted_ids = ids[order]
+        for child in self.children:
+            particles = child.particles
+            if not (particles.count and particles.has("parent_id") and particles.has("parent_index")):
+                continue
+            parent_ids = particles.array("parent_id")
+            linked = parent_ids != DEAD_PARENT
+            if len(sorted_ids) == 0:
+                parent_ids[linked] = DEAD_PARENT
+                continue
+            slot = np.minimum(np.searchsorted(sorted_ids, parent_ids), len(sorted_ids) - 1)
+            found = linked & (sorted_ids[slot] == parent_ids)
+            particles.array("parent_index")[found] = order[slot[found]]
+            parent_ids[linked & ~found] = DEAD_PARENT
 
     def _constrain(self, view: View, dt: float):
         """Constraints run from a work list: each once, then again only while another one moved particles."""

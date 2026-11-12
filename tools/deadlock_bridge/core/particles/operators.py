@@ -1988,6 +1988,111 @@ class RopeSpringConstraint(Constraint):
         return True
 
 
+MISSING_PARENT = {"MISSING_PARENT_DO_NOTHING": -1, "MISSING_PARENT_KILL": 0, "MISSING_PARENT_FIND_NEW": 1,
+                  "MISSING_PARENT_SAME_INDEX": 2}
+
+
+@register(OPERATORS, "C_OP_InheritFromParentParticlesV2")
+class InheritFromParentParticlesV2(Operator):
+    """Binds each particle to a parent particle once (the walk over the parent's particles, m_nIncrement per particle,
+    or random), then copies one attribute from it every step, scaled and blended by m_flInterpolation (VRF port; dll
+    ctor 0x18024dda0 defaults: radius, scale/increment/interpolation 1, missing parent DO_NOTHING). Sub-sampling with
+    an increment under 1 moves on one parent each time the increments add up to one and blends toward the next
+    parent by the carried fraction. The scale and interpolation the nth copy uses are the nth particle's (as VRF)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.scale = p.number("m_flScale", 1.0)
+        self.field = p.int("m_nFieldOutput", F.RADIUS)
+        self.increment = p.number("m_nIncrement", 1.0)
+        self.sub_sample = p.bool("m_bSubSample")
+        self.random = p.bool("m_bRandomDistribution")
+        self.reverse = p.bool("m_bReverse")
+        self.missing = p.enum("m_nMissingParentBehavior", MISSING_PARENT, -1)
+        self.interpolation = p.number("m_flInterpolation", 1.0)
+
+    def operate(self, sim, v, dt, strength):
+        parent = sim.parent
+        key = F.name(self.field)
+        if parent is None or key is None:
+            return
+        count = parent.particles.count
+        if count == 0:
+            if self.missing == MISSING_PARENT["MISSING_PARENT_KILL"]:
+                v.kill(np.ones(v.n, bool))
+            return
+        n = v.n
+        scales, increments, blends = (column(s(sim, v), n)
+                                      for s in (self.scale, self.increment, self.interpolation))
+        parent_ids = v.get("parent_id").copy()
+        parent_indices = v.get("parent_index").copy()
+        parent_particle_ids = parent.particles.array("particle_id")
+        source_values = parent.particles.array(key)
+        output = v.get(key).copy()
+        kill = np.zeros(n, bool)
+        vector = F.is_vector(self.field)
+        first = count - 1 if self.reverse else 0
+        walk, carried, copied = first, 0.0, 0
+        for i in range(n):
+            if self.random:
+                walk = min(int(sim.random.next1() * count), count - 1)
+            elif walk < 0 or walk > count - 1:
+                walk = first
+            step = float(increments[i])
+            if parent_ids[i] < 0 and parent_indices[i] < 0:
+                parent_ids[i] = parent_particle_ids[walk]
+                parent_indices[i] = walk
+            copy = True
+            if parent_ids[i] == F.DEAD_PARENT:
+                if self.missing == MISSING_PARENT["MISSING_PARENT_KILL"]:
+                    kill[i] = True
+                    copy = False
+                elif self.missing in (MISSING_PARENT["MISSING_PARENT_FIND_NEW"],
+                                      MISSING_PARENT["MISSING_PARENT_SAME_INDEX"]):
+                    index = (min(int(sim.random.next1() * count), count - 1)
+                             if self.missing == MISSING_PARENT["MISSING_PARENT_FIND_NEW"]
+                             else min(max(int(parent_indices[i]), 0), count - 1))
+                    parent_indices[i] = index
+                    parent_ids[i] = parent_particle_ids[index]
+                else:
+                    copy = False
+            # an index past the parent's particles reads outside them in the game: not copied
+            if copy and 0 <= parent_indices[i] < count:
+                source = int(parent_indices[i])
+                after = max(source - 1, 0) if self.reverse else min(source + 1, count - 1)
+                output[i] = self._copy(output[i], source_values[source], source_values[after], scales[copied],
+                                       blends[copied], carried, vector)
+            if copy:
+                copied += 1
+            if self.sub_sample and step < 1.0:
+                carried += step
+                if carried >= 1.0:
+                    carried -= math.floor(carried)
+                    walk += -1 if self.reverse else 1
+            else:
+                walk += int(-step if self.reverse else step)
+        v.set("parent_id", parent_ids)
+        v.set("parent_index", parent_indices)
+        v.set(key, output)
+        if kill.any():
+            v.kill(kill)
+
+    def _copy(self, current, value, after, scale, blend, carried, vector):
+        if self.field in F.INTEGER:
+            return value
+        value, after = value * scale, after * scale
+        if vector:
+            if self.field in F.NORMALIZED:
+                value, after = np.clip(value, 0.0, 1.0), np.clip(after, 0.0, 1.0)
+            if carried > 0.0:
+                value = lerp(value, after, carried)
+            return lerp(current, value, blend)
+        if carried > 0.0:
+            value = lerp(value, after, saturate(carried))
+        value = lerp(current, value, saturate(blend))
+        return saturate(value) if self.field in (F.ALPHA, F.ALPHA_ALTERNATE) else value
+
+
 ROTATION_LOCKS = {"PARTICLE_ROTATION_LOCK_NONE": 0, "PARTICLE_ROTATION_LOCK_ROTATIONS": 1,
                   "PARTICLE_ROTATION_LOCK_NORMAL": 2}
 

@@ -937,6 +937,10 @@ class InheritFromParentParticles(Initializer):
                 self.index = 0
             picks[i] = min(max(self.index, 0), last)
             self.index += self.increment
+        if sim.version >= 9:
+            # links C_OP_InheritFromParentParticlesV2 follows (VRF: written from behaviour version 9)
+            v.set("parent_index", picks.astype(np.float64))
+            v.set("parent_id", parent.particles.array("particle_id")[picks])
         value = parent.particles.array(key)[picks] * self.scale
         if self.field in F.NORMALIZED:
             value = np.clip(value, 0.0, 1.0)

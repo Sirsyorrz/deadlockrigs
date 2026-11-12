@@ -33,6 +33,8 @@ ATTRIBUTES = {
 
 ANGLES = {ROLL, YAW, PITCH, ROLL_SPEED}
 NORMALIZED = {COLOR, ALPHA, ALPHA_ALTERNATE, GLOW_RGB, GLOW_ALPHA}
+# parent_id of a child particle whose parent particle died (the game's INT_MIN)
+DEAD_PARENT = float(-2 ** 31)
 INTEGER = {SEQUENCE, SEQUENCE1, PARTICLE_ID, PARENT_INDEX, PARENT_ID, ROPE_SEGMENT_ID, USER_EVENTS}
 
 # What a particle starts with before the system's constants and its initializers (the engine's defaults).
