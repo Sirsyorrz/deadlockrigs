@@ -818,6 +818,50 @@ class MaintainSequentialPath(Operator):
             v.set(key, target + direction * np.minimum(distance, max_offset) * keep)
 
 
+@register(OPERATORS, "C_OP_LockToSavedSequentialPathV2")
+class LockToSavedSequentialPathV2(Operator):
+    """Moves particles by how far their point on the path moved since the last step, using the path parameter and
+    control points CreateSequentialPathV2 saved in the hitbox offset (t, start CP, end CP). The path shape comes from
+    this operator's own m_PathParams; its end CP is the saved one only with CP pairs. Port of ValveResourceFormat's
+    version (fade start/end and strength unused there too). A path seen for the first time has not moved: VRF
+    evaluates it a step back in the CP history, which the bridge doesn't keep."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.path = _path_parameters(p)
+        self.pairs = p.bool("m_bCPPairs") and abs(self.path["end"] - self.path["start"]) > 1
+        self.reset()
+
+    def reset(self):
+        self.previous = {}
+        self.previous_age = None
+
+    def operate(self, sim, v, dt, strength):
+        if dt <= 0:
+            return
+        # the bridge skips operators while there are no particles: a path from before that gap is stale
+        if self.previous_age is None or abs(sim.age - dt - self.previous_age) > 1e-6:
+            self.previous = {}
+        saved = v.get("hitbox_offset")
+        starts = np.clip(saved[:, 1].astype(int), 0, 63)
+        ends = saved[:, 2].astype(int) if self.pairs else np.full(v.n, self.path["end"])
+        fraction = np.minimum(v.get("age"), dt) / dt
+        delta = np.zeros((v.n, 3))
+        current = {}
+        for start in np.unique(starts):
+            rows = starts == start
+            # one path per start CP and step, as the game: the first particle's end CP decides it
+            points = path_points(sim, self.path, int(start), int(ends[rows][0]))
+            current[start] = points
+            before = self.previous.get(start, points)
+            t = saved[rows, 0]
+            delta[rows] = (path_evaluate(points, t) - path_evaluate(before, t)) * fraction[rows, None]
+        self.previous = current
+        self.previous_age = sim.age
+        v.set("position", v.get("position") + delta)
+        v.set("previous", v.get("previous") + delta)
+
+
 @register(OPERATORS, "C_OP_DistanceToTransform")
 class DistanceToTransform(Operator):
     """Sets a float attribute from the particle's distance to a transform, remapped (the engine remaps the squared
