@@ -30,6 +30,7 @@ MAX_TEXTURE = 16384
 # the atlas is 8 bit: RGB over its largest channel, which the alpha holds as log2 in [LOG_MIN, LOG_MAX]
 LOG_MIN, LOG_MAX = -14.0, 6.0
 FACES = 6
+FACE_NAMES = ('+X', '+Y', '+Z', '-X', '-Y', '-Z')
 # Source = SOURCE_FROM_BLENDER @ Blender, the inverse of the glTF import's (x, y, z) -> (y, -x, z)
 SOURCE_FROM_BLENDER = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], float)
 
@@ -236,16 +237,23 @@ class Texels:
 
 
 def probe_group(anchor, atlas_img, params_img, index_img, index_scale, grid_origin, cell, grid_dims, grid_cols,
-                len_volumes):
-    """Node group: Normal (world) -> Irradiance at the shaded point."""
-    tree = bpy.data.node_groups.new(GROUP, 'ShaderNodeTree')
-    tree.interface.new_socket(name='Normal', in_out='INPUT', socket_type='NodeSocketVector')
-    tree.interface.new_socket(name='Irradiance', in_out='OUTPUT', socket_type='NodeSocketColor')
+                len_volumes, faces=False, name=GROUP):
+    """Node group: Normal (world) -> Irradiance at the shaded point. With faces, no input and the ambient cube at
+    the point along the world axes instead (outputs FACE_NAMES): one lookup for what would take six groups."""
+    tree = bpy.data.node_groups.new(name, 'ShaderNodeTree')
+    if faces:
+        for face in FACE_NAMES:
+            tree.interface.new_socket(name=face, in_out='OUTPUT', socket_type='NodeSocketColor')
+    else:
+        tree.interface.new_socket(name='Normal', in_out='INPUT', socket_type='NodeSocketVector')
+        tree.interface.new_socket(name='Irradiance', in_out='OUTPUT', socket_type='NodeSocketColor')
+    tree['dlr_probe_params'] = {'index_scale': index_scale, 'grid_origin': [float(x) for x in grid_origin],
+                                'cell': float(cell), 'grid_dims': [int(d) for d in grid_dims],
+                                'grid_cols': int(grid_cols), 'len_volumes': int(len_volumes)}
     g = Graph(tree)
     inp, out = g.node('NodeGroupInput'), g.node('NodeGroupOutput')
     coords = g.node('ShaderNodeTexCoord', object=anchor)
     pos = coords.outputs['Object']
-    normal = g.vec('NORMALIZE', inp.outputs['Normal'])
     atlas, params, index = Texels(g, atlas_img), Texels(g, params_img), Texels(g, index_img)
 
     def clamp(x, lo, hi):
@@ -303,7 +311,6 @@ def probe_group(anchor, atlas_img, params_img, index_img, index_scale, grid_orig
 
     size_c, cols = row(vol, 3)
     size = g.split(size_c)
-    nl = affine(vol, 4, normal, offset=False)
     block_c, _ = row(vol, 7)
     block = g.split(block_c)
     bx, by, face_h = block[0], block[1], block[2]
@@ -330,10 +337,7 @@ def probe_group(anchor, atlas_img, params_img, index_img, index_scale, grid_orig
         scale = g.math('POWER', 2.0, g.math('ADD', g.math('MULTIPLY', level, LOG_MAX - LOG_MIN), LOG_MIN))
         return g.vec('SCALE', color, scale)
 
-    total = None
-    for axis in range(3):
-        positive = g.math('GREATER_THAN', nl[axis], 0.0)
-        face = g.math('ADD', axis, g.math('MULTIPLY', g.math('SUBTRACT', 1.0, positive), 3))
+    def sample(face):
         face_y = g.math('MULTIPLY', face, face_h)
         planes = []
         for sx0, sy0 in slices:
@@ -345,10 +349,32 @@ def probe_group(anchor, atlas_img, params_img, index_img, index_scale, grid_orig
                 b = probe(g.math('ADD', sx0, hi[0]), y)
                 rows_.append(lerp(a, b, frac[0]))
             planes.append(lerp(rows_[0], rows_[1], frac[1]))
-        sample = lerp(planes[0], planes[1], frac[2])
-        weighted = g.vec('SCALE', sample, g.math('MULTIPLY', nl[axis], nl[axis]))
-        total = weighted if total is None else g.vec('ADD', total, weighted)
-    g.links.new(total, out.inputs['Irradiance'])
+        return lerp(planes[0], planes[1], frac[2])
+
+    if faces:
+        volume_faces = [sample(float(f)) for f in range(FACES)]
+        # rows 4-6 turn a world normal into the volume's: the world axis i is column i
+        rotation = [g.split(row(vol, 4 + k)[0]) for k in range(3)]
+        for i, name in enumerate(FACE_NAMES):
+            axis, sign = i % 3, (1.0 if i < 3 else -1.0)
+            total = None
+            for k in range(3):
+                r = rotation[k][axis]
+                positive = g.math('GREATER_THAN', g.math('MULTIPLY', r, sign), 0.0)
+                face = g.mix('MIX', volume_faces[k + 3], volume_faces[k], positive)
+                weighted = g.vec('SCALE', face, g.math('MULTIPLY', r, r))
+                total = weighted if total is None else g.vec('ADD', total, weighted)
+            g.links.new(total, out.inputs[name])
+    else:
+        normal = g.vec('NORMALIZE', inp.outputs['Normal'])
+        nl = affine(vol, 4, normal, offset=False)
+        total = None
+        for axis in range(3):
+            positive = g.math('GREATER_THAN', nl[axis], 0.0)
+            sampled = sample(g.math('ADD', axis, g.math('MULTIPLY', g.math('SUBTRACT', 1.0, positive), 3)))
+            weighted = g.vec('SCALE', sampled, g.math('MULTIPLY', nl[axis], nl[axis]))
+            total = weighted if total is None else g.vec('ADD', total, weighted)
+        g.links.new(total, out.inputs['Irradiance'])
     tree.use_fake_user = True
     return tree
 

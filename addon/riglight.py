@@ -27,14 +27,18 @@ Everything else in the scene that isn't part of the map (the user's own models, 
 lights its props (map props bake the same probes per vertex, map_lighting.bake_probes). No toon step, no exposure
 control: those are for heroes only.
 """
+import os
+
 import bpy
 from bpy.app.handlers import persistent
 
 PROBE_GROUP = 'Deadlock probe light'
+FACES_GROUP = 'Deadlock probe faces'
+FACES_VERSION = 1
 REFLECTION_GROUP = 'Deadlock reflections'
 RIG_GROUP = 'Deadlock rig light'
 NODE = 'dlr_rig_light'
-VERSION = 5
+VERSION = 6
 OBJECT_GROUP = 'Deadlock object light'
 OBJECT_NODE = 'dlr_object_light'
 OBJECT_VERSION = 1
@@ -47,7 +51,6 @@ NPR = {'diffuse_step_sharpness': 0.9, 'diffuse_pbr_blend': 0.25, 'primary_light_
        'rim_up_ramp': (0.2, 0.2)}
 TO_XYZ = ((0.4124, 0.3576, 0.1805), (0.2126, 0.7152, 0.0722), (0.0193, 0.1192, 0.9505))
 TO_RGB = ((3.2406, -1.5372, -0.4986), (-0.9689, 1.8758, 0.0415), (0.0557, -0.2040, 1.0570))
-AXES = ((1, 0, 0), (0, 1, 0), (0, 0, 1), (-1, 0, 0), (0, -1, 0), (0, 0, -1))
 
 
 def source_of(socket):
@@ -60,6 +63,69 @@ def probe_group():
 
 def reflection_group():
     return next((g for g in bpy.data.node_groups if g.name == REFLECTION_GROUP), None)
+
+
+def map_probes():
+    from . import tools_module
+    return tools_module('map_probes')
+
+
+def linked_from(socket, kind, op=None):
+    return next((link.to_node for link in socket.links if link.to_node.type == kind and
+                 (op is None or link.to_node.operation == op)), None)
+
+
+def probe_params(probes):
+    """map_probes.probe_group's arguments for the map's group: stored on it by newer builds, read back from its
+    nodes for maps built before."""
+    images, anchor = {}, None
+    for n in probes.nodes:
+        if n.type == 'TEX_IMAGE' and n.image is not None:
+            stem = os.path.splitext(os.path.basename(n.image.filepath))[0] or n.image.name
+            images[stem.split('.')[0]] = n.image
+        elif n.type == 'TEX_COORD':
+            anchor = n.object
+    if anchor is None or not {'probe_atlas', 'probe_volumes', 'probe_index'} <= images.keys():
+        return None
+    stored = probes.get('dlr_probe_params')
+    if stored is not None:
+        params = stored.to_dict()
+    else:
+        coords = next(n for n in probes.nodes if n.type == 'TEX_COORD')
+        offset = linked_from(coords.outputs['Object'], 'VECT_MATH', 'SUBTRACT')
+        scale = linked_from(offset.outputs[0], 'VECT_MATH', 'SCALE')
+        split = linked_from(scale.outputs[0], 'SEPXYZ')
+        dims = [int(round(linked_from(split.outputs[a], 'MATH', 'LESS_THAN').inputs[1].default_value))
+                for a in range(3)]
+        z = linked_from(split.outputs[2], 'MATH', 'FLOOR')
+        z = linked_from(linked_from(z.outputs[0], 'MATH', 'MAXIMUM').outputs[0], 'MATH', 'MINIMUM')
+        params = {'grid_origin': list(offset.inputs[1].default_value), 'cell': 1 / scale.inputs[3].default_value,
+                  'grid_dims': dims,
+                  'grid_cols': int(round(linked_from(z.outputs[0], 'MATH', 'MODULO').inputs[1].default_value)),
+                  'index_scale': 255 if images['probe_index'].filepath.lower().endswith('.png') else 1,
+                  'len_volumes': images['probe_volumes'].size[1]}
+    return dict(params, anchor=anchor, atlas_img=images['probe_atlas'], params_img=images['probe_volumes'],
+                index_img=images['probe_index'])
+
+
+def faces_group(probes):
+    """The map's probes as a local group giving the six world-axis ambient cube faces in one lookup (the rig light
+    needs all six; six copies of the map's group made EEVEE shaders that took gigabytes to compile)."""
+    params = probe_params(probes)
+    if params is None:
+        return None
+    source = '|'.join((probes.name, probes.library.filepath if probes.library else '', params['anchor'].name,
+                       params['atlas_img'].name))
+    tree = bpy.data.node_groups.get(FACES_GROUP)
+    if tree is not None and tree.library is None:
+        if tree.get('dlr_version') == FACES_VERSION and tree.get('dlr_source') == source:
+            return tree
+        tree.name = FACES_GROUP + ' (old)'
+    tree = map_probes().probe_group(faces=True, name=FACES_GROUP, **params)
+    tree.use_fake_user = False
+    tree['dlr_version'] = FACES_VERSION
+    tree['dlr_source'] = source
+    return tree
 
 
 class Graph:
@@ -184,7 +250,7 @@ def add_reflections(g, reflections, inp, ambient, normal, ao, control):
     return g.vec('SCALE', g.vec('MULTIPLY', node.outputs['Radiance'], node.outputs['Single Scatter']), scale=scale)
 
 
-def build_rig_group(tree, probes, reflections=None):
+def build_rig_group(tree, faces_group, reflections=None):
     for name, kind, default in (('Base Color', 'NodeSocketColor', None), ('Alpha', 'NodeSocketFloat', 1.0),
                                 ('Metallic', 'NodeSocketFloat', 0.0), ('Roughness', 'NodeSocketFloat', 0.5),
                                 ('Occlusion', 'NodeSocketFloat', 1.0),
@@ -200,13 +266,11 @@ def build_rig_group(tree, probes, reflections=None):
     strength = g.value('Strength', 1.0)
     tonemap_scale = g.value('Tonemap scale', 1.0)
     control = g.value('Exposure control', 1.0)
-    faces = []
-    for axis in AXES:
-        n = g.nodes.new('ShaderNodeGroup')
-        n.name = n.label = f'Probes {axis}'
-        n.node_tree = probes
-        n.inputs['Normal'].default_value = axis
-        faces.append(n.outputs['Irradiance'])
+    probes = g.nodes.new('ShaderNodeGroup')
+    probes.name = probes.label = 'Probes'
+    probes.node_tree = faces_group
+    # +X +Y +Z -X -Y -Z
+    faces = list(probes.outputs)
 
     normal = g.vec('NORMALIZE', inp.outputs['Normal'])
     nx, ny, nz = g.split(normal)
@@ -524,7 +588,10 @@ def light_rigs(scene):
     if probes is None:
         return None
     reflections = reflection_group()
-    group = rig_group(probes, reflections)
+    faces = faces_group(probes)
+    if faces is None:
+        return None
+    group = rig_group(faces, reflections)
     group.nodes['Tonemap scale'].outputs[0].default_value = 2.0 ** map_exposure(scene)
     rigs = set(rig_meshes(scene))
     rig_mats = {slot.material for ob in rigs for slot in ob.material_slots if slot.material}
