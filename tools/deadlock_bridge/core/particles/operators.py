@@ -131,6 +131,68 @@ class FadeOutSimple(Operator):
             v.set_field(self.field, np.where(mask, value, v.field(self.field)))
 
 
+class _RandomFade(Operator):
+    """A fade time per particle drawn between a min and max (draw raised to the exponent in quarter steps), as a
+    fraction of its life or in seconds (VRF CGeneralRandomFade)."""
+
+    def __init__(self, p: Params, prefix: str, zero_min_is_instant: bool = False):
+        super().__init__(p)
+        self.fade_min = p.float(prefix + "Min", 0.25)
+        self.fade_max = p.float(prefix + "Max", 0.25)
+        self.exponent = int(p.float(prefix + "Exp", 1.0) * 4.0) / 4.0
+        self.proportional = p.bool("m_bProportional", True)
+        if zero_min_is_instant and self.fade_min != self.fade_max and self.fade_min == 0.0:
+            self.fade_min = self.fade_max = float(np.finfo(np.float32).eps)
+
+    def fade_times(self, sim, v):
+        if self.fade_min == self.fade_max:
+            return np.full(v.n, self.fade_min)
+        draw = sim.random.for_particle(v.get("particle_id")) ** self.exponent
+        return self.fade_min + draw * (self.fade_max - self.fade_min)
+
+
+@register(OPERATORS, "C_OP_FadeIn")
+class FadeIn(_RandomFade):
+    """Fades alpha in from 0 along a smoothstep over a random time per particle. The game stops fading once the age
+    at the start of the step, in seconds, passes the fade time, also when it is proportional (VRF FadeInRandom)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p, "m_flFadeInTime")
+
+    def operate(self, sim, v, dt, strength):
+        fade = self.fade_times(sim, v)
+        age = v.get("age")
+        mask = np.maximum(age - dt, 0.0) < fade
+        if not mask.any():
+            return
+        time = saturate(v.normalized_age) if self.proportional else age
+        value = smoothstep(0.0, np.maximum(fade, 1e-12), time) * v.initial("alpha")
+        v.set("alpha", np.where(mask, value, v.get("alpha")))
+
+
+@register(OPERATORS, "C_OP_FadeOut")
+class FadeOut(_RandomFade):
+    """Fades alpha out to 0 over a random time per particle at the end of its life, eased by a smoothstep unless
+    m_bEaseInAndOut is off. m_flFadeBias is never applied: the game only picks its bias path at bias 0.5 (CS:GO
+    source, VRF FadeOutRandom)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p, "m_flFadeOutTime", zero_min_is_instant=True)
+        self.ease = p.bool("m_bEaseInAndOut", True)
+
+    def operate(self, sim, v, dt, strength):
+        fade = self.fade_times(sim, v)
+        left = 1.0 - v.normalized_age if self.proportional else v.get("lifetime") - v.get("age")
+        mask = left < fade
+        if not mask.any():
+            return
+        elapsed = saturate(1.0 - left / np.where(fade > 0, fade, 1e-12))
+        if self.ease:
+            elapsed = smoothstep(0.0, 1.0, elapsed)
+        value = np.maximum((1.0 - elapsed) * v.initial("alpha"), 0.0)
+        v.set("alpha", np.where(mask, value, v.get("alpha")))
+
+
 @register(OPERATORS, "C_OP_FadeAndKill")
 class FadeAndKill(Operator):
     """Fades alpha in and out over windows of the particle's life (smoothstepped), killing it at the end of it."""
