@@ -243,6 +243,38 @@ class SetFloat(Operator):
         v.set_field(self.field, lerp(base, blended, strength))
 
 
+@register(OPERATORS, "C_OP_SetFloatCollection")
+class SetFloatCollection(Operator):
+    """Sets a float attribute from one collection-wide value every step (VRF port; defaults from the dll ctor
+    0x180266671). Unlike SetFloat: angles are taken as authored (no degrees), the strength scales both the value and
+    the lerp, and replacing lerps only the first four particles and copies them over the rest (particle i takes
+    particle i % 4's result, the dll's SIMD lanes)."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.field = p.int("m_nOutputField", F.RADIUS)
+        self.value = p.number("m_InputValue", 0.0)
+        self.method = p.enum("m_nSetMethod", SET_METHODS, SET_REPLACE)
+        self.lerp = p.number("m_Lerp", 1.0)
+
+    def operate(self, sim, v, dt, strength):
+        if F.is_vector(self.field) or F.name(self.field) is None or v.n == 0:
+            return
+        value = float(np.asarray(self.value(sim)).ravel()[0]) * strength
+        blend = saturate(float(np.asarray(self.lerp(sim)).ravel()[0]) * strength)
+        low, high = _float_range(self.field)
+        current = v.field(self.field)
+        if self.method == SET_REPLACE:
+            lanes = np.clip(lerp(current[:4], value, blend), low, high)
+            v.set_field(self.field, lanes[np.arange(v.n) % 4])
+            return
+        if self.method == SET_RAMP_CURRENT:
+            v.set_field(self.field, np.clip(current + blend * dt * value, low, high))
+            return
+        target = set_by_method(v, self.field, value, self.method, dt)
+        v.set_field(self.field, np.clip(lerp(current, target, blend), low, high))
+
+
 @register(OPERATORS, "C_OP_SetVec")
 class SetVec(Operator):
     """Sets a vector attribute from an input every step, by a set method, eased by a lerp."""
