@@ -1727,6 +1727,67 @@ class ConstrainDistanceToPath(Constraint):
         return True
 
 
+@register(CONSTRAINTS, "C_OP_RopeSpringConstraint")
+class RopeSpringConstraint(Constraint):
+    """A soft spring between consecutive particles (a rope): each pass nudges a segment shorter than min x rest or
+    longer than max x rest toward that bound by dt x adjustment scale of the error, moving only unpinned ends
+    (force scale 0 = pinned). Rest = base x m_flRestLength; base = m_flInitialRestingLength when >= 0, else the
+    initial chain length / particle count, measured once. Position only, so the move becomes velocity. From
+    particles.dll (ctor 0x1800fadc0, apply 0x1800f1690, solve 0x1800f1250); VRF's port agrees."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.rest_length = p.number("m_flRestLength", 1.0)
+        self.minimum = p.number("m_flMinDistance", 0.9)
+        self.maximum = p.number("m_flMaxDistance", 1.1)
+        self.initial_resting_length = p.number("m_flInitialRestingLength", -1.0)
+        self.adjustment_scale = p.float("m_flAdjustmentScale", 15.0)
+        self._base = -1.0
+
+    def _base_length(self, sim, v) -> float:
+        initial = float(self.initial_resting_length(sim))
+        if initial >= 0:
+            self._base = initial
+        elif initial == -1.0 and self._base == -1.0 and v.n:
+            # The game measures the chain once, the first time it has particles, and keeps that.
+            points = v.initial("position")
+            self._base = float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()) / v.n
+        return self._base
+
+    def apply(self, sim, v, dt):
+        rest = self._base_length(sim, v) * float(self.rest_length(sim))
+        if dt > 0.1 or v.n < 2:
+            return True
+        low = float(self.minimum(sim)) * rest
+        high = float(self.maximum(sim)) * rest
+        scale = dt * self.adjustment_scale
+        positions = v.get("position")
+        pinned = (v.get("force_scale") == 0.0).tolist()
+        points = positions.tolist()
+        for i in range(1, v.n):
+            a, b = points[i - 1], points[i]
+            delta = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+            d = (delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2) ** 0.5
+            if d > high:
+                target = high
+            elif d < low:
+                target = low
+            else:
+                continue
+            k = (target - d) / max(d, 1.1920929e-07) * scale
+            c = (delta[0] * k, delta[1] * k, delta[2] * k)
+            if pinned[i]:
+                if not pinned[i - 1]:
+                    points[i - 1] = [a[j] - c[j] for j in range(3)]
+            elif pinned[i - 1]:
+                points[i] = [b[j] + c[j] for j in range(3)]
+            else:
+                points[i - 1] = [a[j] - 0.5 * c[j] for j in range(3)]
+                points[i] = [b[j] + 0.5 * c[j] for j in range(3)]
+        v.set("position", np.asarray(points, np.float64))
+        return True
+
+
 ROTATION_LOCKS = {"PARTICLE_ROTATION_LOCK_NONE": 0, "PARTICLE_ROTATION_LOCK_ROTATIONS": 1,
                   "PARTICLE_ROTATION_LOCK_NORMAL": 2}
 
