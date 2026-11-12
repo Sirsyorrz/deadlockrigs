@@ -36,7 +36,7 @@ import zlib
 import numpy as np
 
 import bpy
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 
 from ..core import particles as plib
 from ..core import probes as probelib
@@ -193,7 +193,45 @@ def spawn_particle_system(context, path: str, matrix_world: Matrix, time: float 
                                local=True)
     if holder is not None:
         holder.matrix_world = matrix_world
+        context.view_layer.update()
+        place_floor(context, holder)
     return holder
+
+
+def _not_floor(ob) -> bool:
+    """Rigs, what's on them and other effects: in the way of a ray looking for the floor, not the floor."""
+    while ob is not None:
+        if ob.type == "ARMATURE" or "dl_effect" in ob or ob.find_armature() is not None:
+            return True
+        ob = ob.parent
+    return False
+
+
+def place_floor(context, holder, at=None, reach: float = 50.0) -> float | None:
+    """The floor under an effect's empty (or ``at``, where it's about to be), for its soft particles (see
+    _SpritecardShader._feathering): the first surface straight down from a little above it, past rigs and effects.
+    Stored on its objects; None when there's nothing below (they then don't fade)."""
+    depsgraph = context.evaluated_depsgraph_get()
+    origin = Vector(holder.matrix_world.translation if at is None else at) + Vector((0.0, 0.0, 0.5))
+    down = Vector((0.0, 0.0, -1.0))
+    floor = None
+    for _ in range(16):
+        hit, location, _, _, ob, _ = context.scene.ray_cast(depsgraph, origin, down, distance=reach)
+        if not hit:
+            break
+        if not _not_floor(ob.original if ob else None):
+            floor = location.z
+            break
+        reach -= origin.z - location.z
+        origin = location + down * 1e-3
+    for ob in holder.children_recursive:
+        if floor is None:
+            ob.pop("dl_floor", None)
+            ob.pop("dl_floor_set", None)
+        else:
+            ob["dl_floor"] = floor
+            ob["dl_floor_set"] = 1.0
+    return floor
 
 
 def unsupported_renderers(path: str) -> list[str]:
@@ -245,6 +283,7 @@ def rebuild_particle_system(context, holder, time: float | None = None, seed: in
         else:
             simulation = plib.simulate(definition, points, time, seed, unset_value=1.0)
             builder.build(holder.name, path, simulation, points, time, seed, ambient, holder, local=True)
+        place_floor(context, holder)
         return bool(holder.children)
     target.frame = _frame(holder)
     in_game = target.frame.inverted_safe() @ holder.matrix_world
@@ -270,6 +309,7 @@ def rebuild_particle_system(context, holder, time: float | None = None, seed: in
     else:
         simulation = plib.simulate(definition, points, time, seed)
         builder.build(holder.name, path, simulation, points, time, seed, np.asarray(ambient), holder)
+    place_floor(context, holder)
     return bool(holder.children)
 
 
@@ -1324,6 +1364,8 @@ class _SpritecardShader:
             gray = b.dot(color, _LUMA)
             color = b.vlerp(color, b.combine(gray, gray, gray), self._num(desaturation))
         alpha = b.mul(alpha, vertex.outputs["Alpha"])
+        if self.shading.get("feather"):
+            alpha = b.mul(alpha, self._feathering(*self.shading["feather"]))
         b.frame(None)
 
         b.column(column + 2)
@@ -1371,6 +1413,23 @@ class _SpritecardShader:
         output = b.node("ShaderNodeOutputMaterial")
         output.hide = False
         b.set(output.inputs["Surface"], shader)
+
+    def _feathering(self, near: float, far: float):
+        """Soft particles: the game fades a card as it nears the depth behind it, from ``far`` to ``near`` game units.
+        EEVEE can't read the scene's depth, so the depth behind is that of the floor below the effect, a plane at its
+        object's ``dl_floor`` (set where the effect is placed; without it nothing fades)."""
+        b = self.b
+        geometry = b.node("ShaderNodeNewGeometry")
+        _, _, height = b.separate(geometry.outputs["Position"])
+        _, _, towards_camera = b.separate(geometry.outputs["Incoming"])
+        floor = b.attribute("dl_floor", "OBJECT").outputs["Fac"]
+        has_floor = b.attribute("dl_floor_set", "OBJECT").outputs["Fac"]
+        # the distance on along the view ray to the floor (the scene point behind, as VRF measures it)
+        depth = b.div(b.sub(height, floor), b.math("MAXIMUM", towards_camera, 1e-4))
+        scale = self.target.scale
+        span = max((far - near) * scale, 1e-6)
+        fade = b.saturate(b.div(b.sub(depth, near * scale), span))
+        return b.math("MULTIPLY_ADD", b.sub(fade, 1.0), has_floor, 1.0)
 
     # Layers ---------------------------------------------------------------------------------------------------
 

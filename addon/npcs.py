@@ -213,6 +213,7 @@ def add_effects(arm, slug, cache):
         holder.parent = arm
         holder.matrix_parent_inverse = Matrix()
         holder.matrix_basis = Matrix.Translation(offset)
+        particles.bridge_particles().place_floor(bpy.context, holder, arm.matrix_world @ offset)
         coll = arm.users_collection[0]
         stages = {**arm.get('stage_models', {}), **arm.get('stage_extras', {})}
         prop, hidden = ('stage', f'v != {stages[key]}') if key in stages else (f'show_{key}', 'v < 0.5')

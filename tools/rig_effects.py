@@ -205,6 +205,8 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None, e
             holders.append(holder)
     finally:
         scene.frame_set(frame_was[0], subframe=frame_was[1])
+    for holder in holders:
+        bridge.place_floor(context, holder)
     return holders
 
 

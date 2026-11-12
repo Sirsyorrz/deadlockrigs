@@ -28,6 +28,10 @@ SCREEN_ALIGNED, SCREEN_Z_ALIGNED, WORLD_Z_ALIGNED, ALIGN_TO_NORMAL, SCREEN_ALIGN
 # How a drawer turns a card's base axes towards the camera (Sprites.orientation).
 FACE_SCREEN, FACE_SCREEN_Z, FACE_STORED, FACE_SCREEN_NORMAL = range(4)
 
+FEATHERING = enum_names("PARTICLE_DEPTH_FEATHERING_OFF", "PARTICLE_DEPTH_FEATHERING_ON_OPTIONAL",
+                        "PARTICLE_DEPTH_FEATHERING_ON_REQUIRED")
+FEATHER_OFF = 0
+
 ANIMATION = enum_names("ANIMATION_TYPE_FIXED_RATE", "ANIMATION_TYPE_FIT_LIFETIME", "ANIMATION_TYPE_MANUAL_FRAMES")
 FIXED_RATE, FIT_LIFETIME, MANUAL_FRAMES = range(3)
 
@@ -214,6 +218,9 @@ class Renderer:
         self.blend_frames = p.bool("m_bBlendFramesSeq0", True)
         self.max_luminance_blend = p.bool("m_bMaxLuminanceBlendingSequence0")
         self.orientation = p.enum("m_nOrientationType", ORIENTATIONS, SCREEN_ALIGNED)
+        # 15 is never written out in the game's files while 10, 20 and 25 are: the default, stripped on compile
+        self.feathering = p.enum("m_nFeatheringMode", FEATHERING, FEATHER_OFF) != FEATHER_OFF
+        self.feather_bounds = (p.number("m_flFeatheringMinDist", 0.0), p.number("m_flFeatheringMaxDist", 15.0))
         self.opaque = False
         # Reverse Z buffered renderers draw only where something is in front (a glow behind walls); Blender can't test
         # depth that way, and drawing them normally would double the renderer they copy.
@@ -233,6 +240,7 @@ class Renderer:
             "blend_frames": self.blend_frames,
             "max_luminance_blend": self.max_luminance_blend,
             "opaque": self.opaque,
+            "feather": tuple(float(f(sim)) for f in self.feather_bounds) if self.feathering else None,
             "layers": [layer.settings(sim) for layer in self.layers],
         }
 
