@@ -833,6 +833,45 @@ class RemapVelocityToVector(Operator):
             v.set_field(self.field, step * (self.scale / frame))
 
 
+@register(OPERATORS, "C_OP_CalculateVectorAttribute")
+class CalculateVectorAttribute(Operator):
+    """Writes start + two scaled attributes + two scaled control point positions, times a per-axis scale, to a vector
+    attribute (normalized when it is the normal). Defaults and maths read from Deadlock's particles.dll: by default
+    normal = position - CP0, the direction out from the centre."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.start = p.vector("m_vStartValue")
+        self.inputs = [(p.int("m_nFieldInput1", F.POSITION), p.float("m_flInputScale1", 1.0)),
+                       (p.int("m_nFieldInput2", F.POSITION), p.float("m_flInputScale2", 0.0))]
+        self.points = [(self._point(p, "m_nControlPointInput1"), p.float("m_flControlPointScale1", -1.0)),
+                       (self._point(p, "m_nControlPointInput2"), p.float("m_flControlPointScale2", 0.0))]
+        self.field = p.int("m_nFieldOutput", F.NORMAL)
+        self.final_scale = p.vector("m_vFinalOutputScale", (1.0, 1.0, 1.0))
+
+    @staticmethod
+    def _point(p: Params, key: str) -> int:
+        # The game's operate ignores the reference's m_vOffsetFromControlPoint (no Deadlock vpcf sets one).
+        return p.nested(p.get(key)).int("m_controlPointNameString", 0)
+
+    def operate(self, sim, v, dt, strength):
+        if not F.is_vector(self.field) or F.name(self.field) is None:
+            return
+        constant = self.start.copy()
+        for point, scale in self.points:
+            if scale != 0 and point >= 0:
+                constant += sim.control_point(point).position * scale
+        value = np.broadcast_to(constant, (v.n, 3)).copy()
+        for field, scale in self.inputs:
+            if scale != 0:
+                value += np.reshape(v.field(field), (v.n, -1)) * scale
+        value *= self.final_scale
+        if self.field == F.NORMAL:
+            length = np.linalg.norm(value, axis=1, keepdims=True)
+            value = np.divide(value, length, out=np.zeros_like(value), where=length > 1e-12)
+        v.set_field(self.field, value)
+
+
 @register(OPERATORS, "C_OP_RemapSpeed")
 class RemapSpeed(Operator):
     """Sets a float attribute from each particle's speed over the last step (units per second, remapped and clamped,
