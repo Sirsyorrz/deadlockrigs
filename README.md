@@ -50,7 +50,8 @@ lights them, with its fog, moving textures, animated props, particles and post-p
 | | |
 |---|---|
 | ![Midtown, Catalyst](docs/midtown_catalyst.jpg) | ![Midtown, Chinatown](docs/midtown_red.jpg) |
-| ![Midtown, the patron's base](docs/midtown_patron.jpg) | ![Midtown, the shrine](docs/midtown_shrine.jpg) |
+| ![Midtown, the Hidden King](docs/midtown_king.jpg) | ![Midtown, the Archmother](docs/midtown_archmother.jpg) |
+| ![Midtown, a Walker](docs/midtown_walker.jpg) | ![Midtown, the Mid-boss](docs/midtown_midboss.jpg) |
 | ![Midtown, the park](docs/midtown_park.jpg) | ![The Hideout's fireplace](docs/hideout_fireplace.jpg) |
 | ![The Hideout's hall](docs/hideout_hall.jpg) | ![The Hideout's seance table](docs/hideout_ritual.jpg) |
 
