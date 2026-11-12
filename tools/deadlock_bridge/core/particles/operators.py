@@ -436,6 +436,49 @@ class Orient2DRelToCP(Operator):
         v.set_field(self.field, np.where(has, lerp(current, angle + self.offset, self.spin), current))
 
 
+def axis_rotation_matrix(axis, degrees: float):
+    """MatrixBuildRotationAboutAxis: the axis taken as given (not normalized), angle in float32 as the game has it.
+    A zero axis leaves cos(angle) x identity: at 90 degrees float32's cos is -4.4e-8, which still points a
+    normalized result backwards (ratking_standard_bearer_aura_buff_symbol authors that)."""
+    x, y, z = (float(c) for c in axis)
+    radians = float(np.float32(degrees) * np.float32(math.pi / 180.0))
+    s, c = math.sin(radians), math.cos(radians)
+    t = 1.0 - c
+    return np.array([[x * x * t + c, x * y * t - z * s, x * z * t + y * s],
+                     [x * y * t + z * s, y * y * t + c, y * z * t - x * s],
+                     [x * z * t - y * s, y * z * t + x * s, z * z * t + c]])
+
+
+@register(OPERATORS, "C_OP_RemapDirectionToCPToVector")
+class RemapDirectionToCPToVector(Operator):
+    """Writes each particle's offset from a control point, turned about an axis, into a vector attribute: normalized
+    x scale, or x scale / the previous step's time (dll operate 0x180201210, as CS:GO and VRF). A strength attribute
+    blends toward it per particle; the operator strength isn't used."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.control_point = p.int("m_nCP")
+        self.field = p.int("m_nFieldOutput", F.POSITION)
+        self.scale = p.float("m_flScale", 1.0)
+        self.rotation = axis_rotation_matrix(p.vector("m_vecOffsetAxis"), p.float("m_flOffsetRot"))
+        self.normalize = p.bool("m_bNormalize")
+        self.strength_field = p.int("m_nFieldStrength", F.DISABLED)
+
+    def operate(self, sim, v, dt, strength):
+        if not F.is_vector(self.field):
+            return
+        offset = (v.get("position") - sim.control_point(self.control_point).position) @ self.rotation.T
+        if self.normalize:
+            length_sq = np.sum(offset * offset, axis=1, keepdims=True)
+            value = offset / np.sqrt(np.where(length_sq < 1.17549435e-38, 1.0, length_sq)) * self.scale
+        else:
+            previous = sim.previous_frame_time if sim.previous_frame_time > 0 else dt
+            value = offset * (self.scale / max(1e-20, previous))
+        if F.name(self.strength_field) is not None:
+            value = lerp(v.field(self.field), value, saturate(column(v.field(self.strength_field), v.n))[:, None])
+        v.set_field(self.field, value)
+
+
 @register(OPERATORS, "C_OP_OscillateVector")
 class OscillateVector(Operator):
     """Adds a sine wave to a vector attribute per component, each particle with its own rate and frequency, over a
