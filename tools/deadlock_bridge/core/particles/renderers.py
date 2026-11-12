@@ -949,6 +949,12 @@ class RenderProjected(RenderSprites):
         out = super().build(sim, ambient)
         if out is not None:
             out.position = out.position + [0.0, 0.0, 1.0]  # a game unit up: the card sits on the floor it projects on
+            # Texture top along -Y, turned clockwise by roll: the convention under which the cone decals'
+            # roll = -90 - CP yaw (C_INIT_RemapInitialTransformDirectionToRotation) points them along the CP's
+            # forward. Inferred from how they are authored, not read from the game's shader.
+            out.up = np.tile([0.0, -1.0, 0.0], (out.count, 1))
+            out.right = np.tile([-1.0, 0.0, 0.0], (out.count, 1))
+            out.roll = -out.roll
         return out
 
 
