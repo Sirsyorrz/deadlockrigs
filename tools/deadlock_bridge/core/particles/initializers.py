@@ -527,8 +527,8 @@ class InitialVelocityNoise(Initializer):
         v.set("velocity", v.get("velocity") + velocity)
 
 
-def _path_parameters(p: Params):
-    block = p.nested(p.get("m_PathParams"))
+def _path_parameters(p: Params, key: str = "m_PathParams"):
+    block = p.nested(p.get(key))
     return {
         "start": block.int("m_nStartControlPointNumber"), "mid": block.int("m_nMidControlPointNumber", -1),
         "end": block.int("m_nEndControlPointNumber"), "bulge_control": block.int("m_nBulgeControl"),

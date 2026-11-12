@@ -1319,6 +1319,60 @@ class ConstrainDistance(Constraint):
         return True
 
 
+@register(CONSTRAINTS, "C_OP_ConstrainDistanceToPath")
+class ConstrainDistanceToPath(Constraint):
+    """Keeps particles within a distance of a point travelling along a path between control points: the point is at
+    age / travel time along it (or a field's value, m_nManualTField), the allowed distance a quadratic from the
+    start through the middle to the end radius. Defaults and maths from Deadlock's particles.dll (CS:GO's version
+    plus the two fields; field 19 means none). The game skips the varying radius for a group of four particles when
+    any of them is past the largest radius; here every particle gets its own."""
+
+    UNSET_FIELD = 19
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.minimum = p.float("m_fMinDistance", 0.0)
+        self.radius_start = p.float("m_flMaxDistance0", 100.0)
+        self.radius_mid = p.float("m_flMaxDistanceMid", -1.0)
+        self.radius_end = p.float("m_flMaxDistance1", -1.0)
+        self.travel_time = p.float("m_flTravelTime", 10.0)
+        self.scale_field = p.int("m_nFieldScale", self.UNSET_FIELD)
+        self.manual_field = p.int("m_nManualTField", self.UNSET_FIELD)
+        self.path = _path_parameters(p, "m_PathParameters")
+
+    def _uses(self, field):
+        return field >= 0 and field != self.UNSET_FIELD
+
+    def apply(self, sim, v, dt):
+        if v.n == 0:
+            return False
+        if self._uses(self.manual_field):
+            t = np.asarray(v.field(self.manual_field), np.float64)
+        else:
+            travel = np.full(v.n, self.travel_time)
+            if self._uses(self.scale_field):
+                travel = travel * v.field(self.scale_field)
+            t = np.minimum(1.0, (sim.age - v.get("creation_time")) / np.maximum(travel, 1.1920929e-07))
+        points = path_points(sim, self.path, self.path["start"], self.path["end"])
+        center = path_evaluate(points, t)
+        mid = self.radius_mid if self.radius_mid >= 0 else self.radius_start
+        end = self.radius_end if self.radius_end >= 0 else mid
+        first = self.radius_start + (mid - self.radius_start) * t
+        second = mid + (end - mid) * t
+        radius = first + (second - first) * t
+        delta = v.get("position") - center
+        distance = np.linalg.norm(delta, axis=1)
+        too_close = distance < self.minimum
+        too_far = ~too_close & (distance > radius)
+        if not (too_close | too_far).any():
+            return False
+        direction = np.divide(delta, distance[:, None], out=np.zeros_like(delta), where=distance[:, None] > 0)
+        target = np.where(too_close, self.minimum, radius)
+        moved = too_close | too_far
+        v.set("position", np.where(moved[:, None], center + direction * target[:, None], v.get("position")))
+        return True
+
+
 ROTATION_LOCKS = {"PARTICLE_ROTATION_LOCK_NONE": 0, "PARTICLE_ROTATION_LOCK_ROTATIONS": 1,
                   "PARTICLE_ROTATION_LOCK_NORMAL": 2}
 
