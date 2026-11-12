@@ -6,7 +6,7 @@ import numpy as np
 
 from . import fields as F
 from . import models, noise
-from .initializers import column, models_control_point, path_evaluate, path_points, rows3, _path_parameters
+from .initializers import TransformOrientation, column, models_control_point, path_evaluate, path_points, rows3, _path_parameters
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
                      SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, lerp, remap, saturate,
@@ -769,21 +769,6 @@ class MovementRotateParticleAroundAxis(Operator):
             v.set(name, lerp(points, rotated, strength))
 
 
-def matrix_angles(rotation) -> np.ndarray:
-    """Source angles (pitch, yaw, roll in degrees) of a rotation matrix whose columns are forward, left and up."""
-    forward, left, up = rotation[:, 0], rotation[:, 1], rotation[:, 2]
-    horizontal = math.hypot(forward[0], forward[1])
-    if horizontal > 1e-4:
-        yaw = math.atan2(forward[1], forward[0])
-        pitch = math.atan2(-forward[2], horizontal)
-        roll = math.atan2(left[2], up[2])
-    else:
-        yaw = math.atan2(-left[0], left[1])
-        pitch = math.atan2(-forward[2], horizontal)
-        roll = 0.0
-    return np.degrees([pitch, yaw, roll])
-
-
 @register(OPERATORS, "C_OP_RemapTransformOrientationToRotations")
 class RemapTransformOrientationToRotations(Operator):
     """Writes a transform's orientation (plus an offset in degrees) to every particle's pitch, yaw and roll, or its
@@ -791,28 +776,10 @@ class RemapTransformOrientationToRotations(Operator):
 
     def __init__(self, p: Params):
         super().__init__(p)
-        self.transform = p.transform("m_TransformInput", Transform(0))
-        self.offset = p.vector("m_vecRotation")
-        self.use_quat = p.bool("m_bUseQuat")
-        self.write_normal = p.bool("m_bWriteNormal")
+        self.orientation = TransformOrientation(p)
 
     def operate(self, sim, v, dt, strength):
-        from ..probes import rotation_matrix
-        rotation = self.transform(sim)[0]
-        if self.use_quat:
-            # The offset's x, y, z turn roll, pitch, yaw on this path.
-            rotation = rotation @ rotation_matrix((self.offset[1], self.offset[2], self.offset[0]))
-            angles, forward = matrix_angles(rotation), rotation[:, 0]
-        else:
-            angles = matrix_angles(rotation) + self.offset
-            forward = rotation_matrix(angles)[:, 0]
-        if self.write_normal:
-            v.set_field(F.NORMAL, forward)
-        else:
-            pitch, yaw, roll = np.radians(angles)
-            v.set("pitch", pitch)
-            v.set("yaw", yaw)
-            v.set("roll", roll)
+        self.orientation.write(sim, v)
 
 
 @register(OPERATORS, "C_OP_NormalLock")

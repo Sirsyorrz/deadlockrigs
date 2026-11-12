@@ -805,6 +805,62 @@ class RemapInitialDirectionToTransformToVector(Initializer):
         v.set_field(self.field, direction * self.scale)
 
 
+def matrix_angles(rotation) -> np.ndarray:
+    """Source angles (pitch, yaw, roll in degrees) of a rotation matrix whose columns are forward, left and up."""
+    forward, left, up = rotation[:, 0], rotation[:, 1], rotation[:, 2]
+    horizontal = math.hypot(forward[0], forward[1])
+    if horizontal > 1e-4:
+        yaw = math.atan2(forward[1], forward[0])
+        pitch = math.atan2(-forward[2], horizontal)
+        roll = math.atan2(left[2], up[2])
+    else:
+        yaw = math.atan2(-left[0], left[1])
+        pitch = math.atan2(-forward[2], horizontal)
+        roll = 0.0
+    return np.degrees([pitch, yaw, roll])
+
+
+class TransformOrientation:
+    """A transform's orientation plus an offset in degrees, written to particles' pitch, yaw and roll, or its
+    forward direction to their normal (RemapTransformOrientationToRotations, initializer and operator)."""
+
+    def __init__(self, p: Params):
+        self.transform = p.transform("m_TransformInput", Transform(0))
+        self.offset = p.vector("m_vecRotation")
+        self.use_quat = p.bool("m_bUseQuat")
+        self.write_normal = p.bool("m_bWriteNormal")
+
+    def write(self, sim, v):
+        from ..probes import rotation_matrix
+        rotation = self.transform(sim)[0]
+        if self.use_quat:
+            # The offset's x, y, z turn roll, pitch, yaw on this path.
+            rotation = rotation @ rotation_matrix((self.offset[1], self.offset[2], self.offset[0]))
+            angles, forward = matrix_angles(rotation), rotation[:, 0]
+        else:
+            angles = matrix_angles(rotation) + self.offset
+            forward = rotation_matrix(angles)[:, 0]
+        if self.write_normal:
+            v.set_field(F.NORMAL, forward)
+        else:
+            pitch, yaw, roll = np.radians(angles)
+            v.set("pitch", pitch)
+            v.set("yaw", yaw)
+            v.set("roll", roll)
+
+
+@initializer("C_INIT_RemapTransformOrientationToRotations")
+class RemapTransformOrientationToRotations(Initializer):
+    """Sets new particles' pitch, yaw and roll (or normal) from a transform's orientation plus an offset."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.orientation = TransformOrientation(p)
+
+    def initialize(self, sim, v):
+        self.orientation.write(sim, v)
+
+
 @initializer("C_INIT_CreateOnModel")
 class CreateOnModel(Initializer):
     """Places particles at random points inside the hitboxes (or bones) of the model a control point carries, and
