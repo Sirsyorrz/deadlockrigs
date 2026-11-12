@@ -43,7 +43,7 @@ DEFAULTS = {
 }
 
 # Arrays the simulation keeps that aren't attributes of their own.
-_INTERNAL = {"age": 1, "velocity": 3, "force": 3, "unique_id": 1, "killed": 1}
+_INTERNAL = {"age": 1, "velocity": 3, "force": 3, "unique_id": 1, "killed": 1, "ground_lerp_from": 3}
 
 
 def is_vector(field: int) -> bool:

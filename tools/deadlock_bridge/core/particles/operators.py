@@ -6,7 +6,8 @@ import numpy as np
 
 from . import fields as F
 from . import models, noise
-from .initializers import TransformOrientation, column, models_control_point, path_evaluate, path_points, rows3, _path_parameters
+from .initializers import (TRACE_MISS, TRACE_MISS_END, TRACE_MISS_KILL, TRACE_MISS_NONE, TransformOrientation, column,
+                           ground_trace, models_control_point, path_evaluate, path_points, rows3, _path_parameters)
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
                      SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, enum_names, lerp, remap,
@@ -615,6 +616,137 @@ class PinParticleToCP(Operator):
         position[index] = pinned
         v.get("previous")[index] = pinned
         v.get("velocity")[index] = 0.0
+
+
+@register(OPERATORS, "C_OP_MovementPlaceOnGround")
+class MovementPlaceOnGround(Operator):
+    """Keeps particles on the ground every step: traces from a little above each one (trace offset) along a direction
+    (down) and puts it on the hit, raised by an offset. With reference CPs it only retraces when one of them moved
+    more than the tolerance; with a lerp rate or lerp CP it eases the particle between its last two ground heights
+    (along the trace direction) instead of snapping. Defaults and maths from particles.dll (ctor 0x18024c4f0,
+    operate 0x1801f56f0): unlike CS:GO it keeps each particle's velocity (previous moves with it) and a miss defaults
+    to TRACE_END. The only ground is Simulation.ground (the rig's floor); with none (a map) it does nothing."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.offset = p.number("m_flOffset", 0.0)
+        self.length = p.float("m_flMaxTraceLength", 128.0)
+        self.tolerance = p.float("m_flTolerance", 32.0)
+        self.direction = p.vec("m_vecTraceDir", (0.0, 0.0, -1.0))
+        self.trace_offset = p.float("m_flTraceOffset", 64.0)
+        self.lerp_rate = p.float("m_flLerpRate", 0.0)
+        self.reference_points = (p.int("m_nRefCP1", -1), p.int("m_nRefCP2", -1))
+        self.lerp_point = p.int("m_nLerpCP", -1)
+        self.miss = p.enum("m_nTraceMissBehavior", TRACE_MISS, TRACE_MISS_END)
+        self.set_normal = p.bool("m_bSetNormal")
+        self.scale_offset = p.bool("m_bScaleOffset")
+        self.uses_points = (max(*self.reference_points, self.lerp_point) > -1) and self.tolerance > 0
+        self.uses_lerp = self.lerp_point > -1 or self.lerp_rate > 0
+        self.reset()
+
+    def reset(self):
+        self.saved = [np.full(3, np.finfo(np.float32).max) for _ in range(3)]
+        self.lerp_time = 0.0
+
+    def _watch(self, sim):
+        """Whether a reference CP moved past the tolerance since the last trace (saving where it is now)."""
+        moved = False
+        for slot, index in enumerate((*self.reference_points, self.lerp_point)):
+            if index < 0:
+                continue
+            position = sim.control_point(index).position
+            if np.sum((position - self.saved[slot]) ** 2) > self.tolerance * self.tolerance:
+                self.saved[slot] = position.copy()
+                if slot < 2:
+                    self.lerp_time = sim.age
+                    moved = True
+        return moved
+
+    def _lerp_amount(self, sim):
+        if self.lerp_rate > 0:
+            end = self.lerp_time + self.lerp_rate
+            if end == self.lerp_time:
+                return 1.0 if sim.age >= end else 0.0
+            return min(max((sim.age - self.lerp_time) / (end - self.lerp_time), 0.0), 1.0)
+        if self.lerp_point > -1:
+            moved = np.linalg.norm(sim.control_point(self.lerp_point).position - self.saved[2])
+            return min(moved / self.tolerance, 1.0)
+        return 0.0
+
+    def operate(self, sim, v, dt, strength):
+        if sim.root.ground is None or v.n == 0:
+            return
+        if self.uses_points:
+            dirty = self._watch(sim)
+        else:
+            dirty = not self.uses_lerp
+        amount = 0.0
+        if self.uses_lerp:
+            amount = self._lerp_amount(sim)
+            if self.lerp_rate > 0 and amount == 1.0 and not self.uses_points:
+                self.lerp_time = sim.age
+                dirty = True
+        if not dirty and not self.uses_lerp:
+            return
+
+        n = v.n
+        position = v.get("position")
+        step = position - v.get("previous")
+        traced = np.full(n, dirty)
+        if self.uses_lerp:
+            # the game keeps the next ground height in the hitbox offset attribute, all zero = not traced yet
+            target = v.get("hitbox_offset").copy()
+            start = v.get("ground_lerp_from").copy()
+            fresh = ~target.any(axis=1)
+            if fresh.any():
+                # the game's dirty flag stays set for the rest of the loop once a fresh particle sets it
+                traced[int(np.argmax(fresh)):] = True
+                target[fresh] = position[fresh]
+                start[fresh] = position[fresh]
+
+        direction = np.array(rows3(self.direction(sim, v), n))
+        size = np.linalg.norm(direction, axis=1, keepdims=True)
+        direction = np.divide(direction, size, out=np.zeros_like(direction), where=(size > 1e-17) & (size < 1e17))
+        offset = np.array(column(self.offset(sim, v), n), np.float64)
+        if self.scale_offset:
+            offset = offset * v.get("radius")
+        length = np.full(n, self.length)
+        if self.miss != TRACE_MISS_NONE:
+            length = np.maximum(length, offset + self.trace_offset)
+        trace_start = position - direction * self.trace_offset
+        distance, hit = ground_trace(sim, trace_start, direction, length)
+        hit &= traced
+        missed = traced & ~hit
+        moved = hit | (missed & (self.miss not in (TRACE_MISS_NONE, TRACE_MISS_KILL)))
+        if self.miss == TRACE_MISS_KILL and missed.any():
+            v.set("lifetime", np.where(missed, -1.0, v.get("lifetime")))
+        end = trace_start + direction * np.where(hit, distance, length)[:, None]
+        if self.set_normal:
+            # the plane's normal on a hit, the trace's zero normal on a miss
+            raise_by = np.where(hit[:, None], np.array([0.0, 0.0, 1.0]) * offset[:, None], 0.0)
+            if hit.any():
+                normal = v.get("normal").copy()
+                normal[hit] = (0.0, 0.0, 1.0)
+                v.set("normal", normal)
+        else:
+            raise_by = -direction * offset[:, None]
+        landed = end + raise_by
+
+        if self.uses_lerp:
+            start[moved] = target[moved]
+            target[moved] = landed[moved]
+            v.set("ground_lerp_from", np.where(moved[:, None], start, v.get("ground_lerp_from")))
+            v.set("hitbox_offset", np.where(moved[:, None], target, v.get("hitbox_offset")))
+            along = np.abs(direction)
+            eased = (start + (target - start) * amount) * along + position * (1.0 - along)
+            keep = missed & (self.miss == TRACE_MISS_NONE)
+            new_position = np.where(keep[:, None], position, eased)
+        else:
+            new_position = np.where(moved[:, None], landed, position)
+        changed = new_position != position
+        if changed.any():
+            v.set("position", new_position)
+            v.set("previous", np.where(changed, new_position - step, v.get("previous")))
 
 
 @register(OPERATORS, "C_OP_VectorNoise")
