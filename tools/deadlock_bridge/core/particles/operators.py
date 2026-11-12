@@ -1184,6 +1184,34 @@ class SetControlPointOrientation(PreEmission):
         self.done = True
 
 
+@register(PRE_EMISSION, "C_OP_SetControlPointRotation")
+class SetControlPointRotation(PreEmission):
+    """Spins a control point about an axis at a rate in degrees per second (CS:GO's builtin_particle_ops.cpp; its
+    defaults are what Deadlock's vpcfs strip). The game turns the axis by the local point and then still applies it
+    in the spun point's own frame (matCP x matRot); kept as is."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.axis = p.vec("m_vecRotAxis", (0.0, 0.0, 1.0))
+        self.rate = p.number("m_flRotRate", 180.0)
+        self.control_point = p.int("m_nCP", 0)
+        self.local_point = p.int("m_nLocalCP", -1)
+
+    def operate(self, sim, dt):
+        axis = np.asarray(self.axis(sim), np.float64)
+        length = np.linalg.norm(axis)
+        if length < 1e-9:
+            return
+        axis = axis / length
+        if self.local_point > -1:
+            local = sim.control_point(self.local_point)
+            if local.oriented:
+                axis = local.rotation @ axis
+        point = sim.control_point(self.control_point)
+        turn = _axis_rotation(axis, math.radians(float(np.mean(self.rate(sim))) * dt))
+        sim.set_control_point(self.control_point, point.position, point.rotation @ turn)
+
+
 # Force generators -------------------------------------------------------------------------------------------------
 
 class Force(Function):
