@@ -9,8 +9,8 @@ from . import models, noise
 from .initializers import TransformOrientation, column, models_control_point, path_evaluate, path_points, rows3, _path_parameters
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
-                     SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, lerp, remap, saturate,
-                     smoothstep)
+                     SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, lerp, remap, remap_clamped,
+                     saturate, smoothstep)
 from .system import Function
 
 OPERATORS = {}
@@ -958,6 +958,38 @@ class StopAfterCPDuration(PreEmission):
             return
         if sim.age > float(self.duration(sim)):
             sim.stop_emission(self.destroy, self.play_end_cap)
+
+
+@register(PRE_EMISSION, "C_OP_RemapSpeedtoCP")
+class RemapSpeedtoCP(PreEmission):
+    """Writes how fast one control point moves (units per second, remapped and clamped) into a component of another
+    (ported from CS:GO's builtin_particle_ops.cpp). A point that never moves in an effect played on its own counts
+    as moving at the top of the input range."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.source = p.int("m_nInControlPointNumber", 0)
+        self.target = p.int("m_nOutControlPointNumber", -1)
+        # the game's guard against a point feeding itself
+        if self.target == self.source:
+            self.target = -1
+        self.component = p.int("m_nField", 0)
+        self.input_range = (p.float("m_flInputMin", 0.0), p.float("m_flInputMax", 1.0))
+        self.output_range = (p.float("m_flOutputMin", 0.0), p.float("m_flOutputMax", 1.0))
+        if p.get("m_bUseDeltaV"):
+            p.note("C_OP_RemapSpeedtoCP m_bUseDeltaV")
+
+    def operate(self, sim, dt):
+        if not 0 <= self.target < 64:
+            return
+        point = sim.control_point(self.source)
+        speed = point.speed(sim)
+        if not point.moved and sim.root.unset_value:
+            # Played on its own (a rig's clip effect): the game code that moves the caster (dashes, speed buffs on
+            # an in-place clip) isn't running, so show it as the game does while moving.
+            speed = max(self.input_range)
+        value = float(remap_clamped(speed, *self.input_range, *self.output_range))
+        sim.set_control_point_component(self.target, self.component, value)
 
 
 @register(PRE_EMISSION, "C_OP_SetSingleControlPointPosition")

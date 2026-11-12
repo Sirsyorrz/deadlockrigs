@@ -69,7 +69,8 @@ class ControlPoint:
     """A control point: a position and, when something placed it with one, a rotation (columns: forward, left,
     up). Change time is when its value last changed (-1 for never)."""
 
-    __slots__ = ("position", "rotation", "oriented", "change_time", "model", "previous_bones", "previous_position")
+    __slots__ = ("position", "rotation", "oriented", "change_time", "model", "previous_bones", "previous_position",
+                 "set_time", "previous_set_time", "previous_set_position", "moved")
 
     def __init__(self):
         self.position = np.zeros(3)
@@ -80,6 +81,10 @@ class ControlPoint:
         self.rotation = np.eye(3)
         self.oriented = False
         self.change_time = -1.0
+        self.set_time = -1.0
+        self.previous_set_time = -1.0
+        self.previous_set_position = np.zeros(3)
+        self.moved = False
 
     @property
     def forward(self) -> np.ndarray:
@@ -87,6 +92,14 @@ class ControlPoint:
 
     def change_age(self, sim) -> float:
         return sim.root.age - self.change_time
+
+    def speed(self, sim) -> float:
+        """How fast it moved between its last two sets (units per second); 0 once nothing has set it for longer
+        than that interval (it stands still since)."""
+        interval = self.set_time - self.previous_set_time
+        if self.previous_set_time < 0 or interval <= 1e-9 or sim.root.age - self.set_time > interval + 1e-6:
+            return 0.0
+        return float(np.linalg.norm(self.position - self.previous_set_position)) / interval
 
 
 class Function:
@@ -379,6 +392,10 @@ class Simulation:
         point = self.control_point(index)
         position = np.asarray(position, np.float64)
         point.previous_position = point.position.copy() if point.change_time >= 0 else position.copy()
+        if point.set_time != self.root.age:
+            point.previous_set_time = point.set_time
+            point.previous_set_position = point.position.copy()
+            point.set_time = self.root.age
         if model is not None:
             if point.model is None:
                 point.previous_bones = model["bones"]
@@ -386,6 +403,7 @@ class Simulation:
                 point.previous_bones = point.model["bones"]
             point.model = model
         if not np.array_equal(position, point.position) or point.change_time < 0:
+            point.moved |= point.change_time >= 0
             point.change_time = self.root.age
         point.position = position.copy()
         if rotation is not None:
