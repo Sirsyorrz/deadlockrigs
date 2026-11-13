@@ -261,7 +261,11 @@ if hero.cfg.get('material'):
     nt = mat.node_tree
     bsdf = nt.nodes['Principled BSDF']
     tex = nt.nodes.new('ShaderNodeTexImage')
-    tex.image = bpy.data.images.load(os.path.join(os.path.dirname(vmat), os.path.basename(params['TextureColor1'])))
+    # Source2Viewer 21 writes a material's textures at their own path, older builds beside the vmat
+    color = hero.path('raw', params['TextureColor1'])
+    if not os.path.exists(color):
+        color = os.path.join(os.path.dirname(vmat), os.path.basename(params['TextureColor1']))
+    tex.image = bpy.data.images.load(color)
     tint = nt.nodes.new('ShaderNodeMix')
     tint.data_type, tint.blend_type = 'RGBA', 'MULTIPLY'
     tint.inputs['Factor'].default_value = 1

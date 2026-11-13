@@ -22,12 +22,13 @@ import sys
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 if __package__:
-    from . import map_environment as env, map_npcs
+    from . import map_environment as env, map_npcs, s2v_compat
     from .pipeline import Builder, BuildError, find_pak, log
 else:
     sys.path.insert(0, TOOLS)
     import map_environment as env
     import map_npcs
+    import s2v_compat
     from pipeline import Builder, BuildError, find_pak, log
 
 MAPS = {'dl_midtown': 'Midtown', 'dl_hideout': 'Hideout'}
@@ -190,6 +191,7 @@ class MapBuilder(Builder):
             shutil.rmtree(vanilla, ignore_errors=True)
         if not os.path.exists(m.world):
             raise BuildError('Source2Viewer wrote no ' + m.world)
+        s2v_compat.strip_materials(m.world)
 
     def entities(self, m, vpks):
         world = self.dump(m, f'maps/{m.slug}/world.vwrld', vpks[:1])
@@ -238,7 +240,10 @@ class MapBuilder(Builder):
             anims = json.load(open(path, encoding='utf-8')).get('animations', ())
         except (OSError, ValueError):
             return None
-        return rel if any(a.get('name') == anim for a in anims) else None
+        if not any(a.get('name') == anim for a in anims):
+            return None
+        s2v_compat.strip_materials(path)
+        return rel
 
     def dump(self, m, path, vpks):
         """Source2Viewer's text dump of a resource's data, from the first of the archives that has it."""

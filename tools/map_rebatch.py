@@ -138,7 +138,14 @@ def lightmap_uv(src, prim):
     Source2Viewer writes one buffer view per attribute, in order, for each vertex buffer of a mesh, and only later,
     while building a lightmapped draw call, the copy of its lightmap UVs scaled by the world's lightmap UV scale. So
     that copy is the one TEXCOORD_n whose buffer view is not in a run with the other attributes of its vertex buffer.
-    Tied to how the pinned Source2Viewer writes glTF."""
+    Tied to how the pinned Source2Viewer writes glTF.
+
+    Source2Viewer 21 skips the unscaled copy, so the scaled one sits in the run and nothing in the file marks it:
+    there the last TEXCOORD of a primitive with two or more is taken, except the shaders whose extra UV isn't one
+    (stopgap: matches the pinned export on 663 of 664 Hideout primitives)."""
+    version = re.match(r'Source 2 Viewer (\d+)', src.j.get('asset', {}).get('generator', ''))
+    if version and int(version.group(1)) >= 21:
+        return lightmap_uv_guess(src, prim)
     at = prim['attributes']
     views = {name: src.j['accessors'][acc].get('bufferView', -1) for name, acc in at.items()}
     taken = set(views.values())
@@ -152,6 +159,16 @@ def lightmap_uv(src, prim):
         return None
     uvs = [name for name in outside if name.startswith('TEXCOORD_')]
     return uvs[0] if len(uvs) == 1 else None
+
+
+def lightmap_uv_guess(src, prim):
+    uvs = sorted(n for n in prim['attributes'] if n.startswith('TEXCOORD_'))
+    if len(uvs) < 2 or 'material' not in prim:
+        return None
+    shader = (src.j['materials'][prim['material']].get('extras') or {}).get('vmat', {}).get('ShaderName', '')
+    if shader == 'generic.vfx' or shader == 'environment_blend.vfx' and len(uvs) < 3:
+        return None
+    return uvs[-1]
 
 
 def indices(src, prim):

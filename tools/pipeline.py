@@ -34,10 +34,11 @@ import zipfile
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
 if __package__:
-    from . import hero as hero_mod
+    from . import hero as hero_mod, s2v_compat
 else:
     sys.path.insert(0, TOOLS)
     import hero as hero_mod
+    import s2v_compat
 
 # Source2Viewer releases (up to 20.1) leave the vmdl's cloth chains and capsules out of the decompile, so builds use a
 # pinned master commit. release.py publishes its CLI for each platform under this tag.
@@ -342,6 +343,7 @@ class Builder:
         for f in (h.raw_glb, h.vmdl):
             if not os.path.exists(f):
                 raise BuildError(f'Source2Viewer wrote no {f}')
+        s2v_compat.strip_materials(h.raw_glb)
         vmat = h.cfg.get('material')
         if vmat and not os.path.exists(h.path('raw', vmat)):
             self.run([self.s2v, '-i', self.pak, '-f', vmat + '_c', '-o', h.path('raw'), '-d'], h, show=False)
@@ -351,6 +353,8 @@ class Builder:
                        '--gltf_export_format', 'glb', '--gltf_export_materials', '--gltf_textures_adapt',
                        '--gltf_export_extras']
                 self.run(cmd, h, show=False)
+            if os.path.exists(glb):
+                s2v_compat.strip_materials(glb)
         self.motion_textures(h)
 
     def motion_textures(self, h):
