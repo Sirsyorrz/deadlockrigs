@@ -71,6 +71,14 @@ def output_dir(context=None):
     return bpy.path.abspath(prefs(context).output_dir) or default_output()
 
 
+def work_dir(context=None):
+    # map builds need ~12 GB of scratch: keep it on the drive the user picked for output, not the AppData drive
+    out = output_dir(context)
+    if os.path.normcase(os.path.abspath(out)) == os.path.normcase(os.path.abspath(default_output())):
+        return user_dir('work')
+    return os.path.join(out, '.work')
+
+
 def default_output():
     return os.path.join(os.path.expanduser('~'), 'Documents', 'DeadlockRigs')
 
@@ -160,7 +168,7 @@ class DLR_Preferences(bpy.types.AddonPreferences):
         col.prop(self, 's2v_path')
         col.prop(self, 'exports')
         col.prop(self, 'keep_build_files')
-        col.label(text=f'Build files: {user_dir("work")}', icon='INFO')
+        col.label(text=f'Build files: {work_dir(context)}', icon='INFO')
 
 
 # ---------------------------------------------------------------- the build job
@@ -316,7 +324,7 @@ def start(context, slug, kind, quiet=False):
             ['extract', 'data', 'base', 'rig'] + ([] if p.keep_build_files else ['clean'])
         cmd = [sys.executable, os.path.join(tools_dir(), 'pipeline.py'), slug, *steps, '--backup']
     cmd += ['--blender', bpy.app.binary_path, '--python', sys.executable,
-            '--work', user_dir('work'), '--out', output_dir(context), '--s2v-cache', user_dir('s2v')]
+            '--work', work_dir(context), '--out', output_dir(context), '--s2v-cache', user_dir('s2v')]
     if p.deadlock_dir:
         cmd += ['--pak', bpy.path.abspath(p.deadlock_dir)]
     if p.s2v_path:
