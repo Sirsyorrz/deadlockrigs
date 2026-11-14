@@ -138,11 +138,11 @@ def lightmap_uv(src, prim):
     Source2Viewer writes one buffer view per attribute, in order, for each vertex buffer of a mesh, and only later,
     while building a lightmapped draw call, the copy of its lightmap UVs scaled by the world's lightmap UV scale. So
     that copy is the one TEXCOORD_n whose buffer view is not in a run with the other attributes of its vertex buffer.
-    Tied to how the pinned Source2Viewer writes glTF.
+    Tied to how Source2Viewer 20 writes glTF.
 
     Source2Viewer 21 skips the unscaled copy, so the scaled one sits in the run and nothing in the file marks it:
     there the last TEXCOORD of a primitive with two or more is taken, except the shaders whose extra UV isn't one
-    (stopgap: matches the pinned export on 663 of 664 Hideout primitives)."""
+    (stopgap: matches the Source2Viewer 20 export on 663 of 664 Hideout primitives)."""
     version = re.match(r'Source 2 Viewer (\d+)', src.j.get('asset', {}).get('generator', ''))
     if version and int(version.group(1)) >= 21:
         return lightmap_uv_guess(src, prim)

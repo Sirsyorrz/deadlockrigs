@@ -1,7 +1,9 @@
 """Source2Viewer 21 writes materials closer to the game: a self-illum tint as emissiveFactor (factor 1 on F_SELF_ILLUM
-materials whose mask is a placeholder) and F_UNLIT as KHR_materials_unlit. Blender's importer then lights them itself
+materials whose mask is a placeholder), F_UNLIT as KHR_materials_unlit and citadel_overlay decals as alpha blended. Blender's importer then lights them itself
 (Calico's cat form glowed white) or builds no Principled BSDF, while the rig and map code shade self-illum and unlit
-from the vmat extras and expect the materials as older exports wrote them. This takes both back out of an export."""
+from the vmat extras and expect the materials as older exports wrote them (map_lighting.apply_overlay builds the
+decals' opacity from the colour translucency ranges and skips a material whose alpha is already linked). This
+takes them back out of an export."""
 import json
 import os
 import struct
@@ -11,6 +13,10 @@ def _strip(doc):
     changed = False
     for mat in doc.get('materials', []):
         if mat.pop('emissiveFactor', None) is not None:
+            changed = True
+        shader = ((mat.get('extras') or {}).get('vmat') or {}).get('ShaderName')
+        if shader == 'citadel_overlay.vfx' and mat.pop('alphaMode', None) is not None:
+            mat.pop('alphaCutoff', None)
             changed = True
         ext = mat.get('extensions') or {}
         if ext.pop('KHR_materials_unlit', None) is not None:

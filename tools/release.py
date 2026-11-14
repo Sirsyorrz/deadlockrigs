@@ -1,18 +1,15 @@
-"""Packages the Blender add-on and the Source2Viewer-CLI builds it downloads.
+"""Packages the Blender add-on.
 
 python tools/release.py addon [patch|minor|major|X.Y.Z]
                                 dist/deadlock_rigs-<version>-<platform>.zip, one per platform (scipy wheels differ);
                                 bumps the version in addon/blender_manifest.toml first if given one
-python tools/release.py s2v     dist/s2v/<runtime>.zip for each platform, to upload to the GitHub release
-                                tagged pipeline.S2V_TAG (needs git and the .NET SDK)
 
-Both need Blender ($BLENDER or found like pipeline.py does) only for the addon target."""
+Needs Blender ($BLENDER or found like pipeline.py does)."""
 import os
 import re
 import shutil
 import subprocess
 import sys
-import zipfile
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
@@ -35,7 +32,6 @@ WHEEL_PLATFORMS = {
     'macos-arm64': ['macosx_14_0_arm64'],
     'macos-x64': ['macosx_10_14_x86_64'],
 }
-S2V_RIDS = ['linux-x64', 'win-x64', 'osx-arm64', 'osx-x64']
 
 
 MANIFEST = os.path.join(ROOT, 'addon', 'blender_manifest.toml')
@@ -113,40 +109,11 @@ def addon():
             print('wrote', os.path.join(DIST, f))
 
 
-def s2v():
-    src = os.path.join(ROOT, 'build', 's2v-src')
-    if not os.path.isdir(os.path.join(src, '.git')):
-        subprocess.run(['git', 'clone', '-q', '--filter=blob:none', pipeline.S2V_REPO, src], check=True)
-    subprocess.run(['git', '-C', src, 'fetch', '-q', 'origin', pipeline.S2V_COMMIT], check=True)
-    subprocess.run(['git', '-C', src, 'checkout', '-q', '--detach', pipeline.S2V_COMMIT], check=True)
-    out = os.path.join(DIST, 's2v')
-    os.makedirs(out, exist_ok=True)
-    for rid in S2V_RIDS:
-        pub = os.path.join(ROOT, 'build', 's2v-' + rid)
-        shutil.rmtree(pub, ignore_errors=True)
-        subprocess.run(['dotnet', 'publish', os.path.join(src, 'CLI', 'CLI.csproj'), '-c', 'Release',
-                        '--self-contained', '-r', rid, '-p:RunAnalyzersDuringBuild=false', '-p:DebugType=none',
-                        '-o', pub], check=True, stdout=subprocess.DEVNULL)
-        zpath = os.path.join(out, rid + '.zip')
-        with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED) as z:
-            for f in sorted(os.listdir(pub)):
-                info = zipfile.ZipInfo.from_file(os.path.join(pub, f), f)
-                # keep the executable bit for Linux/macOS unzip tools; pipeline.py sets it again itself
-                info.external_attr = (0o755 if not f.endswith(('.txt', '.dll')) else 0o644) << 16
-                info.compress_type = zipfile.ZIP_DEFLATED
-                z.writestr(info, open(os.path.join(pub, f), 'rb').read())
-        print('wrote', zpath)
-    print(f'upload them to the release tagged {pipeline.S2V_TAG}:\n'
-          f'  gh release create {pipeline.S2V_TAG} {out}/*.zip --title "Source2Viewer-CLI {pipeline.S2V_COMMIT[:9]}"')
-
-
 if __name__ == '__main__':
     target = sys.argv[1] if len(sys.argv) > 1 else ''
     if target == 'addon':
         if len(sys.argv) > 2:
             bump(sys.argv[2])
         addon()
-    elif target == 's2v':
-        s2v()
     else:
         sys.exit(__doc__)

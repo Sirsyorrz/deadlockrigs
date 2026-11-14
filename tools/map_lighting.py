@@ -624,7 +624,9 @@ def apply_skins(objects, skins):
     for skin in skins:
         x, y, z = skin['origin']
         at = Vector((y, -x, z)) * UNIT
-        roots = [ob for ob in objects if ob.name.startswith(skin['model'] + '_c')
+        # Source2Viewer 20 names an entity's root after its model path, 21 by the bare name; props carry the path
+        roots = [ob for ob in objects
+                 if (ob.name.startswith(skin['model'] + '_c') or ob.get('dlr_model') == skin['model'])
                  and (ob.matrix_world.translation - at).length < 0.05]
         for ob in {o for root in roots for o in [root, *root.children_recursive]}:
             for slot in ob.material_slots:

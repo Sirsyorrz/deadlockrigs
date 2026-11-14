@@ -348,6 +348,7 @@ def import_props(props_file, coll):
             props_coll.objects.link(ob)
             if ob.parent is None:
                 ob.matrix_world = place @ ob.matrix_world
+                ob['dlr_model'] = prop['model']
         for action in set(bpy.data.actions) - actions:
             action.use_fake_user = False
             for fc in fcurves(action):

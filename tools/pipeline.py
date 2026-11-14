@@ -40,11 +40,15 @@ else:
     import hero as hero_mod
     import s2v_compat
 
-# Source2Viewer releases (up to 20.1) leave the vmdl's cloth chains and capsules out of the decompile, so builds use a
-# pinned master commit. release.py publishes its CLI for each platform under this tag.
-S2V_COMMIT = 'f030654ff81b352fd1bcb44d631c563f51c7dcd1'
-S2V_TAG = 's2v-' + S2V_COMMIT[:9]
-S2V_URL = os.environ.get('S2V_URL', f'https://github.com/Sirsyorrz/deadlockrigs/releases/download/{S2V_TAG}/{{rid}}.zip')
+# 21.1 is the first release that decompiles the vmdl's cloth chains and capsules (before it, a pinned master build)
+S2V_VERSION = '21.1'
+S2V_COMMIT = '942df5b37ebbde6153f6c488880b91d4bed003e6'
+S2V_TAG = 's2v-' + S2V_VERSION
+# the release's asset names; it has no Intel macOS build, which builds from source instead
+S2V_ASSETS = {'linux-x64': 'linux-x64', 'linux-arm64': 'linux-arm64', 'win-x64': 'windows-x64',
+              'win-arm64': 'windows-arm64', 'osx-arm64': 'macos-arm64'}
+S2V_URL = os.environ.get('S2V_URL', 'https://github.com/ValveResourceFormat/ValveResourceFormat/releases/download/'
+                         f'{S2V_VERSION}/cli-{{asset}}.zip')
 S2V_REPO = 'https://github.com/ValveResourceFormat/ValveResourceFormat'
 
 DEFAULT_STEPS = ['extract', 'data', 'base', 'rig']
@@ -172,7 +176,7 @@ def find_s2v(given=None, cache=None):
     cli = os.path.join(target, exe('Source2Viewer-CLI'))
     if os.path.isfile(cli):
         return cli
-    url = S2V_URL.format(rid=runtime_id())
+    url = S2V_URL.format(rid=runtime_id(), asset=S2V_ASSETS.get(runtime_id(), runtime_id()))
     log(f'downloading Source2Viewer-CLI ({runtime_id()}) from {url}')
     os.makedirs(target, exist_ok=True)
     zpath = target + '.zip'
@@ -195,7 +199,7 @@ def find_s2v(given=None, cache=None):
 def build_s2v(target):
     """From source at the pinned commit (needs the .NET SDK)."""
     src = os.path.join(os.path.dirname(target), 'src')
-    log(f'building Source2Viewer-CLI {S2V_COMMIT[:9]} from source')
+    log(f'building Source2Viewer-CLI {S2V_VERSION} from source')
     if not os.path.isdir(os.path.join(src, '.git')):
         subprocess.run(['git', 'clone', '-q', '--filter=blob:none', S2V_REPO, src], check=True)
     subprocess.run(['git', '-C', src, 'fetch', '-q', 'origin', S2V_COMMIT], check=True)
