@@ -474,6 +474,44 @@ def find_game_window():
     return None
 
 
+def keep_window_below(wid):
+    """Ask the window manager to keep the game window under every other window (EWMH _NET_WM_STATE_BELOW). The
+    stream reads covered windows fine; a minimised one stops it (the game also drops to ~10 frames a second)."""
+    import ctypes
+    try:
+        x = ctypes.CDLL('libX11.so.6')
+    except OSError:
+        return False
+    x.XOpenDisplay.restype = ctypes.c_void_p
+    x.XInternAtom.restype = ctypes.c_ulong
+    x.XDefaultRootWindow.restype = ctypes.c_ulong
+
+    class ClientMessage(ctypes.Structure):
+        _fields_ = [('type', ctypes.c_int), ('serial', ctypes.c_ulong), ('send_event', ctypes.c_int),
+                    ('display', ctypes.c_void_p), ('window', ctypes.c_ulong), ('message_type', ctypes.c_ulong),
+                    ('format', ctypes.c_int), ('data', ctypes.c_long * 5)]
+
+    class Event(ctypes.Union):
+        _fields_ = [('xclient', ClientMessage), ('pad', ctypes.c_long * 24)]
+
+    dpy = x.XOpenDisplay(None)
+    if not dpy:
+        return False
+    dpy = ctypes.c_void_p(dpy)
+    try:
+        event = Event()
+        m = event.xclient
+        m.type, m.send_event, m.display, m.window, m.format = 33, 1, dpy, int(wid, 16), 32  # ClientMessage
+        m.message_type = x.XInternAtom(dpy, b'_NET_WM_STATE', 0)
+        m.data[0], m.data[1], m.data[3] = 1, x.XInternAtom(dpy, b'_NET_WM_STATE_BELOW', 0), 1  # add, from an app
+        root = ctypes.c_ulong(x.XDefaultRootWindow(dpy))
+        x.XSendEvent(dpy, root, 0, (1 << 20) | (1 << 19), ctypes.byref(event))  # SubstructureRedirect|Notify
+        x.XFlush(dpy)
+    finally:
+        x.XCloseDisplay(dpy)
+    return True
+
+
 def _window_size(wid):
     try:
         out = _run_tool('xwininfo', '-id', wid, capture_output=True, text=True, timeout=2).stdout
@@ -659,6 +697,8 @@ class Link:
             try:
                 stream.start()
                 self.stream = stream
+                if self.launch_setup:
+                    keep_window_below(wid)
             except (OSError, subprocess.SubprocessError) as error:
                 self.error = f'screenshot mode: {error}'
         self.running = True
