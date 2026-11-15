@@ -19,6 +19,7 @@ typedef unsigned int u32;
 typedef unsigned long long u64;
 typedef long long i64;
 typedef int i32;
+typedef short i16;
 typedef u64 uptr;
 typedef void *HANDLE;
 typedef int BOOL;
@@ -91,6 +92,14 @@ static const u8 kSetupPrologue[32] = {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 
 // The first 15 bytes are whole instructions without RIP-relative operands: safe to relocate.
 #define STOLEN 15
 
+// CSkeletonInstance routine that builds the world-space bones for a bone mask (this = scene node, edx = mask) and
+// writes the pose buffer. Found by trapping writes to a prop's pose buffer; runs on tier0 job threads after
+// SetUpView, ~30 callers.
+#define RVA_SKELETON 0x188b480
+static const u8 kSkeletonPrologue[16] = {0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56,
+                                         0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41};
+#define SKELETON_STOLEN 5  // mov [rsp+8], rcx
+
 // CViewSetup fields, relative to the SetUpView object + 0x10 (layout revision 1).
 #define VIEW_WIDTH 0x430
 #define VIEW_HEIGHT 0x438
@@ -121,6 +130,7 @@ static const u8 kBasisEntry[] = {0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48,
 
 typedef void(__fastcall *AngleVectors)(const float *, float *, float *, float *);
 typedef void(__fastcall *SetupFn)(void *, uptr);
+typedef u64(__fastcall *SkeletonFn)(uptr, u64, u64, u64);
 typedef void *(*Factory)(const char *, int *);
 
 // Global camera copies SetUpView also writes (used by culling, audio, effects).
@@ -132,6 +142,7 @@ static struct {
 static HANDLE gModule;
 static uptr gClient;
 static SetupFn gOriginal;
+static SkeletonFn gSkeletonOriginal;
 static Factory gUnlockerFactory;
 static volatile long gStarted;
 static HANDLE gLog = (HANDLE)-1;
@@ -316,6 +327,12 @@ static int resolve_cache(void) {
 #define STATE_BONES 0x80         // world space pose: float pos[3], scale, quat xyzw per bone (32 bytes)
 #define STATE_BONE_COUNT 0x90
 #define STATE_MODEL_NAME 0xa8    // CModelState::m_ModelName (char *)
+#define STATE_MODEL 0xa0         // handle: points at the CModel pointer
+#define MODEL_BONE_COUNT 0x160
+#define MODEL_BONE_NAMES 0x168   // char *[]
+#define MODEL_BONE_PARENTS 0x180 // int16[]
+#define MODEL_INV_BIND 0x210     // model space inverse bind, 32-byte entries like the pose buffer
+#define BIND_CHUNK 256
 #define RVA_PLAYER_PAWN_VTABLE 0x27a5350  // the player's own hero is never posed
 #define MAX_BONES 1024
 #define POSE_SLOTS 8
@@ -364,12 +381,12 @@ static int claimed(uptr node, u32 except) {
     return 0;
 }
 
-// Wanted entity index, or 0 for the newest unclaimed non-player entity whose model path contains `model`.
-static uptr find_entity(const char *model, u32 wanted, u32 slot, u32 *index_out) {
-    uptr list, best = 0;
-    u32 best_index = 0;
+// Calls visit(context, node, index, model name) for every non-player entity with a model.
+typedef int (*Visit)(void *, uptr, u32, const char *);
+static void walk_entities(Visit visit, void *context) {
+    uptr list;
     if (!safe_read(gClient + RVA_ENTITY_LIST, &list, 8) || !list)
-        return 0;
+        return;
     for (u32 chunk_index = 0; chunk_index < 0x40; chunk_index++) {
         uptr chunk;
         if (!safe_read(list + 8 * chunk_index, &chunk, 8) || !chunk)
@@ -385,45 +402,124 @@ static uptr find_entity(const char *model, u32 wanted, u32 slot, u32 *index_out)
                 !safe_read(node + NODE_OWNER, &owner, 8) || owner != instance ||
                 !safe_read(identity + IDENTITY_HANDLE, &handle, 4) || !node_model(node, name, sizeof(name)))
                 continue;
-            u32 index = handle & 0x7fff;
-            if (wanted ? index != wanted : (!contains(name, model) || claimed(node, slot) || index < best_index))
-                continue;
-            best = node;
-            best_index = index;
-            if (wanted)
-                break;
+            if (visit(context, node, handle & 0x7fff, name))
+                return;
         }
     }
-    *index_out = best_index;
-    return best;
 }
 
-static void write_poses(void) {
-    static float pose[MAX_BONES][8];
+struct Find {
+    const char *model;
+    u32 wanted, slot, best_index;
+    uptr best;
+};
+
+static int find_visit(void *context, uptr node, u32 index, const char *name) {
+    struct Find *f = context;
+    if (f->wanted ? index != f->wanted : (!contains(name, f->model) || claimed(node, f->slot) || index < f->best_index))
+        return 0;
+    f->best = node;
+    f->best_index = index;
+    return f->wanted != 0;
+}
+
+// Wanted entity index, or 0 for the newest unclaimed non-player entity whose model path contains `model`.
+static uptr find_entity(const char *model, u32 wanted, u32 slot, u32 *index_out) {
+    struct Find f = {model, wanted, slot, 0, 0};
+    walk_entities(find_visit, &f);
+    *index_out = f.best_index;
+    return f.best;
+}
+
+#define LIST_MAX 256
+struct List {
+    const char *model;
+    u32 count;
+    u32 indices[LIST_MAX];
+};
+
+static int list_visit(void *context, uptr node, u32 index, const char *name) {
+    struct List *l = context;
+    (void)node;
+    if (contains(name, l->model) && l->count < LIST_MAX)
+        l->indices[l->count++] = index;
+    return 0;
+}
+
+// Runs on the job threads right after the game has built a node's world-space bones, so the pose written here is
+// what the renderer draws this frame. A torn copy (Blender updating the slot meanwhile) is redone at once.
+static void pose_node(uptr node) {
     for (u32 i = 0; i < POSE_SLOTS; i++) {
         struct Slot *slot = &gSlots[i];
-        u32 before, after, count;
-        uptr node;
+        if (slot->node != node || !slot->active)
+            continue;
+        uptr bones = *(uptr *)(node + NODE_MODEL_STATE + STATE_BONES);
+        u32 game_count = *(u32 *)(node + NODE_MODEL_STATE + STATE_BONE_COUNT);
+        if (!bones || game_count > MAX_BONES)
+            return;
+        u32 before, after = 0;
         do {
             before = slot->lock;
             __atomic_thread_fence(__ATOMIC_ACQUIRE);
+            if (before & 1)
+                continue;
+            u32 count = slot->count < game_count ? slot->count : game_count;
             if (!slot->active)
-                break;
-            node = slot->node;
-            count = slot->count;
-            memcpy(pose, slot->pose, count * 32);
+                return;
+            memcpy((void *)bones, slot->pose, count * 32);
             __atomic_thread_fence(__ATOMIC_ACQUIRE);
             after = slot->lock;
-        } while (before != after || (before & 1));
-        if (!slot->active)
-            continue;
-        uptr bones;
-        u32 game_count;
-        if (!safe_read(node + NODE_MODEL_STATE + STATE_BONES, &bones, 8) || !bones ||
-            !safe_read(node + NODE_MODEL_STATE + STATE_BONE_COUNT, &game_count, 4) || game_count > MAX_BONES)
-            continue;
-        memcpy((void *)bones, pose, (count < game_count ? count : game_count) * 32);
+        } while ((before & 1) || before != after);
+        return;
     }
+}
+
+static u64 __fastcall skeleton_hook(uptr node, u64 mask, u64 r8, u64 r9) {
+    u64 result = gSkeletonOriginal(node, mask, r8, r9);
+    i64 now;
+    QueryPerformanceCounter(&now);
+    if (now - gLastPacket <= RELEASE_AFTER * gFrequency)
+        pose_node(node);
+    return result;
+}
+
+// The skeleton routine runs on job threads all the time, so it can't be patched with a multi-instruction jump
+// like SetUpView. Its first instruction is 5 bytes and the entry is 16-aligned: one atomic 8-byte store puts a
+// rel32 jump to a stub allocated within 2 GB of client.dll.
+static int install_skeleton_hook(void) {
+    u8 *target = (u8 *)(gClient + RVA_SKELETON);
+    u8 *near = 0;
+    for (uptr at = (gClient - 0x10000) & ~0xffffull; !near && at > gClient - 0x70000000; at -= 0x10000)
+        near = VirtualAlloc((void *)at, 0x1000, 0x3000, 0x40);
+    if (!near || (uptr)target % 8)
+        return 0;
+    u8 *tramp = near, *stub = near + 32;
+    memcpy(tramp, target, SKELETON_STOLEN);
+    u8 *jump = tramp + SKELETON_STOLEN;  // jmp [rip+0]; dq target+5
+    jump[0] = 0xff;
+    jump[1] = 0x25;
+    memset(jump + 2, 0, 4);
+    uptr back = (uptr)target + SKELETON_STOLEN;
+    memcpy(jump + 6, &back, 8);
+    stub[0] = 0xff;
+    stub[1] = 0x25;
+    memset(stub + 2, 0, 4);
+    uptr hook = (uptr)&skeleton_hook;
+    memcpy(stub + 6, &hook, 8);
+    gSkeletonOriginal = (SkeletonFn)tramp;
+
+    u64 word = *(volatile u64 *)target;
+    i32 rel = (i32)((i64)stub - (i64)(target + 5));
+    u8 *bytes = (u8 *)&word;
+    bytes[0] = 0xe9;
+    memcpy(bytes + 1, &rel, 4);
+    DWORD old;
+    if (!VirtualProtect(target, 8, 0x40, &old))
+        return 0;
+    __atomic_store_n((u64 *)target, word, __ATOMIC_SEQ_CST);
+    VirtualProtect(target, 8, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), target, 8);
+    return 1;
 }
 
 static void apply(uptr view, const float *xyz, const float *angles) {
@@ -453,10 +549,6 @@ static void __fastcall setup_hook(void *self, uptr opaque) {
     gStatus.game_fov = *(float *)(view + VIEW_FOV);
     gStatus.game_aspect = *(float *)(view + VIEW_ASPECT);
 
-    i64 pose_now;
-    QueryPerformanceCounter(&pose_now);
-    if (pose_now - gLastPacket <= RELEASE_AFTER * gFrequency)
-        write_poses();
     struct Command c;
     u32 before, after;
     do {
@@ -533,6 +625,58 @@ static DWORD WINAPI net_thread(void *arg) {
         i64 now;
         QueryPerformanceCounter(&now);
         gLastPacket = now;
+        if (n == 68 && bytes_equal(packet, (const u8 *)"DLRL", 4)) {
+            // model substring[64] -> "DLRL", count, entity indices (all with a model when the substring is empty)
+            static struct List list;
+            char model[64];
+            memcpy(model, packet + 4, 64);
+            model[63] = 0;
+            list.model = model;
+            list.count = 0;
+            walk_entities(list_visit, &list);
+            static u8 reply[8 + 4 * LIST_MAX];
+            memcpy(reply, "DLRL", 4);
+            memcpy(reply + 4, &list.count, 4);
+            memcpy(reply + 8, list.indices, 4 * list.count);
+            sendto(s, (const char *)reply, 8 + 4 * list.count, 0, &from, from_len);
+            continue;
+        }
+        if (n == 12 && bytes_equal(packet, (const u8 *)"DLRB", 4)) {
+            // slot, first bone -> the slot's model skeleton from `first`, BIND_CHUNK bones at most per reply
+            static struct {
+                char magic[4];
+                u32 total, first, count;
+                struct {
+                    float inv_bind[8];
+                    i32 parent;
+                    char name[60];
+                } bones[BIND_CHUNK];
+            } bind;
+            u32 slot_index = *(const u32 *)(packet + 4), first = *(const u32 *)(packet + 8);
+            uptr node = slot_index < POSE_SLOTS ? gSlots[slot_index].node : 0, handle, model = 0, names, parents, inv;
+            memcpy(bind.magic, "DLRB", 4);
+            bind.total = bind.count = 0;
+            bind.first = first;
+            if (node && safe_read(node + NODE_MODEL_STATE + STATE_MODEL, &handle, 8) && safe_read(handle, &model, 8) &&
+                safe_read(model + MODEL_BONE_COUNT, &bind.total, 4) && bind.total <= MAX_BONES &&
+                safe_read(model + MODEL_BONE_NAMES, &names, 8) && safe_read(model + MODEL_BONE_PARENTS, &parents, 8) &&
+                safe_read(model + MODEL_INV_BIND, &inv, 8)) {
+                for (u32 i = first; i < bind.total && bind.count < BIND_CHUNK; i++, bind.count++) {
+                    uptr name;
+                    i16 parent = -1;
+                    memset(bind.bones[bind.count].name, 0, 60);
+                    safe_read(inv + 32 * i, bind.bones[bind.count].inv_bind, 32);
+                    safe_read(parents + 2 * i, &parent, 2);
+                    bind.bones[bind.count].parent = parent;
+                    if (safe_read(names + 8 * i, &name, 8))
+                        safe_read(name, bind.bones[bind.count].name, 59);
+                }
+            } else {
+                bind.total = 0;
+            }
+            sendto(s, (const char *)&bind, 16 + bind.count * sizeof(bind.bones[0]), 0, &from, from_len);
+            continue;
+        }
         if (n >= 84 && bytes_equal(packet, (const u8 *)"DLRP", 4)) {
             // slot, entity index (0 = find by model), flags (1 = pose), count, model substring[64], count x 32 bytes
             u32 slot_index = *(const u32 *)(packet + 4), wanted = *(const u32 *)(packet + 8);
@@ -613,7 +757,12 @@ static DWORD WINAPI worker(void *arg) {
         return 0;
     }
     gStatus.state = 1;
-    set_message("camera hook installed");
+    if (!bytes_equal((const u8 *)(gClient + RVA_SKELETON), kSkeletonPrologue, sizeof(kSkeletonPrologue)))
+        set_message("camera hook installed; skeleton routine differs: no posing");
+    else if (!install_skeleton_hook())
+        set_message("camera hook installed; could not patch the skeleton routine: no posing");
+    else
+        set_message("camera and pose hooks installed");
     return 0;
 }
 
