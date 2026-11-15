@@ -24,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BRIDGE_DLLS = (os.path.join(HERE, 'native', 'dlr_bridge.dll'),
                os.path.join(os.path.dirname(HERE), 'native', 'dlr_bridge', 'build', 'dlr_bridge.dll'))
 # Launch to console: ~60 s, plus a stall of ~95 s that some launches sit through after "Game started".
+READY_DRAWING = 8.0  # seconds of steady drawing before the first console client
 CONSOLE_TIMEOUT = 300
 
 
@@ -79,11 +80,12 @@ class Session:
     """One launch. start() returns at once; a thread runs the launch and reports through .status / .error / .ready.
     Everything it changed is undone by stop() or, after a crash, by recover() (run before every start)."""
 
-    def __init__(self, game, port, size=(1920, 1080), mods=False, extra=(), map_name='dl_hideout'):
+    def __init__(self, game, port, size=(1920, 1080), mods=False, extra=(), map_name='dl_hideout', borderless=False):
         self.game = game
         self.port = port
         self.size = size
         self.map_name = map_name
+        self.borderless = borderless
         self.mods = mods
         self.extra = list(extra)
         self.status = ''
@@ -177,11 +179,14 @@ class Session:
                 os.remove(path)
         shutil.rmtree(self.cfg_backup)
 
-    def _windowed_video(self):
-        """A plain window of the session size: a saved (borderless) fullscreen mode beats -windowed -w -h, and a
-        stretched fullscreen window makes the viewport stream 4x the pixels. Put back with the other cfgs."""
+    def _session_video(self):
+        """The session's render size, put back with the other cfgs. A window is the render size but can't be
+        bigger than the desktop's work area (a 4K window on a 4K screen loses the panel's height); borderless
+        fullscreen renders at defaultres into a screen-sized swapchain, so it is used for screen-sized sessions
+        only (smaller ones would be upscaled into it: 4x the pixels to copy for nothing)."""
         w, h = self.size
-        want = {'setting.fullscreen': '0', 'setting.coop_fullscreen': '0', 'setting.defaultres': str(w),
+        want = {'setting.fullscreen': '0', 'setting.coop_fullscreen': '1' if self.borderless else '0',
+                'setting.defaultres': str(w),
                 'setting.defaultresheight': str(h)}
         for path in self._user_cfgs():
             if os.path.basename(path) != 'video.txt':
@@ -212,14 +217,11 @@ class Session:
 
     def setup_commands(self):
         """Console commands for the first connection."""
-        w, h = self.size
-        # A saved fullscreen video.txt beats -w/-h; this switches live (video.txt is put back on quit).
-        commands = [f'citadel_force_resolution {w} {h}']
-        if self.map_name != 'dl_hideout':
-            # A map loaded from the command line starts without a hero; the camera bridge needs the player in
-            # the game (the hero is folded away in shots).
-            commands += ['jointeam 2', 'selecthero hero_atlas']
-        return commands
+        if self.map_name == 'dl_hideout':
+            return []
+        # A map loaded from the command line starts without a hero; the camera bridge needs the player in the game
+        # (the hero is folded away in shots).
+        return ['jointeam 2', 'selecthero hero_atlas']
 
     def start(self):
         if game_running(self.game):
@@ -237,7 +239,7 @@ class Session:
         if os.path.exists(stale):
             os.remove(stale)
         self.snapshot_cfgs()
-        self._windowed_video()
+        self._session_video()
         original = open(self.gameinfo, 'rb').read()
         with open(self.backup, 'wb') as f:
             f.write(original)
@@ -256,16 +258,25 @@ class Session:
         try:
             start = time.time()
             end = start + CONSOLE_TIMEOUT
-            # The bridge answers once the map's server has loaded it and the game draws.
-            while not _bridge_up():
+            # The bridge answers once the map's server has loaded it, then counts drawn views. A console client
+            # that connects while the map is still loading can hang the game for good (twice, at 2 s into the
+            # map): wait until it has drawn steadily for a while.
+            steady_since, last_views = None, -1
+            while True:
+                views = _bridge_views()
+                if views is not None and views > last_views >= 0:
+                    steady_since = steady_since or time.time()
+                    if time.time() - steady_since >= READY_DRAWING:
+                        break
+                else:
+                    steady_since = None
+                last_views = -1 if views is None else views
                 if time.time() > end:
                     self.error = ('the game did not come up with the camera bridge' if game_running(self.game)
                                   else 'the game did not start (is Steam running?)')
                     return
                 self.status = f'Starting Deadlock ({time.time() - start:.0f} s)'
-                time.sleep(1.0)
-            # Settle: the game takes its first console client during the first seconds of the map.
-            time.sleep(3.0)
+                time.sleep(0.5)
             self.status = 'Ready'
             self.ready.set()
         finally:
@@ -290,13 +301,15 @@ class Session:
             self.restore_cfgs()
 
 
-def _bridge_up():
+def _bridge_views():
+    """Main views the bridge has seen, or None while it isn't up."""
     from .gamerender import Bridge
     bridge = Bridge()
     try:
-        return bridge.status()['state'] == 1 and bridge.status()['views'] > 0
+        status = bridge.status()
+        return status['views'] if status['state'] == 1 else None
     except OSError:
-        return False
+        return None
     finally:
         bridge.close()
 
