@@ -21,15 +21,19 @@ import struct
 import threading
 import time
 
+import blf
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
-from mathutils import Matrix
+from mathutils import Euler, Matrix, Vector
 
 UNIT = 0.0254
 GAME_FROM_BLENDER = Matrix.Diagonal((1 / UNIT, 1 / UNIT, 1 / UNIT, 1)) @ Matrix.Rotation(math.pi / 2, 4, 'Z')
 MIN_VFOV = 50.0
 MAX_VFOV = 120.0
+# Game units the camera may go to: past these the game kills the hero for leaving the play area. Probed on the
+# hideout (x/y 14000 fine, 16200 out; z -3000 fine, -4500 out; 6000 fine, 8000 out), kept a little inside.
+PLAY_AREA = ((-13500, 13500), (-13500, 13500), (-2800, 5500))
 PORT = 29000
 SETTLE = 0.06  # after a teleport, before the shot: the client needs a frame or two to catch up
 ENGINE_ID = 'DLR_DEADLOCK_GAME'
@@ -70,28 +74,70 @@ def game_dir():
 
 
 class Netcon:
-    """Send-only VConsole2 client. A reader thread drains the socket: the game logs constantly and a full buffer
-    would stall it."""
+    """VConsole2 client. A reader thread drains the socket (the game logs constantly and a full buffer would stall
+    it) and keeps recent console lines for request().
+
+    The game only serves one console client at a time, and drops commands sent before its connect handshake
+    (the replay of its buffered log) is over: send() waits for that."""
+
+    HANDSHAKE_END = 'End VConsole Buffered Messages'
 
     def __init__(self, port=PORT):
         self.sock = socket.create_connection(('127.0.0.1', port), timeout=2.0)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.sock.settimeout(0.5)
         self.alive = True
+        self.ready = threading.Event()
+        self.lines = []
+        self.lines_lock = threading.Lock()
         threading.Thread(target=self._drain, daemon=True).start()
+        if not self.ready.wait(5.0):
+            self.ready.set()
 
     def _drain(self):
+        raw = bytearray()
         while self.alive:
             try:
-                if not self.sock.recv(1 << 20):
-                    break
+                data = self.sock.recv(1 << 20)
             except socket.timeout:
                 continue
             except OSError:
                 break
+            if not data:
+                break
+            raw.extend(data)
+            while len(raw) >= _HEADER.size:
+                kind, _, length, _ = _HEADER.unpack_from(raw)
+                if length < _HEADER.size or len(raw) < length:
+                    break
+                payload = bytes(raw[_HEADER.size:length])
+                del raw[:length]
+                if kind == b'PRNT' and len(payload) > 28:
+                    text = payload[28:].rstrip(b'\x00').decode('utf-8', errors='replace')
+                    if self.HANDSHAKE_END in text:
+                        self.ready.set()
+                    with self.lines_lock:
+                        self.lines.extend(text.splitlines())
+                        del self.lines[:-400]
         self.alive = False
+        self.ready.set()
+
+    def request(self, command, starts_with, timeout=3.0):
+        """Send command and return the first console line after it that starts with starts_with, or None."""
+        with self.lines_lock:
+            self.lines.clear()
+        self.send(command)
+        end = time.time() + timeout
+        while time.time() < end:
+            with self.lines_lock:
+                for line in self.lines:
+                    if line.strip().startswith(starts_with):
+                        return line.strip()
+            time.sleep(0.02)
+        return None
 
     def send(self, *commands):
+        self.ready.wait(5.0)
         packets = []
         for c in commands:
             payload = c.encode('utf-8') + b'\x00'
@@ -118,6 +164,9 @@ class View:
         return (other is not None and max(abs(a - b) for a, b in zip(self.pos, other.pos)) < 0.05
                 and abs(self.pitch - other.pitch) < 0.01 and abs((self.yaw - other.yaw + 180) % 360 - 180) < 0.01
                 and abs(self.vfov - other.vfov) < 0.01)
+
+    def inside(self):
+        return all(lo <= v <= hi for v, (lo, hi) in zip(self.pos, PLAY_AREA))
 
     def commands(self):
         x, y, z = self.pos
@@ -154,7 +203,21 @@ class Link:
         self.timing = 0.0
         self.event = threading.Event()
         self.running = False
+        self.outside = False
         self.lock = threading.Lock()
+
+    def game_camera(self):
+        """Where the game camera is now: ((x, y, z), pitch, yaw) in game units and degrees, or None."""
+        line = self.con.request('getpos', 'setpos') if self.con else None
+        if not line:
+            return None
+        try:
+            pos_part, ang_part = line.split(';')[:2]
+            pos = tuple(float(v) for v in pos_part.split()[1:4])
+            pitch, yaw = (float(v) for v in ang_part.split()[1:3])
+        except ValueError:
+            return None
+        return pos, pitch, yaw
 
     def start(self):
         if self.running:
@@ -188,6 +251,11 @@ class Link:
             with self.lock:
                 view = self.wanted
             if view is None or view.close_to(self.sent):
+                continue
+            # The camera is the player's own hero: past the play area the game kills it (and with god mode on it
+            # gets stuck there, flooding the console).
+            self.outside = not view.inside()
+            if self.outside:
                 continue
             if not (self.con and self.con.alive):
                 self.error = 'lost the game console'
@@ -276,6 +344,10 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         img = bpy.data.images.get('.dlr_game_frame')
         game_aspect = img.size[0] / img.size[1] if img and img.size[1] else 16 / 9
         lk.want(game_view(rv3d.view_matrix.inverted(), region_vfov, aspect, game_aspect))
+        if lk.outside:
+            _draw_message(region, 'Outside the game\'s play area: the game camera stays put '
+                                  '(View > Jump to Game View to go back)')
+            return
         if _shown is None or img is None:
             return
         shot = _shown[0]
@@ -297,20 +369,76 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
             batch.draw(shader)
 
 
+def _draw_message(region, text):
+    blf.size(0, 16)
+    width, _ = blf.dimensions(0, text)
+    blf.position(0, max(10, (region.width - width) / 2), region.height / 2, 0)
+    blf.color(0, 1.0, 0.75, 0.3, 1.0)
+    blf.draw(0, text)
+
+
+_outside_shown = False
+
+
 def _poll_frames():
     """Load a new frame and redraw Deadlock viewports. Here, not in view_draw: Blender forbids writing data-blocks
     while drawing, and the worker thread can't touch Blender at all."""
-    global _shown
+    global _shown, _outside_shown
     lk = _link
     frame = lk.frame if lk else None
+    changed = bool(lk) and lk.outside != _outside_shown
+    if changed:
+        _outside_shown = lk.outside
     if frame and (_shown is None or frame[2] != _shown[1]):
         _image(frame[0])
         _shown = (frame[1], frame[2])
+        changed = True
+    if changed:
         for window in bpy.context.window_manager.windows:
             for area in window.screen.areas:
                 if area.type == 'VIEW_3D' and area.spaces.active.shading.type == 'RENDERED':
                     area.tag_redraw()
     return 0.03
+
+
+def blender_view(pos, pitch, yaw):
+    """Blender camera matrix for a game camera (game units, degrees)."""
+    to_blender = Matrix.Rotation(-math.pi / 2, 4, 'Z')
+    rot = to_blender @ Euler((math.radians(90 - pitch), 0, math.radians(yaw - 90))).to_matrix().to_4x4()
+    return Matrix.Translation((to_blender @ Vector(pos)) * UNIT) @ rot
+
+
+def jump_viewports(context, pos, pitch, yaw):
+    """Put every 3D viewport's view camera where the game camera is (orbiting 1 m in front of it)."""
+    cam = blender_view(pos, pitch, yaw)
+    forward = (cam.to_3x3() @ Vector((0, 0, -1))).normalized()
+    for area in context.screen.areas:
+        if area.type != 'VIEW_3D':
+            continue
+        rv3d = area.spaces.active.region_3d
+        rv3d.view_perspective = 'PERSP'
+        rv3d.view_rotation = cam.to_quaternion()
+        rv3d.view_distance = 1.0
+        rv3d.view_location = cam.translation + forward * 1.0
+        area.tag_redraw()
+
+
+class DLR_OT_game_jump(bpy.types.Operator):
+    bl_idname = 'dlr.game_jump'
+    bl_label = 'Jump to Game View'
+    bl_description = 'Move the 3D viewports to where the game camera is now'
+
+    @classmethod
+    def poll(cls, context):
+        return _link is not None and _link.running
+
+    def execute(self, context):
+        cam = _link.game_camera()
+        if cam is None:
+            self.report({'ERROR'}, 'the game did not answer getpos')
+            return {'CANCELLED'}
+        jump_viewports(context, *cam)
+        return {'FINISHED'}
 
 
 class DLR_OT_game_connect(bpy.types.Operator):
@@ -331,6 +459,9 @@ class DLR_OT_game_connect(bpy.types.Operator):
             _link = None
             self.report({'ERROR'}, f'no game console on port {self.port}: {error}')
             return {'CANCELLED'}
+        cam = _link.game_camera()
+        if cam:
+            jump_viewports(context, *cam)
         return {'FINISHED'}
 
 
@@ -364,6 +495,9 @@ class DLR_PT_game_render(bpy.types.Panel):
             col.label(text=f'Connected (port {lk.port})', icon='LINKED')
             if lk.frame:
                 col.label(text=f'Frame {lk.frame[2]}, {lk.timing * 1000:.0f} ms')
+            if lk.outside:
+                col.label(text='View is outside the play area', icon='ERROR')
+            col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
             col.operator(DLR_OT_game_disconnect.bl_idname)
         else:
             col.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
@@ -371,7 +505,12 @@ class DLR_PT_game_render(bpy.types.Panel):
             col.label(text=lk.error, icon='ERROR')
 
 
-CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_PT_game_render)
+def _view_menu(self, context):
+    if context.scene.render.engine == ENGINE_ID:
+        self.layout.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
+
+
+CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_jump, DLR_PT_game_render)
 
 
 def register():
@@ -379,6 +518,7 @@ def register():
         bpy.utils.register_class(c)
     if not bpy.app.timers.is_registered(_poll_frames):
         bpy.app.timers.register(_poll_frames, persistent=True)
+    bpy.types.VIEW3D_MT_view.append(_view_menu)
 
 
 def unregister():
@@ -388,5 +528,6 @@ def unregister():
         _link = None
     if bpy.app.timers.is_registered(_poll_frames):
         bpy.app.timers.unregister(_poll_frames)
+    bpy.types.VIEW3D_MT_view.remove(_view_menu)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
