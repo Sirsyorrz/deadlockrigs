@@ -46,6 +46,12 @@ STREAM_LATENCY = 0.08
 SEND_INTERVAL = 1 / 60
 FRAME = '.dlr_game_frame'
 ENGINE_ID = 'DLR_DEADLOCK_GAME'
+BRIDGE_PORT = 29001
+_BRIDGE_COMMAND = struct.Struct('<4sII3f3fff')
+_BRIDGE_STATUS = struct.Struct('<4sIIIIii3f3fff96s')
+SETUP_COMMON = ('citadel_hud_visible 0', 'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
+                'engine_no_focus_sleep 0', 'jpeg_quality 95')
+# Console camera (no bridge): the camera is the hero's own eye.
 SETUP = (
     'citadel_camera_free_roam 0', 'noclip 1', 'citadel_camera_overrides_enabled 1',
     'citadel_camera_override_pivot_x_offset 0', 'citadel_camera_override_pivot_y_offset 0',
@@ -185,6 +191,65 @@ class View:
                 f'citadel_camera_override_fov {self.vfov:.3f}')
 
 
+class Bridge:
+    """The camera bridge DLL in the game (native/dlr_bridge): sets the main view's eye, angles and horizontal FOV
+    each frame, independent of the hero. UDP on localhost; every packet is answered with the bridge's status."""
+
+    def __init__(self, port=BRIDGE_PORT):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.settimeout(0.5)
+        self.addr = ('127.0.0.1', port)
+        self.seq = 0
+        self.lock = threading.Lock()
+        self.size = (1920, 1080)
+
+    def _exchange(self, packet):
+        with self.lock:
+            self.sock.sendto(packet, self.addr)
+            data, _ = self.sock.recvfrom(4096)
+        f = _BRIDGE_STATUS.unpack(data[:_BRIDGE_STATUS.size])
+        status = {'state': f[2], 'views': f[3], 'applied': f[4], 'size': (f[5], f[6]), 'origin': f[7:10],
+                  'angles': f[10:13], 'fov': f[13], 'message': f[15].split(b'\0')[0].decode(errors='replace')}
+        if status['size'][1] > 0:
+            self.size = status['size']
+        return status
+
+    def status(self):
+        return self._exchange(b'ping')
+
+    def place(self, view):
+        """Hand the main view to this camera; returns the sequence number the bridge acknowledges once applied."""
+        w, h = self.size
+        hfov = math.degrees(2 * math.atan(math.tan(math.radians(view.vfov) / 2) * w / h))
+        self.seq += 1
+        self._exchange(_BRIDGE_COMMAND.pack(b'DLRC', self.seq, 1, *view.pos, view.pitch, view.yaw, 0.0, hfov, 0.0))
+        return self.seq
+
+    def wait_applied(self, seq, frames=3, timeout=2.0):
+        """Until the game has drawn a few main views with the camera of this sequence number."""
+        end = time.time() + timeout
+        first = None
+        while time.time() < end:
+            status = self.status()
+            if status['applied'] == seq:
+                if first is None:
+                    first = status['views']
+                elif status['views'] - first >= frames:
+                    return True
+            time.sleep(0.005)
+        return False
+
+    def release(self):
+        self.seq += 1
+        try:
+            self._exchange(_BRIDGE_COMMAND.pack(b'DLRC', self.seq, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        except OSError:
+            pass
+
+    def close(self):
+        self.sock.close()
+
+
 def tangent_extents(proj):
     """The view's edges in tangent space (x / -z, y / -z): ((left, right), (bottom, top)). Blender's projection
     gives ndc = P00 * u - P02, so the edges are where that is -1 and 1 (handles lens shift and camera-view zoom)."""
@@ -192,16 +257,17 @@ def tangent_extents(proj):
             ((-1 + proj[1][2]) / proj[1][1], (1 + proj[1][2]) / proj[1][1]))
 
 
-def game_view(cam_matrix, proj, game_aspect):
+def game_view(cam_matrix, proj, game_aspect, min_vfov=MIN_VFOV):
     """The game camera that covers a Blender view: same eye and direction, a vertical FOV wide enough that the
-    game's centred frame (game_aspect) covers the whole view. Roll is dropped (setang ignores it)."""
+    game's centred frame (game_aspect) covers the whole view. Roll is dropped (the bridge could take it; the
+    console can't)."""
     g = GAME_FROM_BLENDER @ cam_matrix
     fx, fy, fz = (-g.col[2].xyz).normalized()
     yaw = math.degrees(math.atan2(fy, fx))
     pitch = -math.degrees(math.asin(max(-1.0, min(1.0, fz))))
     (u0, u1), (v0, v1) = tangent_extents(proj)
     need = max(abs(v0), abs(v1), abs(u0) / game_aspect, abs(u1) / game_aspect)
-    vfov = min(MAX_VFOV, max(MIN_VFOV, math.degrees(2 * math.atan(need))))
+    vfov = min(MAX_VFOV, max(min_vfov, math.degrees(2 * math.atan(need))))
     return View(tuple(g.translation), pitch, yaw, vfov)
 
 
@@ -316,7 +382,24 @@ class Link:
         self.shot_lock = threading.Lock()
         self.cache = os.path.join(bpy.app.tempdir or '/tmp', 'dlr_game_frames')
         self.stream = None
+        self.bridge = None
+        self.start_camera = None
+        self.pinged = 0.0
         self.history = deque(maxlen=120)  # (time sent, View), for pairing stream frames with views
+
+    @property
+    def min_vfov(self):
+        return 1.0 if self.bridge else MIN_VFOV
+
+    def allowed(self, view):
+        # Only the console camera moves the hero (the game kills it outside the play area).
+        return self.bridge is not None or view.inside()
+
+    def _place(self, view):
+        if self.bridge:
+            return self.bridge.place(view)
+        self.con.send(*view.commands())
+        return None
 
     def stream_view(self, arrived):
         """The view a stream frame that arrived at this time most likely shows."""
@@ -331,6 +414,12 @@ class Link:
 
     def game_camera(self):
         """Where the game camera is now: ((x, y, z), pitch, yaw) in game units and degrees, or None."""
+        if self.bridge:
+            try:
+                status = self.bridge.status()
+            except OSError:
+                return None
+            return tuple(status['origin']), status['angles'][0], status['angles'][1]
         line = self.con.request('getpos', 'setpos') if self.con else None
         if not line:
             return None
@@ -347,7 +436,19 @@ class Link:
             return
         os.makedirs(self.cache, exist_ok=True)
         self.con = Netcon(self.port)
-        self.con.send(*SETUP)
+        bridge = Bridge()
+        try:
+            if bridge.status()['state'] == 1:
+                self.bridge = bridge
+        except OSError:
+            pass
+        if self.bridge is None:
+            bridge.close()
+        # Read the game's own camera before taking it over (Connect jumps the viewports there).
+        self.start_camera = self.game_camera()
+        self.con.send(*SETUP_COMMON)
+        if self.bridge is None:
+            self.con.send(*SETUP)
         wid = find_game_window() if shutil.which('ffmpeg') and os.environ.get('DISPLAY') else None
         if wid:
             stream = Stream(wid)
@@ -365,6 +466,10 @@ class Link:
         if self.stream:
             self.stream.stop()
             self.stream = None
+        if self.bridge:
+            self.bridge.release()
+            self.bridge.close()
+            self.bridge = None
         if self.con:
             self.con.close()
             self.con = None
@@ -380,15 +485,16 @@ class Link:
         """Place the game camera and take a screenshot; returns the file path (the caller moves or deletes it)."""
         if not (self.con and self.con.alive):
             raise ConnectionError('lost the game console')
-        # The camera is the player's own hero: past the play area the game kills it (and with god mode on it
-        # gets stuck there, flooding the console).
-        if not view.inside():
+        # The console camera is the player's own hero: past the play area the game kills it (and with god mode on
+        # it gets stuck there, flooding the console).
+        if not self.allowed(view):
             raise ValueError('the camera is outside the game\'s play area')
         ext = '.png' if kind == 'png_screenshot' else '.jpg'
         folder = os.path.join(game_dir() or '', 'citadel', 'screenshots')
         with self.shot_lock:
-            self.con.send(*view.commands())
-            time.sleep(settle)
+            seq = self._place(view)
+            if seq is None or not self.bridge.wait_applied(seq):
+                time.sleep(settle)
             before = set(os.listdir(folder)) if os.path.isdir(folder) else set()
             self.con.send(kind)
             end = time.time() + 10.0
@@ -415,15 +521,25 @@ class Link:
         else:
             self._run_shots()
 
+    def _keepalive(self):
+        # The bridge gives the camera back to the game after 3 s without packets (Blender closed or crashed).
+        if self.bridge and time.time() - self.pinged > 1.0:
+            self.pinged = time.time()
+            try:
+                self.bridge.status()
+            except OSError:
+                pass
+
     def _run_stream(self):
         while self.running:
             self.event.wait(0.5)
             self.event.clear()
+            self._keepalive()
             with self.lock:
                 view = self.wanted
             if view is None or view.close_to(self.sent):
                 continue
-            self.outside = not view.inside()
+            self.outside = not self.allowed(view)
             if self.outside:
                 continue
             if not (self.con and self.con.alive):
@@ -434,7 +550,7 @@ class Link:
                 self.error = self.stream.error or 'game window stream ended'
             try:
                 with self.shot_lock:
-                    self.con.send(*view.commands())
+                    self._place(view)
             except OSError as error:
                 self.error = str(error)
                 continue
@@ -446,11 +562,12 @@ class Link:
         while self.running:
             self.event.wait(0.5)
             self.event.clear()
+            self._keepalive()
             with self.lock:
                 view = self.wanted
             if view is None or view.close_to(self.sent):
                 continue
-            self.outside = not view.inside()
+            self.outside = not self.allowed(view)
             if self.outside:
                 continue
             start = time.time()
@@ -641,7 +758,7 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
             _draw_message(region, 'Not connected: Render Properties > Deadlock Game > Connect')
         elif lk.stream:
             w, h = lk.stream.size
-            lk.want(game_view(rv3d.view_matrix.inverted(), rv3d.window_matrix, w / h))
+            lk.want(game_view(rv3d.view_matrix.inverted(), rv3d.window_matrix, w / h, lk.min_vfov))
             frame = _stream_texture(lk)
             if lk.outside:
                 _draw_message(region, 'Outside the game\'s play area: the game camera stays put '
@@ -651,7 +768,7 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         else:
             img = bpy.data.images.get(FRAME)
             game_aspect = img.size[0] / img.size[1] if img and img.size[1] else 16 / 9
-            lk.want(game_view(rv3d.view_matrix.inverted(), rv3d.window_matrix, game_aspect))
+            lk.want(game_view(rv3d.view_matrix.inverted(), rv3d.window_matrix, game_aspect, lk.min_vfov))
             if lk.outside:
                 _draw_message(region, 'Outside the game\'s play area: the game camera stays put '
                                       '(View > Jump to Game View to go back)')
@@ -722,7 +839,8 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         render = scene.render
         proj = camera.calc_matrix_camera(depsgraph, x=width, y=height, scale_x=render.pixel_aspect_x,
                                          scale_y=render.pixel_aspect_y)
-        view = game_view(camera.matrix_world, proj, 16 / 9)
+        w, h = lk.bridge.size if lk.bridge else (16, 9)
+        view = game_view(camera.matrix_world, proj, w / h, lk.min_vfov)
         path = lk.capture(view, 'png_screenshot', settle=0.25)
         try:
             frame = _load_linear(path)
@@ -852,7 +970,7 @@ class DLR_OT_game_connect(bpy.types.Operator):
             _link = None
             self.report({'ERROR'}, f'no game console on port {self.port}: {error}')
             return {'CANCELLED'}
-        cam = _link.game_camera()
+        cam = _link.start_camera
         if cam:
             jump_viewports(context, *cam)
         return {'FINISHED'}
@@ -900,6 +1018,8 @@ class DLR_PT_game_render(bpy.types.Panel):
         lk = _link
         if lk and lk.running:
             col.label(text=f'Connected (port {lk.port})', icon='LINKED')
+            col.label(text='Camera: bridge (free camera)' if lk.bridge else
+                      'Camera: console (moves the hero; start the session with --bridge for a free camera)')
             if lk.stream:
                 w, h = lk.stream.size
                 col.label(text=f'Streaming the game window ({w}x{h})')

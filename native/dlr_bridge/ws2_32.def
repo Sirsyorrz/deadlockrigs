@@ -1,0 +1,7 @@
+LIBRARY ws2_32.dll
+EXPORTS
+WSAStartup
+socket
+bind
+recvfrom
+sendto
