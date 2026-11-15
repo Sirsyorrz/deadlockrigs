@@ -398,7 +398,8 @@ static int claimed(uptr node, u32 except) {
 
 // Calls visit(context, node, index, model name) for every non-player entity with a model.
 typedef int (*Visit)(void *, uptr, u32, const char *);
-static void walk_entities(Visit visit, void *context) {
+// The local player's pawn is left out unless asked for by index (hiding it from shots).
+static void walk_entities(Visit visit, void *context, int with_pawn) {
     uptr list;
     if (!safe_read(gClient + RVA_ENTITY_LIST, &list, 8) || !list)
         return;
@@ -412,7 +413,7 @@ static void walk_entities(Visit visit, void *context) {
             char name[128];
             if (!safe_read(identity, &instance, 8) || !instance ||
                 !safe_read(instance + ENTITY_IDENTITY, &backlink, 8) || backlink != identity ||
-                !safe_read(instance, &vtable, 8) || vtable == gClient + RVA_PLAYER_PAWN_VTABLE ||
+                !safe_read(instance, &vtable, 8) || (!with_pawn && vtable == gClient + RVA_PLAYER_PAWN_VTABLE) ||
                 !safe_read(instance + ENTITY_SCENE_NODE, &node, 8) || !node ||
                 !safe_read(node + NODE_OWNER, &owner, 8) || owner != instance ||
                 !safe_read(identity + IDENTITY_HANDLE, &handle, 4) || !node_model(node, name, sizeof(name)))
@@ -441,7 +442,7 @@ static int find_visit(void *context, uptr node, u32 index, const char *name) {
 // Wanted entity index, or 0 for the newest unclaimed non-player entity whose model path contains `model`.
 static uptr find_entity(const char *model, u32 wanted, u32 slot, u32 *index_out) {
     struct Find f = {model, wanted, slot, 0, 0};
-    walk_entities(find_visit, &f);
+    walk_entities(find_visit, &f, wanted != 0);
     *index_out = f.best_index;
     return f.best;
 }
@@ -775,7 +776,7 @@ static DWORD WINAPI net_thread(void *arg) {
             model[63] = 0;
             list.model = model;
             list.count = 0;
-            walk_entities(list_visit, &list);
+            walk_entities(list_visit, &list, 0);
             static u8 reply[8 + 4 * LIST_MAX];
             memcpy(reply, "DLRL", 4);
             memcpy(reply + 4, &list.count, 4);
