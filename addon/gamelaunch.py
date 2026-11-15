@@ -69,7 +69,8 @@ def game_running(game):
                 cmd = f.read()
         except OSError:
             continue
-        if b'deadlock.exe' in cmd.lower() and b'win64' in cmd:
+        # Wine shows the Windows path as argv[0]; launcher wrappers only mention it further along.
+        if cmd.split(b'\0', 1)[0].replace(b'\\', b'/').lower().endswith(b'win64/deadlock.exe'):
             return True
     return False
 
@@ -78,10 +79,11 @@ class Session:
     """One launch. start() returns at once; a thread runs the launch and reports through .status / .error / .ready.
     Everything it changed is undone by stop() or, after a crash, by recover() (run before every start)."""
 
-    def __init__(self, game, port, size=(1920, 1080), mods=False, extra=()):
+    def __init__(self, game, port, size=(1920, 1080), mods=False, extra=(), map_name='dl_hideout'):
         self.game = game
         self.port = port
         self.size = size
+        self.map_name = map_name
         self.mods = mods
         self.extra = list(extra)
         self.status = ''
@@ -175,6 +177,24 @@ class Session:
                 os.remove(path)
         shutil.rmtree(self.cfg_backup)
 
+    def _windowed_video(self):
+        """A plain window of the session size: a saved (borderless) fullscreen mode beats -windowed -w -h, and a
+        stretched fullscreen window makes the viewport stream 4x the pixels. Put back with the other cfgs."""
+        w, h = self.size
+        want = {'setting.fullscreen': '0', 'setting.coop_fullscreen': '0', 'setting.defaultres': str(w),
+                'setting.defaultresheight': str(h)}
+        for path in self._user_cfgs():
+            if os.path.basename(path) != 'video.txt':
+                continue
+            lines = open(path, encoding='utf-8', errors='replace').read().splitlines(keepends=True)
+            for i, line in enumerate(lines):
+                parts = line.split('"')
+                if len(parts) >= 5 and parts[1] in want:
+                    parts[3] = want[parts[1]]
+                    lines[i] = '"'.join(parts)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+
     def recover(self):
         """Undo a session that never got to stop (Blender crashed, or the game was closed by hand)."""
         self.restore_gameinfo()
@@ -184,8 +204,22 @@ class Session:
     # launch ---------------------------------------------------------------------------------------------------
     def args(self):
         w, h = self.size
-        return ['-dev', '-insecure', '-console', '-novid', '-windowed', '-condebug', '-netconport', str(self.port),
-                '-w', str(w), '-h', str(h), *self.extra]
+        args = ['-dev', '-insecure', '-console', '-novid', '-windowed', '-condebug', '-netconport', str(self.port),
+                '-w', str(w), '-h', str(h)]
+        if self.map_name != 'dl_hideout':
+            args += ['+map', self.map_name]
+        return args + self.extra
+
+    def setup_commands(self):
+        """Console commands for the first connection."""
+        w, h = self.size
+        # A saved fullscreen video.txt beats -w/-h; this switches live (video.txt is put back on quit).
+        commands = [f'citadel_force_resolution {w} {h}']
+        if self.map_name != 'dl_hideout':
+            # A map loaded from the command line starts without a hero; the camera bridge needs the player in
+            # the game (the hero is folded away in shots).
+            commands += ['jointeam 2', 'selecthero hero_atlas']
+        return commands
 
     def start(self):
         if game_running(self.game):
@@ -203,6 +237,7 @@ class Session:
         if os.path.exists(stale):
             os.remove(stale)
         self.snapshot_cfgs()
+        self._windowed_video()
         original = open(self.gameinfo, 'rb').read()
         with open(self.backup, 'wb') as f:
             f.write(original)

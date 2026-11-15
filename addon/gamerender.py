@@ -65,6 +65,7 @@ def _time_state(data):
     f = _TIME_REPLY.unpack(data[:_TIME_REPLY.size])
     return {'available': f[1], 'frozen': f[2], 'step_done': f[3], 'framerate': f[4]}
 POSE_SLOTS = 8
+PAWN_SLOT = POSE_SLOTS - 1  # holds the player's own hero folded away
 # A puppet's entity follows its pose (the game culls a model by its entity's bounds) once the pose has moved this
 # far, in game units.
 FOLLOW_DISTANCE = 16.0
@@ -545,8 +546,9 @@ class Link:
     view wins; views posted while a shot is in flight are skipped). F12 renders call capture() directly; the shot
     lock keeps them from interleaving with the viewport."""
 
-    def __init__(self, port=PORT):
+    def __init__(self, port=PORT, setup=()):
         self.port = port
+        self.launch_setup = tuple(setup)  # console commands for a session started from here (window size, map)
         self.con = None
         self.error = ''
         self.wanted = None
@@ -621,6 +623,10 @@ class Link:
             return
         os.makedirs(self.cache, exist_ok=True)
         self.con = Netcon(self.port)
+        if self.launch_setup:
+            self.con.send(*self.launch_setup)
+            # The window resizes and the hero spawns before the stream measures the window.
+            time.sleep(2.0)
         bridge = Bridge()
         try:
             if bridge.status()['state'] == 1:
@@ -636,6 +642,7 @@ class Link:
         self.con.send(*SETUP_COMMON)
         if self.poses:
             self.remove_leftovers()
+            self.hide_player()
         if self.bridge is None:
             self.con.send(*SETUP)
         wid = None
@@ -666,6 +673,11 @@ class Link:
         had_puppets = bool(self.puppets)
         for puppet in list(self.puppets.values()):
             self.remove_puppet(puppet)
+        if self.poses:
+            try:
+                self.poses.pose(PAWN_SLOT, '', active=False)
+            except OSError:
+                pass
         self.release_time()
         if had_puppets and self.con:
             # Closing the console right after sending can drop the ent_remove commands.
@@ -688,7 +700,7 @@ class Link:
         model = _arm_model(arm)
         if not model:
             raise ValueError(f'{arm.name} is not a Deadlock rig (no game model known for it)')
-        used = {p.slot for p in self.puppets.values()}
+        used = {p.slot for p in self.puppets.values()} | {PAWN_SLOT}
         slot = next((i for i in range(POSE_SLOTS) if i not in used), None)
         if slot is None:
             raise ValueError(f'all {POSE_SLOTS} pose slots are in use')
@@ -709,6 +721,20 @@ class Link:
         self.puppets[arm.name] = puppet
         self._save_spawned()
         return puppet
+
+    def hide_player(self):
+        """Fold the player's own hero (the session needs one, and it stands where the shots are) into a point: every
+        bone of its pose at scale 0, mesh and shadow gone. The game shows it again 3 s after Blender goes quiet."""
+        line = self.con.request('ent_find player', "'player'", timeout=2.0)
+        try:
+            entity = int(line.rsplit('entindex', 1)[1].strip(' )'))
+        except (AttributeError, IndexError, ValueError):
+            return False
+        bound = self.poses.pose(PAWN_SLOT, '', entity=entity, active=False)
+        if bound is None or not bound['count']:
+            return False
+        folded = struct.pack('<3ff4f', *bound['origin'], 0.0, 0.0, 0.0, 0.0, 1.0) * bound['count']
+        return self.poses.pose(PAWN_SLOT, '', folded, bound['count'], entity=entity) is not None
 
     def _save_spawned(self):
         try:
@@ -1382,11 +1408,11 @@ class DLR_OT_game_connect(bpy.types.Operator):
         return {'FINISHED'}
 
 
-def connect(context, port=PORT):
+def connect(context, port=PORT, setup=()):
     global _link
     if _link:
         _link.stop()
-    _link = Link(port)
+    _link = Link(port, setup)
     try:
         _link.start()
     except OSError:
@@ -1413,7 +1439,7 @@ def _session_poll():
                     area.tag_redraw()
         return None if s.error else 0.5
     try:
-        connect(bpy.context, s.port)
+        connect(bpy.context, s.port, s.setup_commands())
     except OSError as error:
         s.error = f'started, but could not connect: {error}'
     for window in bpy.context.window_manager.windows:
@@ -1429,6 +1455,14 @@ class DLR_OT_game_start(bpy.types.Operator):
                       'camera bridge, and connect when it is up (1-2 minutes). Your game settings are put back '
                       'when it quits')
 
+    map: bpy.props.EnumProperty(name='Map', items=(
+        ('dl_hideout', 'Hideout', 'The hideout the game starts in (loads fastest)'),
+        ('dl_midtown', 'Midtown', 'The match map (needs more memory)'),
+    ))
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
     def execute(self, context):
         global _session
         from . import gamelaunch
@@ -1436,7 +1470,7 @@ class DLR_OT_game_start(bpy.types.Operator):
         if not game or not os.path.isdir(game):
             self.report({'ERROR'}, 'Deadlock not found (set its folder in the add-on preferences)')
             return {'CANCELLED'}
-        session = gamelaunch.Session(game, PORT)
+        session = gamelaunch.Session(game, PORT, map_name=self.map)
         try:
             session.start()
         except (OSError, RuntimeError) as error:
