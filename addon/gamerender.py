@@ -424,17 +424,44 @@ def blender_view(pos, pitch, yaw):
     return Matrix.Translation((to_blender @ Vector(pos)) * UNIT) @ rot
 
 
+HOST = '/run/host'
+HOST_LOADER = HOST + '/usr/lib/ld-linux-x86-64.so.2'
+HOST_LIBS = ('/usr/lib', '/usr/lib64', '/usr/lib/x86_64-linux-gnu', '/usr/lib/pulseaudio',
+             '/usr/lib/x86_64-linux-gnu/pulseaudio')
+
+
+def host_tool(name):
+    """Command prefix for a host program, or None. Steam's Blender runs in Steam's runtime container
+    (pressure-vessel), which has none of ffmpeg/xprop/xwininfo: there the host's own copy runs through the host's
+    loader and libraries (mounted under /run/host)."""
+    found = shutil.which(name)
+    if found:
+        return [found]
+    if os.environ.get('container') == 'pressure-vessel' and os.path.exists(HOST_LOADER):
+        for d in ('/usr/bin', '/bin', '/usr/local/bin'):
+            path = HOST + d + '/' + name
+            if os.path.exists(path):
+                libs = ':'.join(HOST + lib for lib in HOST_LIBS if os.path.isdir(HOST + lib))
+                return [HOST_LOADER, '--library-path', libs, path]
+    return None
+
+
+def _run_tool(name, *args, **kwargs):
+    tool = host_tool(name)
+    if tool is None:
+        raise FileNotFoundError(name)
+    return subprocess.run([*tool, *args], **kwargs)
+
+
 def find_game_window():
     """X11 id of the game window (Proton runs it under XWayland), or None."""
     try:
-        out = subprocess.run(['xprop', '-root', '_NET_CLIENT_LIST'], capture_output=True, text=True,
-                             timeout=2).stdout
+        out = _run_tool('xprop', '-root', '_NET_CLIENT_LIST', capture_output=True, text=True, timeout=2).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     for wid in out.split('#')[-1].replace(',', ' ').split():
         try:
-            cls = subprocess.run(['xprop', '-id', wid, 'WM_CLASS'], capture_output=True, text=True,
-                                 timeout=2).stdout
+            cls = _run_tool('xprop', '-id', wid, 'WM_CLASS', capture_output=True, text=True, timeout=2).stdout
         except (OSError, subprocess.SubprocessError):
             continue
         if 'steam_app_1422450' in cls:
@@ -443,8 +470,10 @@ def find_game_window():
 
 
 def _window_size(wid):
-    out = subprocess.run(['xwininfo', '-id', wid], capture_output=True, text=True, timeout=2).stdout \
-        if shutil.which('xwininfo') else ''
+    try:
+        out = _run_tool('xwininfo', '-id', wid, capture_output=True, text=True, timeout=2).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ''
     size = {}
     for line in out.splitlines():
         key, _, value = line.strip().partition(':')
@@ -469,14 +498,14 @@ class Stream:
         self.size = _window_size(self.wid) or self._probe_size()
         w, h = self.size
         self.proc = subprocess.Popen(
-            ['ffmpeg', '-loglevel', 'error', '-f', 'x11grab', '-draw_mouse', '0', '-framerate', '60',
+            [*host_tool('ffmpeg'), '-loglevel', 'error', '-f', 'x11grab', '-draw_mouse', '0', '-framerate', '60',
              '-window_id', self.wid, '-i', os.environ.get('DISPLAY', ':0'), '-f', 'rawvideo', '-pix_fmt', 'rgb0',
              '-'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         threading.Thread(target=self._read, args=(w * h * 4,), daemon=True).start()
 
     def _probe_size(self):
         out = subprocess.run(
-            ['ffmpeg', '-loglevel', 'error', '-f', 'x11grab', '-window_id', self.wid, '-i',
+            [*host_tool('ffmpeg'), '-loglevel', 'error', '-f', 'x11grab', '-window_id', self.wid, '-i',
              os.environ.get('DISPLAY', ':0'), '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
             capture_output=True, timeout=10)
         # x11grab has no size query; one grey frame of the window has w * h bytes and games are 16:9.
@@ -605,7 +634,15 @@ class Link:
             self.remove_leftovers()
         if self.bridge is None:
             self.con.send(*SETUP)
-        wid = find_game_window() if shutil.which('ffmpeg') and os.environ.get('DISPLAY') else None
+        wid = None
+        if not os.environ.get('DISPLAY'):
+            self.error = 'screenshot mode: no X display for the window stream'
+        elif host_tool('ffmpeg') is None:
+            self.error = 'screenshot mode: ffmpeg not found (install it for the live stream)'
+        else:
+            wid = find_game_window()
+            if not wid:
+                self.error = 'screenshot mode: game window not found (needs xprop)'
         if wid:
             stream = Stream(wid)
             try:
