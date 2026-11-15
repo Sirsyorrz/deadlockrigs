@@ -520,6 +520,7 @@ class Link:
         self.history = deque(maxlen=120)  # (time sent, View), for pairing stream frames with views
         self.poses = None
         self.puppets = {}  # armature name -> Puppet
+        self.declined = set()  # rigs the user took out of the game, or that failed to spawn
 
     @property
     def min_vfov(self):
@@ -642,6 +643,23 @@ class Link:
         puppet = Puppet(arm.name, slot, bound['entity'], model, names, parents, inv_binds, arm)
         self.puppets[arm.name] = puppet
         return puppet
+
+    def sync_puppets(self, depsgraph):
+        """Every visible Deadlock rig in the scene is posed in the game (rigs taken out stay out)."""
+        if not (self.running and self.poses):
+            return
+        for obj in depsgraph.objects:
+            arm = obj.original
+            if (obj.type != 'ARMATURE' or not arm.get('dlrig') or arm.name in self.puppets
+                    or arm.name in self.declined or not arm.visible_get()):
+                continue
+            try:
+                self.add_puppet(arm)
+            except (OSError, ValueError, TimeoutError) as error:
+                self.declined.add(arm.name)
+                self.error = f'{arm.name}: {error}'
+        if self.puppets:
+            self.send_poses(depsgraph)
 
     def remove_puppet(self, puppet):
         self.puppets.pop(puppet.arm_name, None)
@@ -925,9 +943,9 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         rebuild = {u.id.original.name for u in depsgraph.updates
                    if isinstance(u.id, bpy.types.Object) and u.is_updated_geometry}
         lk = _link
+        if lk:
+            lk.sync_puppets(depsgraph)
         puppets = set(lk.puppets) if lk else set()
-        if puppets and lk.running:
-            lk.send_poses(depsgraph)
         seen = set()
         for inst in depsgraph.object_instances:
             obj = inst.object
@@ -1057,6 +1075,7 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
                                          scale_y=render.pixel_aspect_y)
         w, h = lk.bridge.size if lk.bridge else (16, 9)
         view = game_view(camera.matrix_world, proj, w / h, lk.min_vfov)
+        lk.sync_puppets(depsgraph)
         if lk.puppets:
             lk.send_poses(depsgraph, settle=2.0)
         path = lk.capture(view, 'png_screenshot', settle=0.25)
@@ -1210,7 +1229,8 @@ class DLR_OT_game_pose_rig(bpy.types.Operator):
     bl_idname = 'dlr.game_pose_rig'
     bl_label = 'Pose in Game'
     bl_description = ('Spawn the selected rig\'s hero in the game and pose it from the rig: the game draws and lights '
-                      'it (viewport and F12), and it follows keyframes and posing')
+                      'it (viewport and F12), and it follows keyframes and posing. Visible rigs are added by '
+                      'themselves; this brings back one taken out of the game')
 
     @classmethod
     def poll(cls, context):
@@ -1220,6 +1240,7 @@ class DLR_OT_game_pose_rig(bpy.types.Operator):
 
     def execute(self, context):
         arm = puppet_armature(context.active_object)
+        _link.declined.discard(arm.name)
         try:
             _link.add_puppet(arm)
             _link.send_poses(context.evaluated_depsgraph_get())
@@ -1241,6 +1262,7 @@ class DLR_OT_game_unpose_rig(bpy.types.Operator):
     def execute(self, context):
         puppet = _link.puppets.get(self.armature) if _link else None
         if puppet:
+            _link.declined.add(self.armature)
             _link.remove_puppet(puppet)
             arm = bpy.data.objects.get(self.armature)
             if arm:
@@ -1289,7 +1311,10 @@ class DLR_PT_game_render(bpy.types.Panel):
                 col.label(text='View is outside the play area', icon='ERROR')
             col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
             if lk.poses:
-                col.operator(DLR_OT_game_pose_rig.bl_idname, icon='ARMATURE_DATA')
+                col.label(text='Visible Deadlock rigs are posed in the game (Rendered shading or F12)')
+                arm = puppet_armature(context.active_object)
+                if arm is not None and arm.name in lk.declined:
+                    col.operator(DLR_OT_game_pose_rig.bl_idname, icon='ARMATURE_DATA')
                 for name, puppet in lk.puppets.items():
                     row = col.row()
                     row.label(text=f'{name}: entity {puppet.entity}', icon='OUTLINER_OB_ARMATURE')
