@@ -19,8 +19,10 @@ import os
 import shutil
 import socket
 import struct
+import subprocess
 import threading
 import time
+from collections import deque
 
 import blf
 import bpy
@@ -38,6 +40,10 @@ MAX_VFOV = 120.0
 PLAY_AREA = ((-13500, 13500), (-13500, 13500), (-2800, 5500))
 PORT = 29000
 SETTLE = 0.06  # after a teleport, before the shot: the client needs a frame or two to catch up
+# setang to the x11grab stream showing it, measured 65-105 ms at 1080p: a frame is paired with the view sent this
+# long before it arrived.
+STREAM_LATENCY = 0.08
+SEND_INTERVAL = 1 / 60
 FRAME = '.dlr_game_frame'
 ENGINE_ID = 'DLR_DEADLOCK_GAME'
 SETUP = (
@@ -206,10 +212,93 @@ def blender_view(pos, pitch, yaw):
     return Matrix.Translation((to_blender @ Vector(pos)) * UNIT) @ rot
 
 
+def find_game_window():
+    """X11 id of the game window (Proton runs it under XWayland), or None."""
+    try:
+        out = subprocess.run(['xprop', '-root', '_NET_CLIENT_LIST'], capture_output=True, text=True,
+                             timeout=2).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for wid in out.split('#')[-1].replace(',', ' ').split():
+        try:
+            cls = subprocess.run(['xprop', '-id', wid, 'WM_CLASS'], capture_output=True, text=True,
+                                 timeout=2).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if 'steam_app_1422450' in cls:
+            return wid
+    return None
+
+
+def _window_size(wid):
+    out = subprocess.run(['xwininfo', '-id', wid], capture_output=True, text=True, timeout=2).stdout \
+        if shutil.which('xwininfo') else ''
+    size = {}
+    for line in out.splitlines():
+        key, _, value = line.strip().partition(':')
+        if key in ('Width', 'Height'):
+            size[key] = int(value)
+    return (size['Width'], size['Height']) if len(size) == 2 else None
+
+
+class Stream:
+    """The game window as a live stream: ffmpeg x11grab writes raw RGBX frames to a pipe, a thread keeps the
+    latest. Frames stay bytes: the shader unpacks them, so no per-frame conversion on the CPU."""
+
+    def __init__(self, wid):
+        self.wid = wid
+        self.size = None
+        self.latest = None  # (bytes, arrival time, sequence)
+        self.seq = 0
+        self.error = ''
+        self.proc = None
+
+    def start(self):
+        self.size = _window_size(self.wid) or self._probe_size()
+        w, h = self.size
+        self.proc = subprocess.Popen(
+            ['ffmpeg', '-loglevel', 'error', '-f', 'x11grab', '-draw_mouse', '0', '-framerate', '60',
+             '-window_id', self.wid, '-i', os.environ.get('DISPLAY', ':0'), '-f', 'rawvideo', '-pix_fmt', 'rgb0',
+             '-'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        threading.Thread(target=self._read, args=(w * h * 4,), daemon=True).start()
+
+    def _probe_size(self):
+        out = subprocess.run(
+            ['ffmpeg', '-loglevel', 'error', '-f', 'x11grab', '-window_id', self.wid, '-i',
+             os.environ.get('DISPLAY', ':0'), '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'],
+            capture_output=True, timeout=10)
+        # x11grab has no size query; one grey frame of the window has w * h bytes and games are 16:9.
+        n = len(out.stdout)
+        h = int(round(math.sqrt(n * 9 / 16)))
+        if not n or n % h:
+            raise OSError('could not read the game window: ' + out.stderr.decode(errors='replace').strip())
+        return n // h, h
+
+    def _read(self, n):
+        pipe = self.proc.stdout
+        while True:
+            buf = pipe.read(n)
+            if len(buf) < n:
+                break
+            self.seq += 1
+            self.latest = (buf, time.time(), self.seq)
+        err = self.proc.stderr.read().decode(errors='replace').strip() if self.proc.stderr else ''
+        self.error = 'game window stream ended' + (f': {err}' if err else '')
+
+    @property
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
+
+
 class Link:
-    """One game connection. view_draw posts the wanted view; a worker thread places the game camera, takes a
-    jpeg screenshot and hands the file back. Latest wins: views posted while a shot is in flight are skipped.
-    F12 renders call capture() directly; the shot lock keeps them from interleaving with the viewport."""
+    """One game connection. view_draw posts the wanted view; a worker thread places the game camera. The frame
+    comes back as a live window stream when possible (X11/XWayland and ffmpeg), else as jpeg screenshots (latest
+    view wins; views posted while a shot is in flight are skipped). F12 renders call capture() directly; the shot
+    lock keeps them from interleaving with the viewport."""
 
     def __init__(self, port=PORT):
         self.port = port
@@ -226,6 +315,19 @@ class Link:
         self.lock = threading.Lock()
         self.shot_lock = threading.Lock()
         self.cache = os.path.join(bpy.app.tempdir or '/tmp', 'dlr_game_frames')
+        self.stream = None
+        self.history = deque(maxlen=120)  # (time sent, View), for pairing stream frames with views
+
+    def stream_view(self, arrived):
+        """The view a stream frame that arrived at this time most likely shows."""
+        chosen = None
+        for sent, view in list(self.history):
+            if sent > arrived - STREAM_LATENCY:
+                break
+            chosen = view
+        if chosen is None and self.history:
+            chosen = self.history[0][1]
+        return chosen
 
     def game_camera(self):
         """Where the game camera is now: ((x, y, z), pitch, yaw) in game units and degrees, or None."""
@@ -246,12 +348,23 @@ class Link:
         os.makedirs(self.cache, exist_ok=True)
         self.con = Netcon(self.port)
         self.con.send(*SETUP)
+        wid = find_game_window() if shutil.which('ffmpeg') and os.environ.get('DISPLAY') else None
+        if wid:
+            stream = Stream(wid)
+            try:
+                stream.start()
+                self.stream = stream
+            except (OSError, subprocess.SubprocessError) as error:
+                self.error = f'screenshot mode: {error}'
         self.running = True
         threading.Thread(target=self._run, daemon=True).start()
 
     def stop(self):
         self.running = False
         self.event.set()
+        if self.stream:
+            self.stream.stop()
+            self.stream = None
         if self.con:
             self.con.close()
             self.con = None
@@ -297,6 +410,39 @@ class Link:
         raise TimeoutError('no screenshot appeared (is the game window minimised?)')
 
     def _run(self):
+        if self.stream:
+            self._run_stream()
+        else:
+            self._run_shots()
+
+    def _run_stream(self):
+        while self.running:
+            self.event.wait(0.5)
+            self.event.clear()
+            with self.lock:
+                view = self.wanted
+            if view is None or view.close_to(self.sent):
+                continue
+            self.outside = not view.inside()
+            if self.outside:
+                continue
+            if not (self.con and self.con.alive):
+                self.error = 'lost the game console'
+                self.running = False
+                break
+            if not self.stream.alive:
+                self.error = self.stream.error or 'game window stream ended'
+            try:
+                with self.shot_lock:
+                    self.con.send(*view.commands())
+            except OSError as error:
+                self.error = str(error)
+                continue
+            self.history.append((time.time(), view))
+            self.sent = view
+            time.sleep(SEND_INTERVAL)
+
+    def _run_shots(self):
         while self.running:
             self.event.wait(0.5)
             self.event.clear()
@@ -328,6 +474,8 @@ class Link:
 
 _link = None
 _shown = None  # (View, sequence) of the frame loaded into the image; set by the timer, read by view_draw
+_stream_tex = None  # (stream sequence, GPUTexture, View) of the stream frame on the GPU
+_stream_drawn = 0
 
 
 def link():
@@ -368,6 +516,58 @@ def solid_shader():
                              ' frag = vec4(color.rgb * (0.2 + 0.8 * d), color.a); }')
         _solid_shader = gpu.shader.create_from_info(info)
     return _solid_shader
+
+
+_packed_shader = None
+
+
+def packed_shader():
+    """Draws a stream frame uploaded as raw bytes: each R32F texel holds one RGBX pixel's four bytes. Unpacks
+    them, flips rows (X11 is top-down) and decodes sRGB to linear, like an sRGB image texture would."""
+    global _packed_shader
+    if _packed_shader is None:
+        info = gpu.types.GPUShaderCreateInfo()
+        info.sampler(0, 'FLOAT_2D', 'image')
+        info.vertex_in(0, 'VEC2', 'pos')
+        info.vertex_in(1, 'VEC2', 'texCoord')
+        iface = gpu.types.GPUStageInterfaceInfo('dlr_packed_iface')
+        iface.smooth('VEC2', 'uv')
+        info.vertex_out(iface)
+        info.fragment_out(0, 'VEC4', 'frag')
+        info.vertex_source('void main() { uv = texCoord; gl_Position = vec4(pos, 0.0, 1.0); }')
+        info.fragment_source(
+            'vec3 texel(ivec2 p) {'
+            '  uint b = floatBitsToUint(texelFetch(image, p, 0).r);'
+            '  vec3 c = vec3(float(b & 255u), float((b >> 8u) & 255u), float((b >> 16u) & 255u)) / 255.0;'
+            '  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));'
+            '}'
+            'void main() {'
+            '  ivec2 size = textureSize(image, 0);'
+            '  vec2 p = vec2(uv.x, 1.0 - uv.y) * vec2(size) - 0.5;'
+            '  ivec2 i = ivec2(floor(p));'
+            '  vec2 f = p - vec2(i);'
+            '  ivec2 hi = size - 1;'
+            '  vec3 a = texel(clamp(i, ivec2(0), hi)), b = texel(clamp(i + ivec2(1, 0), ivec2(0), hi));'
+            '  vec3 c = texel(clamp(i + ivec2(0, 1), ivec2(0), hi)), d = texel(clamp(i + ivec2(1), ivec2(0), hi));'
+            '  frag = vec4(mix(mix(a, b, f.x), mix(c, d, f.x), f.y), 1.0);'
+            '}')
+        _packed_shader = gpu.shader.create_from_info(info)
+    return _packed_shader
+
+
+def _stream_texture(lk):
+    """The latest stream frame as a texture, uploaded once per new frame. Bilinear is done in the shader: the
+    texels are packed bytes, hardware filtering would blend their bit patterns."""
+    global _stream_tex
+    latest = lk.stream.latest
+    if latest is None:
+        return None
+    buf, arrived, seq = latest
+    if _stream_tex is None or _stream_tex[0] != seq:
+        w, h = lk.stream.size
+        data = gpu.types.Buffer('FLOAT', w * h, np.frombuffer(buf, np.float32))
+        _stream_tex = (seq, gpu.types.GPUTexture((w, h), format='R32F', data=data), lk.stream_view(arrived))
+    return _stream_tex
 
 
 def _is_map_object(obj):
@@ -439,6 +639,15 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
             return
         if lk is None or not lk.running:
             _draw_message(region, 'Not connected: Render Properties > Deadlock Game > Connect')
+        elif lk.stream:
+            w, h = lk.stream.size
+            lk.want(game_view(rv3d.view_matrix.inverted(), rv3d.window_matrix, w / h))
+            frame = _stream_texture(lk)
+            if lk.outside:
+                _draw_message(region, 'Outside the game\'s play area: the game camera stays put '
+                                      '(View > Jump to Game View to go back)')
+            elif frame is not None and frame[2] is not None:
+                self._draw_frame(rv3d.window_matrix, frame[1], w / h, frame[2], packed_shader())
         else:
             img = bpy.data.images.get(FRAME)
             game_aspect = img.size[0] / img.size[1] if img and img.size[1] else 16 / 9
@@ -447,17 +656,16 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
                 _draw_message(region, 'Outside the game\'s play area: the game camera stays put '
                                       '(View > Jump to Game View to go back)')
             elif _shown is not None and img is not None:
-                self._draw_frame(rv3d.window_matrix, img, game_aspect, _shown[0])
+                self._draw_frame(rv3d.window_matrix, gpu.texture.from_image(img), game_aspect, _shown[0],
+                                 gpu.shader.from_builtin('IMAGE'))
         self._draw_objects(rv3d)
 
-    def _draw_frame(self, wm, img, game_aspect, shot):
+    def _draw_frame(self, wm, texture, game_aspect, shot, shader):
         # The frame's corners in tangent space, through the region's projection (keeps camera-view shift/zoom).
         tv = math.tan(math.radians(shot.vfov) / 2)
         th = tv * game_aspect
         x0, x1 = -wm[0][0] * th - wm[0][2], wm[0][0] * th - wm[0][2]
         y0, y1 = -wm[1][1] * tv - wm[1][2], wm[1][1] * tv - wm[1][2]
-        texture = gpu.texture.from_image(img)
-        shader = gpu.shader.from_builtin('IMAGE')
         batch = batch_for_shader(shader, 'TRI_FAN', {
             'pos': ((x0, y0), (x1, y0), (x1, y1), (x0, y1)),
             'texCoord': ((0, 0), (1, 0), (1, 1), (0, 1)),
@@ -571,12 +779,16 @@ _outside_shown = False
 def _poll_frames():
     """Load a new frame and redraw Deadlock viewports. Here, not in view_draw: Blender forbids writing data-blocks
     while drawing, and the worker thread can't touch Blender at all."""
-    global _shown, _outside_shown
+    global _shown, _outside_shown, _stream_drawn
     lk = _link
     frame = lk.frame if lk else None
     changed = bool(lk) and lk.outside != _outside_shown
     if changed:
         _outside_shown = lk.outside
+    stream = lk.stream if lk else None
+    if stream and stream.seq != _stream_drawn:
+        _stream_drawn = stream.seq
+        changed = True
     if frame and (_shown is None or frame[2] != _shown[1]):
         _image(frame[0])
         _shown = (frame[1], frame[2])
@@ -586,7 +798,7 @@ def _poll_frames():
             for area in window.screen.areas:
                 if area.type == 'VIEW_3D' and area.spaces.active.shading.type == 'RENDERED':
                     area.tag_redraw()
-    return 0.03
+    return 1 / 60 if stream else 0.03
 
 
 def jump_viewports(context, pos, pitch, yaw):
@@ -688,8 +900,11 @@ class DLR_PT_game_render(bpy.types.Panel):
         lk = _link
         if lk and lk.running:
             col.label(text=f'Connected (port {lk.port})', icon='LINKED')
-            if lk.frame:
-                col.label(text=f'Frame {lk.frame[2]}, {lk.timing * 1000:.0f} ms')
+            if lk.stream:
+                w, h = lk.stream.size
+                col.label(text=f'Streaming the game window ({w}x{h})')
+            elif lk.frame:
+                col.label(text=f'Screenshot mode: frame {lk.frame[2]}, {lk.timing * 1000:.0f} ms')
             if lk.outside:
                 col.label(text='View is outside the play area', icon='ERROR')
             col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
