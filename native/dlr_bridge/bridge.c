@@ -735,6 +735,9 @@ static int install_hook(void) {
     return 1;
 }
 
+
+#include "capture.c"
+
 static DWORD WINAPI net_thread(void *arg) {
     (void)arg;
     u8 wsa[512];
@@ -766,6 +769,20 @@ static DWORD WINAPI net_thread(void *arg) {
             gStepRequest = *(const u32 *)(packet + 8);
             gTimeFrozen = *(const u32 *)(packet + 4);
             sendto(s, (const char *)&gTime, sizeof(gTime), 0, &from, from_len);
+            continue;
+        }
+        if (n == 264 && bytes_equal(packet, (const u8 *)"DLRF", 4)) {
+            // want u32, shared file path (Windows path, ASCII)[256] -> capture status
+            if (!gCap.path_set && packet[8]) {
+                u32 i = 0;
+                for (; i < 255 && packet[8 + i]; i++)
+                    gCap.path[i] = packet[8 + i];
+                gCap.path[i] = 0;
+                gCap.path_set = 1;
+            }
+            gCap.wanted = *(const u32 *)(packet + 4);
+            capture_status();
+            sendto(s, (const char *)&gCapStatus, sizeof(gCapStatus), 0, &from, from_len);
             continue;
         }
         if (n == 68 && bytes_equal(packet, (const u8 *)"DLRL", 4)) {
@@ -871,6 +888,7 @@ static DWORD WINAPI net_thread(void *arg) {
 static DWORD WINAPI worker(void *arg) {
     (void)arg;
     CloseHandle(CreateThread(0, 0, net_thread, 0, 0, 0));
+    install_capture();
     HANDLE client = 0;
     for (int i = 0; i < 6000 && !client; i++) {
         client = GetModuleHandleW(L"client.dll");

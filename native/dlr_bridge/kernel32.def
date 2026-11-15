@@ -18,3 +18,6 @@ QueryPerformanceCounter
 QueryPerformanceFrequency
 ReadProcessMemory
 GetFileAttributesW
+CreateFileMappingW
+MapViewOfFile
+UnmapViewOfFile
