@@ -7,7 +7,8 @@
 // eye, angles and FOV after the game has set it up. The player's hero is left where it is.
 //
 // Offsets and the camera-cache decoding come from Deadlock Dolly (cravvnn/deadlock-dolly, MIT): profile
-// deadlock-2026-11-11-6861-complete, native_camera_view.hpp (layout revision 1). Every value is checked against
+// deadlock-2026-11-11-6861-complete, native_camera_view.hpp (layout revision 1); Copyright (c) 2026 Deadlock
+// Dolly contributors, MIT licence in LICENSE-dolly.txt. Every value is checked against
 // the loaded client.dll before anything is written; a different build leaves the game untouched.
 //
 // Freestanding (no CRT): build.sh links it with clang + lld-link against import libs made from the .def files.
