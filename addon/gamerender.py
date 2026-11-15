@@ -14,6 +14,8 @@ Camera facts measured on build 6861:
 - citadel_camera_override_fov is the vertical FOV in degrees and clamps below 50. Narrower views are a centre crop
   of a 50 degree frame (lower resolution).
 """
+import atexit
+import json
 import math
 import os
 import shutil
@@ -41,9 +43,11 @@ MAX_VFOV = 120.0
 PLAY_AREA = ((-13500, 13500), (-13500, 13500), (-2800, 5500))
 PORT = 29000
 SETTLE = 0.06  # after a teleport, before the shot: the client needs a frame or two to catch up
-# setang to the x11grab stream showing it, measured 65-105 ms at 1080p: a frame is paired with the view sent this
-# long before it arrived.
+# Camera sent to the x11grab stream showing it, at 1080p: console setang 65-105 ms, bridge 28-34 ms. A frame is
+# paired with the last view sent at least this long before it arrived.
 STREAM_LATENCY = 0.08
+STREAM_LATENCY_BRIDGE = 0.025
+SPAWNED = os.path.expanduser('~/.cache/dlr-game/spawned.json')  # models this Blender put in the game
 SEND_INTERVAL = 1 / 60
 FRAME = '.dlr_game_frame'
 ENGINE_ID = 'DLR_DEADLOCK_GAME'
@@ -532,6 +536,7 @@ class Link:
         self.puppets = {}  # armature name -> Puppet
         self.declined = set()  # rigs the user took out of the game, or that failed to spawn
         self.render_frame = None  # last frame rendered while the game clock is frozen
+        self.stream_restarted = 0.0
         self.time_step = 0
 
     @property
@@ -552,7 +557,7 @@ class Link:
         """The view a stream frame that arrived at this time most likely shows."""
         chosen = None
         for sent, view in list(self.history):
-            if sent > arrived - STREAM_LATENCY:
+            if sent > arrived - (STREAM_LATENCY_BRIDGE if self.bridge else STREAM_LATENCY):
                 break
             chosen = view
         if chosen is None and self.history:
@@ -596,6 +601,8 @@ class Link:
         # Read the game's own camera before taking it over (Connect jumps the viewports there).
         self.start_camera = self.game_camera()
         self.con.send(*SETUP_COMMON)
+        if self.poses:
+            self.remove_leftovers()
         if self.bridge is None:
             self.con.send(*SETUP)
         wid = find_game_window() if shutil.which('ffmpeg') and os.environ.get('DISPLAY') else None
@@ -659,7 +666,32 @@ class Link:
         names, parents, inv_binds = self.poses.skeleton(slot)
         puppet = Puppet(arm.name, slot, bound['entity'], model, names, parents, inv_binds, arm)
         self.puppets[arm.name] = puppet
+        self._save_spawned()
         return puppet
+
+    def _save_spawned(self):
+        try:
+            os.makedirs(os.path.dirname(SPAWNED), exist_ok=True)
+            with open(SPAWNED, 'w') as f:
+                json.dump([[p.entity, p.model] for p in self.puppets.values()], f)
+        except OSError:
+            pass
+
+    def remove_leftovers(self):
+        """Remove models an earlier Blender spawned and never removed (it crashed or quit while connected). Only
+        entities that still have that model: the game reuses entity indices."""
+        try:
+            with open(SPAWNED) as f:
+                spawned = json.load(f)
+        except (OSError, ValueError):
+            return
+        for entity, model in spawned:
+            try:
+                if entity in self.poses.entities(model):
+                    self.con.send(f'ent_remove {entity}')
+            except OSError:
+                pass
+        self._save_spawned()
 
     def sync_puppets(self, depsgraph):
         """Every visible Deadlock rig in the scene is posed in the game (rigs taken out stay out)."""
@@ -686,6 +718,7 @@ class Link:
             pass
         if self.con and self.con.alive:
             self.con.send(f'ent_remove {puppet.entity}')
+        self._save_spawned()
 
     def send_poses(self, depsgraph, settle=0.0):
         """Send every puppet's current pose (evaluated armatures of this depsgraph). With settle, wait up to that long
@@ -717,6 +750,11 @@ class Link:
                 arrived = False
         return arrived
 
+    def reshoot(self):
+        with self.lock:
+            self.sent = None
+        self.event.set()
+
     def want(self, view):
         with self.lock:
             if view.close_to(self.wanted):
@@ -731,8 +769,8 @@ class Link:
             seq = self.bridge.place(view)
             if not self.bridge.wait_applied(seq):
                 raise TimeoutError('the game did not take the camera')
-            # x11grab shows a game frame 65-105 ms after it is drawn.
-            ready = time.time() + STREAM_LATENCY + 0.04
+            # The camera is drawn already: wait for x11grab's next full frame after now.
+            ready = time.time() + 0.04
             end = ready + 2.0
             while time.time() < end:
                 latest = self.stream.latest
@@ -824,11 +862,29 @@ class Link:
             except OSError:
                 pass
 
+    def _restart_stream(self):
+        """ffmpeg ends when the window is unmapped or resized (minimised, fullscreen toggle): grab it again."""
+        if time.time() - self.stream_restarted < 1.0:
+            return
+        self.stream_restarted = time.time()
+        old = self.stream
+        wid = find_game_window() or old.wid
+        stream = Stream(wid)
+        stream.seq = old.seq  # the viewport redraws on a new sequence number
+        try:
+            stream.start()
+        except (OSError, subprocess.SubprocessError) as error:
+            self.error = f'{old.error or "game window stream ended"}; restart failed: {error}'
+            return
+        self.stream = stream
+
     def _run_stream(self):
         while self.running:
             self.event.wait(0.5)
             self.event.clear()
             self._keepalive()
+            if self.stream and not self.stream.alive:
+                self._restart_stream()
             with self.lock:
                 view = self.wanted
             if view is None or view.close_to(self.sent):
@@ -840,8 +896,6 @@ class Link:
                 self.error = 'lost the game console'
                 self.running = False
                 break
-            if not self.stream.alive:
-                self.error = self.stream.error or 'game window stream ended'
             try:
                 with self.shot_lock:
                     self._place(view)
@@ -1014,6 +1068,10 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         if lk:
             lk.sync_puppets(depsgraph)
         puppets = set(lk.puppets) if lk else set()
+        if lk and puppets and not lk.stream and any(
+                isinstance(u.id, bpy.types.Object) and u.id.original.name in puppets for u in depsgraph.updates):
+            # Screenshot mode only shoots when the view moves: a new pose needs a new shot too.
+            lk.reshoot()
         seen = set()
         for inst in depsgraph.object_instances:
             obj = inst.object
@@ -1442,6 +1500,12 @@ def register():
     bpy.types.VIEW3D_MT_view.append(_view_menu)
     for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
         handlers.append(_render_finished)
+
+
+@atexit.register
+def _quit():
+    if _link:
+        _link.stop()
 
 
 @bpy.app.handlers.persistent
