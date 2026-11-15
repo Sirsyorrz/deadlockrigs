@@ -13,7 +13,7 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
-from . import crop, effects, look, npcs, particles, riglight, textures, ziplines
+from . import crop, effects, gamerender, look, npcs, particles, riglight, textures, ziplines
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -726,11 +726,13 @@ def register():
     effects.register()
     npcs.register()
     ziplines.register()
+    gamerender.register()
 
 
 def unregister():
     if _job:
         _job.cancel()
+    gamerender.unregister()
     ziplines.unregister()
     npcs.unregister()
     effects.unregister()
