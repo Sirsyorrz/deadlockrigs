@@ -29,10 +29,11 @@ import bpy
 import gpu
 import numpy as np
 from gpu_extras.batch import batch_for_shader
-from mathutils import Euler, Matrix, Vector
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 UNIT = 0.0254
 GAME_FROM_BLENDER = Matrix.Diagonal((1 / UNIT, 1 / UNIT, 1 / UNIT, 1)) @ Matrix.Rotation(math.pi / 2, 4, 'Z')
+BLENDER_FROM_GAME = GAME_FROM_BLENDER.inverted()
 MIN_VFOV = 50.0
 MAX_VFOV = 120.0
 # Game units the camera may go to: past these the game kills the hero for leaving the play area. Probed on the
@@ -49,6 +50,14 @@ ENGINE_ID = 'DLR_DEADLOCK_GAME'
 BRIDGE_PORT = 29001
 _BRIDGE_COMMAND = struct.Struct('<4sII3f3fff')
 _BRIDGE_STATUS = struct.Struct('<4sIIIIii3f3fff96s')
+_POSE_HEAD = struct.Struct('<4sIIII64s')  # slot, entity index (0 = newest unclaimed by model), flags, count, model
+_POSE_REPLY = struct.Struct('<4sIII3f96s')
+_BIND_HEAD = struct.Struct('<4sIII')
+_BIND_BONE = struct.Struct('<8fi60s')
+POSE_SLOTS = 8
+# A puppet's entity follows its pose (the game culls a model by its entity's bounds) once the pose has moved this
+# far, in game units.
+FOLLOW_DISTANCE = 16.0
 SETUP_COMMON = ('citadel_hud_visible 0', 'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
                 'engine_no_focus_sleep 0', 'jpeg_quality 95')
 # Console camera (no bridge): the camera is the hero's own eye.
@@ -250,6 +259,129 @@ class Bridge:
         self.sock.close()
 
 
+class PoseChannel:
+    """The bridge's pose slots: a slot binds a game model entity, and while Blender keeps talking to the bridge the
+    game draws that entity with the world-space bone transforms last sent for it. Own socket: the camera's replies
+    must not mix with these."""
+
+    def __init__(self, port=BRIDGE_PORT):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.settimeout(0.5)
+        self.addr = ('127.0.0.1', port)
+        self.lock = threading.Lock()
+
+    def _exchange(self, packet):
+        with self.lock:
+            self.sock.sendto(packet, self.addr)
+            return self.sock.recvfrom(65536)[0]
+
+    def pose(self, slot, model, pose=b'', count=0, entity=0, active=True):
+        """Bind the slot (to `entity`, or the newest unclaimed entity whose model path contains `model`) and set its
+        pose (count x 32 bytes: pos xyz, scale, quat xyzw, game world space). Returns the bound entity or None."""
+        head = _POSE_HEAD.pack(b'DLRP', slot, entity, 1 if active and count else 0, count, model.encode()[:63])
+        f = _POSE_REPLY.unpack(self._exchange(head + pose)[:_POSE_REPLY.size])
+        if not f[1]:
+            return None
+        return {'entity': f[2], 'count': f[3], 'origin': f[4:7], 'model': f[7].split(b'\0')[0].decode()}
+
+    def entities(self, model):
+        """Indices of the game's entities whose model path contains `model`."""
+        data = self._exchange(b'DLRL' + model.encode()[:63].ljust(64, b'\0'))
+        count = struct.unpack_from('<I', data, 4)[0]
+        return set(struct.unpack_from(f'<{count}I', data, 8))
+
+    def skeleton(self, slot):
+        """Bone names, parents and inverse binds (game model space) of the slot's model."""
+        names, parents, inv_binds = [], [], []
+        while True:
+            data = self._exchange(struct.pack('<4sII', b'DLRB', slot, len(names)))
+            _, total, first, count = _BIND_HEAD.unpack(data[:_BIND_HEAD.size])
+            if not total or first != len(names):
+                raise ConnectionError('the bridge did not return the model skeleton')
+            for i in range(count):
+                f = _BIND_BONE.unpack_from(data, _BIND_HEAD.size + i * _BIND_BONE.size)
+                inv_binds.append(f[:8])
+                parents.append(f[8])
+                names.append(f[9].split(b'\0')[0].decode())
+            if len(names) >= total or not count:
+                return names, parents, inv_binds
+
+    def close(self):
+        self.sock.close()
+
+
+def _transform_matrix(t):
+    """pos xyz, uniform scale, quat xyzw -> 4x4."""
+    x, y, z, s, qx, qy, qz, qw = t
+    m = Quaternion((qw, qx, qy, qz)).to_matrix().to_4x4() @ Matrix.Diagonal((s, s, s, 1))
+    m.translation = (x, y, z)
+    return m
+
+
+class Puppet:
+    """A game model entity posed from a Blender armature through a bridge pose slot.
+
+    Rigs share the game's bone names, and their rest heads are the game bind positions in Blender's frame. Skinning
+    agrees when each game bone's world transform is G * ArmatureWorld * Pose * Rest^-1 * K * Bind (K: game model
+    space to Blender, G: Blender world to game world), so no per-bone axis convention is needed. Game bones the rig
+    lacks follow their nearest ancestor it has."""
+
+    def __init__(self, arm_name, slot, entity, model, names, parents, inv_binds, arm):
+        self.arm_name, self.slot, self.entity, self.model = arm_name, slot, entity, model
+        self.origin = None
+        bones = arm.data.bones
+        self.bones = []  # (blender bone name, Rest^-1 * K * Bind) per game bone
+        for i, name in enumerate(names):
+            own = i
+            while own >= 0 and names[own] not in bones:
+                own = parents[own]
+            if own < 0:
+                own_name, rest = None, Matrix.Identity(4)
+            else:
+                own_name = names[own]
+                rest = bones[own_name].matrix_local.inverted()
+            bind = _transform_matrix(inv_binds[i]).inverted()
+            self.bones.append((own_name, rest @ BLENDER_FROM_GAME @ bind))
+
+    def pose(self, arm):
+        """The packed pose of an evaluated armature, and a point to keep the entity at (game units)."""
+        world = GAME_FROM_BLENDER @ arm.matrix_world
+        pose_bones = arm.pose.bones
+        cache = {}
+        out = np.empty((len(self.bones), 8), np.float32)
+        for i, (name, local) in enumerate(self.bones):
+            moved = cache.get(name)
+            if moved is None:
+                moved = cache[name] = world @ (pose_bones[name].matrix if name else Matrix.Identity(4))
+            m = moved @ local
+            loc, rot, scale = m.decompose()
+            out[i] = (*loc, (scale.x + scale.y + scale.z) / 3, rot.x, rot.y, rot.z, rot.w)
+        pos = out[:, :3]
+        # Near the feet, robust to stray helper bones (Abrams' muzzle_fx hangs metres below the floor in some clips).
+        anchor = (float(np.median(pos[:, 0])), float(np.median(pos[:, 1])), float(np.percentile(pos[:, 2], 10)))
+        return out.tobytes(), anchor
+
+
+def _arm_model(arm):
+    if arm.get('dlr_model'):
+        return arm['dlr_model']
+    from . import heroes
+    slug = arm.get('dlrig')
+    return next((h['model'] for h in heroes() if h['slug'] == slug), None)
+
+
+def puppet_armature(obj):
+    """The armature a selected object belongs to (itself, its Armature modifier's or its parent), or None."""
+    if obj is None:
+        return None
+    if obj.type == 'ARMATURE':
+        return obj
+    found = obj.find_armature()
+    if found:
+        return found
+    return obj.parent if obj.parent and obj.parent.type == 'ARMATURE' else None
+
+
 def tangent_extents(proj):
     """The view's edges in tangent space (x / -z, y / -z): ((left, right), (bottom, top)). Blender's projection
     gives ndc = P00 * u - P02, so the edges are where that is -1 and 1 (handles lens shift and camera-view zoom)."""
@@ -386,6 +518,8 @@ class Link:
         self.start_camera = None
         self.pinged = 0.0
         self.history = deque(maxlen=120)  # (time sent, View), for pairing stream frames with views
+        self.poses = None
+        self.puppets = {}  # armature name -> Puppet
 
     @property
     def min_vfov(self):
@@ -444,6 +578,8 @@ class Link:
             pass
         if self.bridge is None:
             bridge.close()
+        else:
+            self.poses = PoseChannel()
         # Read the game's own camera before taking it over (Connect jumps the viewports there).
         self.start_camera = self.game_camera()
         self.con.send(*SETUP_COMMON)
@@ -466,6 +602,11 @@ class Link:
         if self.stream:
             self.stream.stop()
             self.stream = None
+        for puppet in list(self.puppets.values()):
+            self.remove_puppet(puppet)
+        if self.poses:
+            self.poses.close()
+            self.poses = None
         if self.bridge:
             self.bridge.release()
             self.bridge.close()
@@ -473,6 +614,73 @@ class Link:
         if self.con:
             self.con.close()
             self.con = None
+
+    def add_puppet(self, arm):
+        """Spawn the armature's game model and bind it to a free pose slot."""
+        if not self.poses:
+            raise ConnectionError('posing needs the bridge (start the session with --bridge)')
+        model = _arm_model(arm)
+        if not model:
+            raise ValueError(f'{arm.name} is not a Deadlock rig (no game model known for it)')
+        used = {p.slot for p in self.puppets.values()}
+        slot = next((i for i in range(POSE_SLOTS) if i not in used), None)
+        if slot is None:
+            raise ValueError(f'all {POSE_SLOTS} pose slots are in use')
+        before = self.poses.entities(model)
+        # prop_dynamic_create prepends models/ itself.
+        self.con.send(f'prop_dynamic_create {model[len("models/"):] if model.startswith("models/") else model}')
+        bound = None
+        end = time.time() + 5.0
+        while bound is None and time.time() < end:
+            time.sleep(0.1)
+            new = self.poses.entities(model) - before
+            if new:
+                bound = self.poses.pose(slot, model, entity=max(new), active=False)
+        if bound is None:
+            raise TimeoutError(f'the game did not spawn {model}')
+        names, parents, inv_binds = self.poses.skeleton(slot)
+        puppet = Puppet(arm.name, slot, bound['entity'], model, names, parents, inv_binds, arm)
+        self.puppets[arm.name] = puppet
+        return puppet
+
+    def remove_puppet(self, puppet):
+        self.puppets.pop(puppet.arm_name, None)
+        try:
+            self.poses.pose(puppet.slot, puppet.model, entity=puppet.entity, active=False)
+        except OSError:
+            pass
+        if self.con and self.con.alive:
+            self.con.send(f'ent_remove {puppet.entity}')
+
+    def send_poses(self, depsgraph, settle=0.0):
+        """Send every puppet's current pose (evaluated armatures of this depsgraph). With settle, wait up to that long
+        until every moved entity has arrived (ent_setpos goes through the server; until then the pose may be culled)."""
+        end = time.time() + settle
+        while True:
+            if self._send_poses(depsgraph) or time.time() > end:
+                return
+            time.sleep(0.05)
+
+    def _send_poses(self, depsgraph):
+        arrived = True
+        for puppet in list(self.puppets.values()):
+            arm = bpy.data.objects.get(puppet.arm_name)
+            if arm is None or arm.type != 'ARMATURE':
+                self.remove_puppet(puppet)
+                continue
+            data, anchor = puppet.pose(arm.evaluated_get(depsgraph))
+            # The entity's bounds decide culling: keep the entity with the pose.
+            if puppet.origin is None or math.dist(anchor, puppet.origin) > FOLLOW_DISTANCE:
+                self.con.send('ent_setpos {} {:.2f} {:.2f} {:.2f}'.format(puppet.entity, *anchor))
+                puppet.origin = anchor
+            try:
+                bound = self.poses.pose(puppet.slot, puppet.model, data, len(puppet.bones), entity=puppet.entity)
+            except OSError as error:
+                self.error = f'pose: {error}'
+                continue
+            if bound is None or math.dist(bound['origin'], puppet.origin) > 1.0:
+                arrived = False
+        return arrived
 
     def want(self, view):
         with self.lock:
@@ -716,12 +924,20 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         shader = solid_shader()
         rebuild = {u.id.original.name for u in depsgraph.updates
                    if isinstance(u.id, bpy.types.Object) and u.is_updated_geometry}
+        lk = _link
+        puppets = set(lk.puppets) if lk else set()
+        if puppets and lk.running:
+            lk.send_poses(depsgraph)
         seen = set()
         for inst in depsgraph.object_instances:
             obj = inst.object
             if inst.is_instance or obj.type not in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}:
                 continue
             if _is_map_object(obj.original):
+                continue
+            # The game draws posed rigs itself.
+            owner = puppet_armature(obj.original)
+            if owner is not None and owner.name in puppets:
                 continue
             name = obj.original.name
             seen.add(name)
@@ -841,6 +1057,8 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
                                          scale_y=render.pixel_aspect_y)
         w, h = lk.bridge.size if lk.bridge else (16, 9)
         view = game_view(camera.matrix_world, proj, w / h, lk.min_vfov)
+        if lk.puppets:
+            lk.send_poses(depsgraph, settle=2.0)
         path = lk.capture(view, 'png_screenshot', settle=0.25)
         try:
             frame = _load_linear(path)
@@ -988,6 +1206,48 @@ class DLR_OT_game_disconnect(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class DLR_OT_game_pose_rig(bpy.types.Operator):
+    bl_idname = 'dlr.game_pose_rig'
+    bl_label = 'Pose in Game'
+    bl_description = ('Spawn the selected rig\'s hero in the game and pose it from the rig: the game draws and lights '
+                      'it (viewport and F12), and it follows keyframes and posing')
+
+    @classmethod
+    def poll(cls, context):
+        arm = puppet_armature(context.active_object)
+        return (_link is not None and _link.running and _link.poses is not None and arm is not None
+                and arm.name not in _link.puppets)
+
+    def execute(self, context):
+        arm = puppet_armature(context.active_object)
+        try:
+            _link.add_puppet(arm)
+            _link.send_poses(context.evaluated_depsgraph_get())
+        except (OSError, ValueError, TimeoutError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        # Hide the rig's own meshes from the overlay.
+        arm.update_tag()
+        return {'FINISHED'}
+
+
+class DLR_OT_game_unpose_rig(bpy.types.Operator):
+    bl_idname = 'dlr.game_unpose_rig'
+    bl_label = 'Remove from Game'
+    bl_description = 'Remove the rig\'s hero from the game'
+
+    armature: bpy.props.StringProperty()
+
+    def execute(self, context):
+        puppet = _link.puppets.get(self.armature) if _link else None
+        if puppet:
+            _link.remove_puppet(puppet)
+            arm = bpy.data.objects.get(self.armature)
+            if arm:
+                arm.update_tag()
+        return {'FINISHED'}
+
+
 class DLR_OT_game_standard_view(bpy.types.Operator):
     bl_idname = 'dlr.game_standard_view'
     bl_label = 'Use Standard View Transform'
@@ -1028,6 +1288,12 @@ class DLR_PT_game_render(bpy.types.Panel):
             if lk.outside:
                 col.label(text='View is outside the play area', icon='ERROR')
             col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
+            if lk.poses:
+                col.operator(DLR_OT_game_pose_rig.bl_idname, icon='ARMATURE_DATA')
+                for name, puppet in lk.puppets.items():
+                    row = col.row()
+                    row.label(text=f'{name}: entity {puppet.entity}', icon='OUTLINER_OB_ARMATURE')
+                    row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
             col.operator(DLR_OT_game_disconnect.bl_idname)
         else:
             col.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
@@ -1046,7 +1312,7 @@ def _view_menu(self, context):
 
 
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_jump,
-           DLR_OT_game_standard_view, DLR_PT_game_render)
+           DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_OT_game_standard_view, DLR_PT_game_render)
 
 
 # Blender panels list the engines they show for; a custom engine has to add itself. Output settings (format,
