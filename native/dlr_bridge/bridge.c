@@ -232,14 +232,18 @@ static void game_server_dll(WCHAR *out) {
     wcopy(out + n, tail);
 }
 
+// The bridge writes into the game's memory: it only ever starts in an -insecure (no VAC) process. Matched as a
+// whole argument, so "-insecure_x" or a path containing it doesn't count.
 static int has_insecure(void) {
     const WCHAR *cmd = GetCommandLineW();
     static const char want[] = "-insecure";
-    for (; *cmd; cmd++) {
+    for (const WCHAR *p = cmd; *p; p++) {
+        if (p != cmd && p[-1] != ' ' && p[-1] != '\t' && p[-1] != '"')
+            continue;
         int i = 0;
-        while (want[i] && cmd[i] == (WCHAR)want[i])
+        while (want[i] && p[i] == (WCHAR)want[i])
             i++;
-        if (!want[i])
+        if (!want[i] && (p[i] == 0 || p[i] == ' ' || p[i] == '\t' || p[i] == '"'))
             return 1;
     }
     return 0;

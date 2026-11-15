@@ -55,13 +55,17 @@ def steam_root():
     return None
 
 
-def game_running(game):
-    """The game's process. Never probe the console port for this: a console client that connects and leaves while
-    the game replays its log to it can hang the game for good."""
+def _game_commandlines():
+    """Command lines (lists of arguments) of running deadlock.exe processes; None where they can't be read."""
     if os.name == 'nt':
-        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq deadlock.exe', '/NH'], capture_output=True,
-                             text=True, creationflags=0x08000000).stdout
-        return 'deadlock.exe' in out.lower()
+        out = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             "Get-CimInstance Win32_Process -Filter \"Name='deadlock.exe'\" | ForEach-Object { $_.CommandLine }"],
+            capture_output=True, text=True, creationflags=0x08000000)
+        if out.returncode:
+            return None
+        return [line.split() for line in out.stdout.splitlines() if line.strip()]
+    found = []
     for pid in os.listdir('/proc'):
         if not pid.isdigit():
             continue
@@ -70,10 +74,30 @@ def game_running(game):
                 cmd = f.read()
         except OSError:
             continue
+        args = cmd.split(b'\0')
         # Wine shows the Windows path as argv[0]; launcher wrappers only mention it further along.
-        if cmd.split(b'\0', 1)[0].replace(b'\\', b'/').lower().endswith(b'win64/deadlock.exe'):
-            return True
-    return False
+        if args[0].replace(b'\\', b'/').lower().endswith(b'win64/deadlock.exe'):
+            found.append([a.decode('utf-8', 'replace') for a in args if a])
+    return found
+
+
+def game_running(game):
+    """The game's process. Never probe the console port for this: a console client that connects and leaves while
+    the game replays its log to it can hang the game for good."""
+    if os.name == 'nt':
+        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq deadlock.exe', '/NH'], capture_output=True,
+                             text=True, creationflags=0x08000000).stdout
+        return 'deadlock.exe' in out.lower()
+    return bool(_game_commandlines())
+
+
+def game_insecure():
+    """True when every running Deadlock is an -insecure session, False when one is not (a VAC-secured game: the
+    add-on must not touch it), None when no game runs or its command line can't be read."""
+    lines = _game_commandlines()
+    if not lines:
+        return None
+    return all('-insecure' in args for args in lines)
 
 
 class Session:
@@ -205,6 +229,18 @@ class Session:
         self.restore_gameinfo()
         if not game_running(self.game):
             self.restore_cfgs()
+            self.remove_bridge()
+
+    def bridge_path(self):
+        return os.path.join(self.game, *OVERLAY.split('/'), 'bin', 'win64', 'server.dll')
+
+    def remove_bridge(self):
+        """The bridge stays inert without -insecure, but it is only on disk while a session runs, so a normal
+        (VAC-secured) launch can never find a foreign server.dll even if gameinfo.gi was left patched."""
+        try:
+            os.remove(self.bridge_path())
+        except OSError:
+            pass
 
     # launch ---------------------------------------------------------------------------------------------------
     def args(self):
@@ -232,7 +268,7 @@ class Session:
             raise RuntimeError('the camera bridge (dlr_bridge.dll) is missing from the add-on')
         self.recover()
         os.makedirs(self.state, exist_ok=True)
-        target = os.path.join(self.game, *OVERLAY.split('/'), 'bin', 'win64', 'server.dll')
+        target = self.bridge_path()
         os.makedirs(os.path.dirname(target), exist_ok=True)
         shutil.copyfile(dll, target)
         stale = os.path.join(os.path.dirname(target), 'dlr_unlocker.dll')
@@ -250,6 +286,7 @@ class Session:
         except Exception:
             self.restore_gameinfo()
             self.restore_cfgs()
+            self.remove_bridge()
             raise
         self.status = 'Starting Deadlock'
         threading.Thread(target=self._wait, daemon=True).start()
@@ -275,6 +312,10 @@ class Session:
                     self.error = ('the game did not come up with the camera bridge' if game_running(self.game)
                                   else 'the game did not start (is Steam running?)')
                     return
+                if game_insecure() is False:
+                    self.error = ('Deadlock started without -insecure (was it already open, or launched by '
+                                  'something else?): not connecting')
+                    return
                 self.status = f'Starting Deadlock ({time.time() - start:.0f} s)'
                 time.sleep(0.5)
             self.status = 'Ready'
@@ -299,6 +340,7 @@ class Session:
         self.restore_gameinfo()
         if not game_running(self.game):
             self.restore_cfgs()
+            self.remove_bridge()
 
 
 def _bridge_views():

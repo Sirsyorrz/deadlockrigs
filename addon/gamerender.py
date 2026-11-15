@@ -1700,6 +1700,10 @@ class DLR_OT_game_connect(bpy.types.Operator):
 
 def connect(context, port=PORT, setup=(), launched=False):
     global _link
+    from . import gamelaunch
+    # Poses, camera and frames are written into the game's memory: never into a VAC-secured game.
+    if gamelaunch.game_insecure() is False:
+        raise ConnectionRefusedError('Deadlock is running without -insecure: quit it and use Start Deadlock')
     if _link:
         _link.stop()
     _link = Link(port, setup, launched)
