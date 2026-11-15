@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Deadlock as a Blender render engine (spike): the viewport's camera drives a running Deadlock and the game's frame
-is drawn back into the viewport.
+is drawn back into the viewport, with the scene's own meshes drawn solid on top. F12 renders the scene camera the
+same way, from a full quality screenshot.
 
 The game is an -insecure dev session with -netconport (worklog notes "Game capture"). Everything goes through its
-console: no injected code yet, so the frame comes back as a jpeg_screenshot file (about 0.17 s at 4K).
+console: no injected code yet, so frames come back as screenshot files (jpeg for the viewport, png for F12).
 
 Camera facts measured on build 6861:
 - Blender world = game units x 0.0254 turned -90 degrees about Z (built maps and rigs): Blender (x, y) =
   (game y, -game x). Checked on the hideout's playButtonFogandLight (ent_text vs the built map's light).
 - With camera overrides on and every pivot/offset at 0, the camera sits exactly at the pawn's origin, so
-  setpos_exact/setang_exact place it; noclip keeps it from falling.
+  setpos_exact/setang_exact place it; noclip keeps it from falling. The camera is the player's own hero.
 - citadel_camera_override_fov is the vertical FOV in degrees and clamps below 50. Narrower views are a centre crop
   of a 50 degree frame (lower resolution).
 """
@@ -24,6 +25,7 @@ import time
 import blf
 import bpy
 import gpu
+import numpy as np
 from gpu_extras.batch import batch_for_shader
 from mathutils import Euler, Matrix, Vector
 
@@ -36,6 +38,7 @@ MAX_VFOV = 120.0
 PLAY_AREA = ((-13500, 13500), (-13500, 13500), (-2800, 5500))
 PORT = 29000
 SETTLE = 0.06  # after a teleport, before the shot: the client needs a frame or two to catch up
+FRAME = '.dlr_game_frame'
 ENGINE_ID = 'DLR_DEADLOCK_GAME'
 SETUP = (
     'citadel_camera_free_roam 0', 'noclip 1', 'citadel_camera_overrides_enabled 1',
@@ -90,6 +93,7 @@ class Netcon:
         self.ready = threading.Event()
         self.lines = []
         self.lines_lock = threading.Lock()
+        self.send_lock = threading.Lock()
         threading.Thread(target=self._drain, daemon=True).start()
         if not self.ready.wait(5.0):
             self.ready.set()
@@ -142,7 +146,8 @@ class Netcon:
         for c in commands:
             payload = c.encode('utf-8') + b'\x00'
             packets.append(_HEADER.pack(b'CMND', 0x00D4, _HEADER.size + len(payload), 0) + payload)
-        self.sock.sendall(b''.join(packets))
+        with self.send_lock:
+            self.sock.sendall(b''.join(packets))
 
     def close(self):
         self.alive = False
@@ -174,23 +179,37 @@ class View:
                 f'citadel_camera_override_fov {self.vfov:.3f}')
 
 
-def game_view(cam_matrix, region_vfov, region_aspect, game_aspect):
+def tangent_extents(proj):
+    """The view's edges in tangent space (x / -z, y / -z): ((left, right), (bottom, top)). Blender's projection
+    gives ndc = P00 * u - P02, so the edges are where that is -1 and 1 (handles lens shift and camera-view zoom)."""
+    return (((-1 + proj[0][2]) / proj[0][0], (1 + proj[0][2]) / proj[0][0]),
+            ((-1 + proj[1][2]) / proj[1][1], (1 + proj[1][2]) / proj[1][1]))
+
+
+def game_view(cam_matrix, proj, game_aspect):
     """The game camera that covers a Blender view: same eye and direction, a vertical FOV wide enough that the
-    game's frame (game_aspect) covers the region in both directions. Roll is dropped (setang ignores it)."""
+    game's centred frame (game_aspect) covers the whole view. Roll is dropped (setang ignores it)."""
     g = GAME_FROM_BLENDER @ cam_matrix
-    eye = g.translation
     fx, fy, fz = (-g.col[2].xyz).normalized()
     yaw = math.degrees(math.atan2(fy, fx))
     pitch = -math.degrees(math.asin(max(-1.0, min(1.0, fz))))
-    t = math.tan(math.radians(region_vfov) / 2)
-    need = max(t, t * region_aspect / game_aspect)
+    (u0, u1), (v0, v1) = tangent_extents(proj)
+    need = max(abs(v0), abs(v1), abs(u0) / game_aspect, abs(u1) / game_aspect)
     vfov = min(MAX_VFOV, max(MIN_VFOV, math.degrees(2 * math.atan(need))))
-    return View(tuple(eye), pitch, yaw, vfov)
+    return View(tuple(g.translation), pitch, yaw, vfov)
+
+
+def blender_view(pos, pitch, yaw):
+    """Blender camera matrix for a game camera (game units, degrees)."""
+    to_blender = Matrix.Rotation(-math.pi / 2, 4, 'Z')
+    rot = to_blender @ Euler((math.radians(90 - pitch), 0, math.radians(yaw - 90))).to_matrix().to_4x4()
+    return Matrix.Translation((to_blender @ Vector(pos)) * UNIT) @ rot
 
 
 class Link:
     """One game connection. view_draw posts the wanted view; a worker thread places the game camera, takes a
-    jpeg screenshot and hands the file back. Latest wins: views posted while a shot is in flight are skipped."""
+    jpeg screenshot and hands the file back. Latest wins: views posted while a shot is in flight are skipped.
+    F12 renders call capture() directly; the shot lock keeps them from interleaving with the viewport."""
 
     def __init__(self, port=PORT):
         self.port = port
@@ -205,6 +224,8 @@ class Link:
         self.running = False
         self.outside = False
         self.lock = threading.Lock()
+        self.shot_lock = threading.Lock()
+        self.cache = os.path.join(bpy.app.tempdir or '/tmp', 'dlr_game_frames')
 
     def game_camera(self):
         """Where the game camera is now: ((x, y, z), pitch, yaw) in game units and degrees, or None."""
@@ -222,6 +243,7 @@ class Link:
     def start(self):
         if self.running:
             return
+        os.makedirs(self.cache, exist_ok=True)
         self.con = Netcon(self.port)
         self.con.send(*SETUP)
         self.running = True
@@ -241,10 +263,40 @@ class Link:
             self.wanted = view
         self.event.set()
 
+    def capture(self, view, kind='jpeg_screenshot', settle=SETTLE):
+        """Place the game camera and take a screenshot; returns the file path (the caller moves or deletes it)."""
+        if not (self.con and self.con.alive):
+            raise ConnectionError('lost the game console')
+        # The camera is the player's own hero: past the play area the game kills it (and with god mode on it
+        # gets stuck there, flooding the console).
+        if not view.inside():
+            raise ValueError('the camera is outside the game\'s play area')
+        ext = '.png' if kind == 'png_screenshot' else '.jpg'
+        folder = os.path.join(game_dir() or '', 'citadel', 'screenshots')
+        with self.shot_lock:
+            self.con.send(*view.commands())
+            time.sleep(settle)
+            before = set(os.listdir(folder)) if os.path.isdir(folder) else set()
+            self.con.send(kind)
+            end = time.time() + 10.0
+            while time.time() < end:
+                time.sleep(0.01)
+                try:
+                    new = [n for n in os.listdir(folder) if n.endswith(ext) and n not in before]
+                except FileNotFoundError:
+                    continue
+                if new:
+                    path = os.path.join(folder, new[0])
+                    size = -1
+                    # The engine writes asynchronously: wait until the size settles.
+                    while size != os.path.getsize(path):
+                        size = os.path.getsize(path)
+                        time.sleep(0.02)
+                    self.sent = view
+                    return path
+        raise TimeoutError('no screenshot appeared (is the game window minimised?)')
+
     def _run(self):
-        shots = os.path.join(game_dir() or '', 'citadel', 'screenshots')
-        cache = os.path.join(bpy.app.tempdir or '/tmp', 'dlr_game_frames')
-        os.makedirs(cache, exist_ok=True)
         while self.running:
             self.event.wait(0.5)
             self.event.clear()
@@ -252,54 +304,26 @@ class Link:
                 view = self.wanted
             if view is None or view.close_to(self.sent):
                 continue
-            # The camera is the player's own hero: past the play area the game kills it (and with god mode on it
-            # gets stuck there, flooding the console).
             self.outside = not view.inside()
             if self.outside:
                 continue
-            if not (self.con and self.con.alive):
-                self.error = 'lost the game console'
+            start = time.time()
+            try:
+                path = self.capture(view)
+            except ConnectionError as error:
+                self.error = str(error)
                 self.running = False
                 break
-            try:
-                start = time.time()
-                self.con.send(*view.commands())
-                time.sleep(SETTLE)
-                path = self._shoot(shots, start)
-            except OSError as error:
+            except (OSError, ValueError, TimeoutError) as error:
                 self.error = str(error)
-                continue
-            if path is None:
-                self.error = 'no screenshot appeared (is the game window minimised?)'
                 continue
             self.seq += 1
             # Two alternating files: Blender may still be reading the previous one.
-            dest = os.path.join(cache, f'frame{self.seq % 2}.jpg')
+            dest = os.path.join(self.cache, f'frame{self.seq % 2}.jpg')
             shutil.move(path, dest)
-            self.sent = view
             self.frame = (dest, view, self.seq)
             self.timing = time.time() - start
             self.error = ''
-
-    def _shoot(self, folder, since, timeout=3.0):
-        before = set(os.listdir(folder)) if os.path.isdir(folder) else set()
-        self.con.send('jpeg_screenshot')
-        end = time.time() + timeout
-        while time.time() < end:
-            time.sleep(0.01)
-            try:
-                new = [n for n in os.listdir(folder) if n.endswith('.jpg') and n not in before]
-            except FileNotFoundError:
-                continue
-            if new:
-                path = os.path.join(folder, new[0])
-                size = -1
-                # The engine writes asynchronously: wait until the size settles.
-                while size != os.path.getsize(path):
-                    size = os.path.getsize(path)
-                    time.sleep(0.01)
-                return path
-        return None
 
 
 _link = None
@@ -311,14 +335,53 @@ def link():
 
 
 def _image(path):
-    img = bpy.data.images.get('.dlr_game_frame')
+    img = bpy.data.images.get(FRAME)
     if img is None:
         img = bpy.data.images.load(path, check_existing=False)
-        img.name = '.dlr_game_frame'
+        img.name = FRAME
     else:
         img.filepath = path
         img.reload()
     return img
+
+
+_solid_shader = None
+
+
+def solid_shader():
+    """Headlit solid shading for the scene's own meshes, drawn over the game frame."""
+    global _solid_shader
+    if _solid_shader is None:
+        info = gpu.types.GPUShaderCreateInfo()
+        info.push_constant('MAT4', 'mvp')
+        info.push_constant('MAT4', 'model')
+        info.push_constant('VEC4', 'color')
+        info.push_constant('VEC3', 'light')
+        info.vertex_in(0, 'VEC3', 'pos')
+        info.vertex_in(1, 'VEC3', 'nor')
+        iface = gpu.types.GPUStageInterfaceInfo('dlr_solid_iface')
+        iface.smooth('VEC3', 'world_nor')
+        info.vertex_out(iface)
+        info.fragment_out(0, 'VEC4', 'frag')
+        info.vertex_source('void main() { world_nor = mat3(model) * nor; gl_Position = mvp * vec4(pos, 1.0); }')
+        info.fragment_source('void main() { float d = abs(dot(normalize(world_nor), light));'
+                             ' frag = vec4(color.rgb * (0.2 + 0.8 * d), color.a); }')
+        _solid_shader = gpu.shader.create_from_info(info)
+    return _solid_shader
+
+
+def _is_map_object(obj):
+    """Objects of a built map: the game already draws them."""
+    data = obj.data
+    return (obj.get('dl_model') is not None or (data is not None and data.get('dl_model') is not None)
+            or obj.name.startswith('cell_'))
+
+
+def _object_color(obj):
+    for slot in obj.material_slots:
+        if slot.material:
+            return tuple(slot.material.diffuse_color)
+    return (0.8, 0.8, 0.8, 1.0)
 
 
 class DeadlockGameEngine(bpy.types.RenderEngine):
@@ -327,30 +390,67 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
     bl_use_preview = False
     bl_use_shading_nodes_custom = False
 
-    def render(self, depsgraph):
-        self.report({'WARNING'}, 'Deadlock (game): only the viewport works in this spike')
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.batches = {}  # object name -> (batch, matrix_world, colour)
 
     def view_update(self, context, depsgraph):
-        pass
+        """Rebuild the solid batches of meshes whose geometry changed; transforms only update the matrix."""
+        shader = solid_shader()
+        rebuild = {u.id.original.name for u in depsgraph.updates
+                   if isinstance(u.id, bpy.types.Object) and u.is_updated_geometry}
+        seen = set()
+        for inst in depsgraph.object_instances:
+            obj = inst.object
+            if inst.is_instance or obj.type not in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}:
+                continue
+            if _is_map_object(obj.original):
+                continue
+            name = obj.original.name
+            seen.add(name)
+            old = self.batches.get(name)
+            if old is None or name in rebuild:
+                mesh = obj.to_mesh()
+                mesh.calc_loop_triangles()
+                n = len(mesh.loop_triangles)
+                if not n:
+                    obj.to_mesh_clear()
+                    continue
+                co = np.empty(len(mesh.vertices) * 3, np.float32)
+                mesh.vertices.foreach_get('co', co)
+                tri = np.empty(n * 3, np.int32)
+                mesh.loop_triangles.foreach_get('vertices', tri)
+                normals = np.empty(n * 9, np.float32)
+                mesh.loop_triangles.foreach_get('split_normals', normals)
+                pos = co.reshape(-1, 3)[tri]
+                batch = batch_for_shader(shader, 'TRIS', {'pos': pos, 'nor': normals.reshape(-1, 3)})
+                obj.to_mesh_clear()
+            else:
+                batch = old[0]
+            self.batches[name] = (batch, obj.matrix_world.copy(), _object_color(obj.original))
+        for name in set(self.batches) - seen:
+            del self.batches[name]
 
     def view_draw(self, context, depsgraph):
         region, rv3d = context.region, context.region_data
         lk = _link
-        if lk is None or not lk.running or not rv3d.is_perspective:
+        if not rv3d.is_perspective:
+            _draw_message(region, 'Deadlock (game) needs a perspective view')
             return
-        wm = rv3d.window_matrix
-        region_vfov = math.degrees(2 * math.atan(1 / wm[1][1]))
-        aspect = region.width / max(region.height, 1)
-        img = bpy.data.images.get('.dlr_game_frame')
-        game_aspect = img.size[0] / img.size[1] if img and img.size[1] else 16 / 9
-        lk.want(game_view(rv3d.view_matrix.inverted(), region_vfov, aspect, game_aspect))
-        if lk.outside:
-            _draw_message(region, 'Outside the game\'s play area: the game camera stays put '
-                                  '(View > Jump to Game View to go back)')
-            return
-        if _shown is None or img is None:
-            return
-        shot = _shown[0]
+        if lk is None or not lk.running:
+            _draw_message(region, 'Not connected: Render Properties > Deadlock Game > Connect')
+        else:
+            img = bpy.data.images.get(FRAME)
+            game_aspect = img.size[0] / img.size[1] if img and img.size[1] else 16 / 9
+            lk.want(game_view(rv3d.view_matrix.inverted(), rv3d.window_matrix, game_aspect))
+            if lk.outside:
+                _draw_message(region, 'Outside the game\'s play area: the game camera stays put '
+                                      '(View > Jump to Game View to go back)')
+            elif _shown is not None and img is not None:
+                self._draw_frame(rv3d.window_matrix, img, game_aspect, _shown[0])
+        self._draw_objects(rv3d)
+
+    def _draw_frame(self, wm, img, game_aspect, shot):
         # The frame's corners in tangent space, through the region's projection (keeps camera-view shift/zoom).
         tv = math.tan(math.radians(shot.vfov) / 2)
         th = tv * game_aspect
@@ -367,6 +467,94 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
             gpu.matrix.load_projection_matrix(Matrix.Identity(4))
             shader.uniform_sampler('image', texture)
             batch.draw(shader)
+
+    def _draw_objects(self, rv3d):
+        if not self.batches:
+            return
+        shader = solid_shader()
+        # Headlight: light along the view direction, so every face toward the camera is lit.
+        light = (rv3d.view_matrix.inverted().to_3x3() @ Vector((0, 0, 1))).normalized()
+        persp = rv3d.perspective_matrix
+        framebuffer = gpu.state.active_framebuffer_get()
+        framebuffer.clear(depth=1.0)
+        gpu.state.depth_test_set('LESS_EQUAL')
+        gpu.state.depth_mask_set(True)
+        gpu.state.face_culling_set('NONE')
+        shader.bind()
+        shader.uniform_float('light', light)
+        for batch, matrix, color in self.batches.values():
+            shader.uniform_float('mvp', persp @ matrix)
+            shader.uniform_float('model', matrix)
+            shader.uniform_float('color', color)
+            batch.draw(shader)
+        gpu.state.depth_mask_set(False)
+        gpu.state.depth_test_set('NONE')
+
+    def render(self, depsgraph):
+        scene = depsgraph.scene
+        render = scene.render
+        scale = render.resolution_percentage / 100
+        width, height = int(render.resolution_x * scale), int(render.resolution_y * scale)
+        result = self.begin_result(0, 0, width, height)
+        try:
+            pixels = self._render_pixels(depsgraph, scene, width, height)
+        except Exception as error:
+            self.report({'ERROR'}, f'Deadlock (game): {error}')
+            pixels = np.zeros((width * height, 4), np.float32)
+        result.layers[0].passes['Combined'].rect = pixels
+        self.end_result(result)
+
+    def _render_pixels(self, depsgraph, scene, width, height):
+        lk = _link
+        if lk is None or not lk.running:
+            raise ConnectionError('not connected to the game (Render Properties > Deadlock Game > Connect)')
+        camera = scene.camera
+        if camera is None:
+            raise ValueError('the scene has no camera')
+        render = scene.render
+        proj = camera.calc_matrix_camera(depsgraph, x=width, y=height, scale_x=render.pixel_aspect_x,
+                                         scale_y=render.pixel_aspect_y)
+        view = game_view(camera.matrix_world, proj, 16 / 9)
+        path = lk.capture(view, 'png_screenshot', settle=0.25)
+        try:
+            frame = _load_linear(path)
+        finally:
+            os.remove(path)
+        return _resample(frame, view, proj, width, height)
+
+
+def _load_linear(path):
+    """A screenshot as linear float RGBA, rows bottom-up (Blender's order)."""
+    img = bpy.data.images.load(path, check_existing=False)
+    try:
+        w, h = img.size
+        buf = np.empty(w * h * 4, np.float32)
+        img.pixels.foreach_get(buf)
+    finally:
+        bpy.data.images.remove(img)
+    rgb = buf.reshape(h, w, 4)
+    # Byte images keep their sRGB encoding in .pixels; the render result wants linear.
+    c = rgb[..., :3]
+    rgb[..., :3] = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    rgb[..., 3] = 1.0
+    return rgb
+
+
+def _resample(frame, view, proj, width, height):
+    """The scene camera's view out of a centred game frame, bilinear."""
+    fh, fw = frame.shape[:2]
+    tv = math.tan(math.radians(view.vfov) / 2)
+    th = tv * fw / fh
+    (u0, u1), (v0, v1) = tangent_extents(proj)
+    u = u0 + (np.arange(width) + 0.5) / width * (u1 - u0)
+    v = v0 + (np.arange(height) + 0.5) / height * (v1 - v0)
+    x = np.clip((u + th) / (2 * th) * fw - 0.5, 0, fw - 1.001)
+    y = np.clip((v + tv) / (2 * tv) * fh - 0.5, 0, fh - 1.001)
+    x0, y0 = x.astype(np.int32), y.astype(np.int32)
+    fx, fy = (x - x0)[None, :, None], (y - y0)[:, None, None]
+    top = frame[y0][:, x0] * (1 - fx) + frame[y0][:, x0 + 1] * fx
+    bottom = frame[y0 + 1][:, x0] * (1 - fx) + frame[y0 + 1][:, x0 + 1] * fx
+    return (top * (1 - fy) + bottom * fy).reshape(-1, 4).astype(np.float32)
 
 
 def _draw_message(region, text):
@@ -399,13 +587,6 @@ def _poll_frames():
                 if area.type == 'VIEW_3D' and area.spaces.active.shading.type == 'RENDERED':
                     area.tag_redraw()
     return 0.03
-
-
-def blender_view(pos, pitch, yaw):
-    """Blender camera matrix for a game camera (game units, degrees)."""
-    to_blender = Matrix.Rotation(-math.pi / 2, 4, 'Z')
-    rot = to_blender @ Euler((math.radians(90 - pitch), 0, math.radians(yaw - 90))).to_matrix().to_4x4()
-    return Matrix.Translation((to_blender @ Vector(pos)) * UNIT) @ rot
 
 
 def jump_viewports(context, pos, pitch, yaw):
@@ -477,6 +658,20 @@ class DLR_OT_game_disconnect(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class DLR_OT_game_standard_view(bpy.types.Operator):
+    bl_idname = 'dlr.game_standard_view'
+    bl_label = 'Use Standard View Transform'
+    bl_description = ('Show renders as the game shows them: the game frame is already tonemapped, so any other '
+                      'view transform (AgX, Filmic) changes its look')
+
+    def execute(self, context):
+        context.scene.view_settings.view_transform = 'Standard'
+        context.scene.view_settings.look = 'None'
+        context.scene.view_settings.exposure = 0.0
+        context.scene.view_settings.gamma = 1.0
+        return {'FINISHED'}
+
+
 class DLR_PT_game_render(bpy.types.Panel):
     bl_label = 'Deadlock Game'
     bl_space_type = 'PROPERTIES'
@@ -503,6 +698,11 @@ class DLR_PT_game_render(bpy.types.Panel):
             col.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
         if lk and lk.error:
             col.label(text=lk.error, icon='ERROR')
+        vs = context.scene.view_settings
+        if vs.view_transform != 'Standard' or vs.look != 'None' or vs.exposure != 0 or vs.gamma != 1:
+            box = col.box()
+            box.label(text=f'F12 renders get the {vs.view_transform} look on top of the game\'s', icon='INFO')
+            box.operator(DLR_OT_game_standard_view.bl_idname)
 
 
 def _view_menu(self, context):
@@ -510,7 +710,8 @@ def _view_menu(self, context):
         self.layout.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
 
 
-CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_jump, DLR_PT_game_render)
+CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_jump,
+           DLR_OT_game_standard_view, DLR_PT_game_render)
 
 
 def register():
