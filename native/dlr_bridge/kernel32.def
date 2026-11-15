@@ -17,3 +17,4 @@ WriteFile
 QueryPerformanceCounter
 QueryPerformanceFrequency
 ReadProcessMemory
+GetFileAttributesW

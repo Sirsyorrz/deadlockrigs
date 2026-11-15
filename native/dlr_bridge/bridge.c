@@ -32,6 +32,7 @@ typedef unsigned short WCHAR;
 
 IMPORT HANDLE WINAPI GetModuleHandleW(const WCHAR *);
 IMPORT DWORD WINAPI GetModuleFileNameW(HANDLE, WCHAR *, DWORD);
+IMPORT DWORD WINAPI GetFileAttributesW(const WCHAR *);
 IMPORT HANDLE WINAPI LoadLibraryExW(const WCHAR *, HANDLE, DWORD);
 IMPORT void *WINAPI GetProcAddress(HANDLE, const char *);
 IMPORT HANDLE WINAPI CreateThread(void *, u64, DWORD(WINAPI *)(void *), void *, DWORD, DWORD *);
@@ -215,6 +216,20 @@ static void beside_module(WCHAR *out, const WCHAR *name) {
     while (n && out[n - 1] != '\\' && out[n - 1] != '/')
         n--;
     wcopy(out + n, name);
+}
+
+// The game's own server.dll: this file sits at <game>\\citadel\\<overlay>\\bin\\win64\\server.dll.
+static void game_server_dll(WCHAR *out) {
+    DWORD n = GetModuleFileNameW(gModule, out, 512);
+    for (int up = 0; up < 4; up++) {  // file name, win64, bin, overlay
+        while (n && out[n - 1] != '\\' && out[n - 1] != '/')
+            n--;
+        if (up < 3 && n)
+            n--;
+    }
+    static const WCHAR tail[] = {'b', 'i', 'n', '\\', 'w', 'i', 'n', '6', '4', '\\', 's', 'e', 'r', 'v', 'e', 'r', '.',
+                                 'd', 'l', 'l', 0};
+    wcopy(out + n, tail);
 }
 
 static int has_insecure(void) {
@@ -615,6 +630,13 @@ static void framerate_set(double value) {
 
 // Main thread only. A Blender that stops talking (crash, closed) gets the game clock back.
 static void update_time(int talking) {
+    static int tried;
+    // tier0's cvar lookups take its cvar lock: only from the main thread, and not while the game is still
+    // registering cvars during load (a worker-thread lookup then deadlocked the game).
+    if (!tried && gStatus.views > 120) {
+        tried = 1;
+        gTime.available = resolve_cvars();
+    }
     if (!gCvarSet)
         return;
     int frozen = gTimeFrozen && talking;
@@ -883,17 +905,22 @@ static DWORD WINAPI worker(void *arg) {
         set_message("camera hook installed; could not patch the skeleton routine: no posing");
     else
         set_message("camera and pose hooks installed");
-    gTime.available = resolve_cvars();
     return 0;
 }
 
 EXPORT void *CreateInterface(const char *name, int *result) {
     if (!gUnlockerFactory) {
         WCHAR path[600];
+        // An older session layout chains through the cvar unlocker; otherwise load the game's server directly
+        // (the add-on only sets cvars the release build shows).
         beside_module(path, L"dlr_unlocker.dll");
-        HANDLE unlocker = LoadLibraryExW(path, 0, 0x8);  // LOAD_WITH_ALTERED_SEARCH_PATH
-        if (unlocker)
-            gUnlockerFactory = (Factory)GetProcAddress(unlocker, "CreateInterface");
+        HANDLE server = GetFileAttributesW(path) != 0xffffffffu ? LoadLibraryExW(path, 0, 0x8) : 0;
+        if (!server) {
+            game_server_dll(path);
+            server = LoadLibraryExW(path, 0, 0x8);  // LOAD_WITH_ALTERED_SEARCH_PATH
+        }
+        if (server)
+            gUnlockerFactory = (Factory)GetProcAddress(server, "CreateInterface");
         if (!gUnlockerFactory) {
             if (result)
                 *result = 1;
