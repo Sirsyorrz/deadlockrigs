@@ -87,6 +87,13 @@ def addon():
         shutil.copy(os.path.join(TOOLS, f), os.path.join(stage, 'tools'))
     shutil.copytree(os.path.join(TOOLS, 'deadlock_bridge'), os.path.join(stage, 'tools', 'deadlock_bridge'),
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    # the game render engine's camera/pose bridge, loaded into the -insecure session (addon/gamelaunch.py)
+    bridge = os.path.join(ROOT, 'native', 'dlr_bridge', 'build', 'dlr_bridge.dll')
+    if not os.path.exists(bridge):
+        sys.exit('native/dlr_bridge/build/dlr_bridge.dll missing: run native/dlr_bridge/build.sh')
+    os.makedirs(os.path.join(stage, 'native'))
+    shutil.copy(bridge, os.path.join(stage, 'native'))
+    shutil.copy(os.path.join(ROOT, 'native', 'dlr_bridge', 'LICENSE-dolly.txt'), os.path.join(stage, 'native'))
     shutil.copy(os.path.join(ROOT, 'heroes.json'), stage)
     shutil.copy(os.path.join(ROOT, 'LICENSE'), stage)
     shutil.copytree(os.path.join(ROOT, 'rigdata'), os.path.join(stage, 'rigdata'))

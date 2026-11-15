@@ -59,6 +59,11 @@ _POSE_REPLY = struct.Struct('<4sIII3f96s')
 _BIND_HEAD = struct.Struct('<4sIII')
 _BIND_BONE = struct.Struct('<8fi60s')
 _TIME_REPLY = struct.Struct('<4sIIId')
+
+
+def _time_state(data):
+    f = _TIME_REPLY.unpack(data[:_TIME_REPLY.size])
+    return {'available': f[1], 'frozen': f[2], 'step_done': f[3], 'framerate': f[4]}
 POSE_SLOTS = 8
 # A puppet's entity follows its pose (the game culls a model by its entity's bounds) once the pose has moved this
 # far, in game units.
@@ -295,8 +300,7 @@ class PoseChannel:
         """Freeze the game clock, or with a new `step` number advance it once by `seconds` (exactly one game frame).
         Returns the bridge's time state."""
         data = self._exchange(struct.pack('<4sIIf', b'DLRT', 1 if frozen else 0, step, seconds))
-        f = _TIME_REPLY.unpack(data[:_TIME_REPLY.size])
-        return {'available': f[1], 'frozen': f[2], 'step_done': f[3], 'framerate': f[4]}
+        return _time_state(data)
 
     def entities(self, model):
         """Indices of the game's entities whose model path contains `model`."""
@@ -1370,19 +1374,98 @@ class DLR_OT_game_connect(bpy.types.Operator):
     port: bpy.props.IntProperty(default=PORT)
 
     def execute(self, context):
-        global _link
-        if _link:
-            _link.stop()
-        _link = Link(self.port)
         try:
-            _link.start()
+            connect(context, self.port)
         except OSError as error:
-            _link = None
             self.report({'ERROR'}, f'no game console on port {self.port}: {error}')
             return {'CANCELLED'}
-        cam = _link.start_camera
-        if cam:
-            jump_viewports(context, *cam)
+        return {'FINISHED'}
+
+
+def connect(context, port=PORT):
+    global _link
+    if _link:
+        _link.stop()
+    _link = Link(port)
+    try:
+        _link.start()
+    except OSError:
+        _link = None
+        raise
+    cam = _link.start_camera
+    if cam and context.screen:
+        jump_viewports(context, *cam)
+
+
+_session = None  # the gamelaunch.Session this Blender started
+
+
+def _session_poll():
+    """Connects once a session started from here is ready."""
+    global _session
+    s = _session
+    if s is None:
+        return None
+    if s.error or not s.ready.is_set():
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'PROPERTIES':
+                    area.tag_redraw()
+        return None if s.error else 0.5
+    try:
+        connect(bpy.context, s.port)
+    except OSError as error:
+        s.error = f'started, but could not connect: {error}'
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            area.tag_redraw()
+    return None
+
+
+class DLR_OT_game_start(bpy.types.Operator):
+    bl_idname = 'dlr.game_start'
+    bl_label = 'Start Deadlock'
+    bl_description = ('Launch Deadlock through Steam as a local -insecure session (no matchmaking, no VAC) with the '
+                      'camera bridge, and connect when it is up (1-2 minutes). Your game settings are put back '
+                      'when it quits')
+
+    def execute(self, context):
+        global _session
+        from . import gamelaunch
+        game = game_dir()
+        if not game or not os.path.isdir(game):
+            self.report({'ERROR'}, 'Deadlock not found (set its folder in the add-on preferences)')
+            return {'CANCELLED'}
+        session = gamelaunch.Session(game, PORT)
+        try:
+            session.start()
+        except (OSError, RuntimeError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        _session = session
+        bpy.app.timers.register(_session_poll, first_interval=1.0)
+        return {'FINISHED'}
+
+
+class DLR_OT_game_quit(bpy.types.Operator):
+    bl_idname = 'dlr.game_quit'
+    bl_label = 'Quit Deadlock'
+    bl_description = 'Quit the Deadlock session started from Blender and restore your game settings'
+
+    def execute(self, context):
+        global _link, _session
+        con = None
+        if _link:
+            con = _link.con
+            _link.running = False
+            for puppet in list(_link.puppets.values()):
+                _link.remove_puppet(puppet)
+        if _session:
+            _session.stop(con)
+            _session = None
+        if _link:
+            _link.stop()
+            _link = None
         return {'FINISHED'}
 
 
@@ -1492,9 +1575,18 @@ class DLR_PT_game_render(bpy.types.Panel):
                     row = col.row()
                     row.label(text=f'{name}: entity {puppet.entity}', icon='OUTLINER_OB_ARMATURE')
                     row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
-            col.operator(DLR_OT_game_disconnect.bl_idname)
+            row = col.row()
+            row.operator(DLR_OT_game_disconnect.bl_idname)
+            if _session:
+                row.operator(DLR_OT_game_quit.bl_idname, icon='QUIT')
+        elif _session and not _session.error and not _session.ready.is_set():
+            col.label(text=_session.status + '...', icon='TIME')
         else:
-            col.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
+            row = col.row()
+            row.operator(DLR_OT_game_start.bl_idname, icon='PLAY')
+            row.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
+        if _session and _session.error:
+            col.label(text=_session.error, icon='ERROR')
         if lk and lk.error:
             col.label(text=lk.error, icon='ERROR')
         vs = context.scene.view_settings
@@ -1509,7 +1601,8 @@ def _view_menu(self, context):
         self.layout.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
 
 
-CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_jump,
+CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
+           DLR_OT_game_jump,
            DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_OT_game_standard_view, DLR_PT_game_render)
 
 
