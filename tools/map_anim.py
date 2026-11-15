@@ -79,6 +79,17 @@ def scrolled_uv(g, speed, quantize, secondary):
     return g.vec('ADD', uv, g.vec('MULTIPLY', offset, (1.0, -1.0, 0.0)))
 
 
+def translucent_uv(g, uv, values, layer):
+    """pbr's translucency texcoord transform after the scroll: scaled about the texture's centre, then offset
+    (g_vTranslucentTexcoordXformOffset's compiled expression). Blender's v is 1 - the game's. Rotation isn't
+    applied (no material that uses it found)."""
+    su, sv = vec(values, f'g_vTranslucentTexcoordScale{layer}_1', (1.0, 1.0), 2)
+    ou, ov = vec(values, f'g_vTranslucentTexcoordOffset{layer}_1', (0.0, 0.0), 2)
+    if (su, sv, ou, ov) == (1.0, 1.0, 0.0, 0.0):
+        return uv
+    return g.vec('ADD', g.vec('MULTIPLY', uv, (su, sv, 1.0)), (0.5 - 0.5 * su + ou, 0.5 - 0.5 * sv - ov, 0.0))
+
+
 def time_group():
     """Shader node group with the scene's time in seconds."""
     tree = bpy.data.node_groups.get(TIME_GROUP)
@@ -125,16 +136,16 @@ def add_alt_translucency(mat, g, ints, floats, values, uv2, textures):
         return
     alpha = g.node('ShaderNodeTexImage', image=color.image, interpolation=color.interpolation,
                    extension=color.extension)
-    g.put(alpha.inputs['Vector'], scrolled_uv(g, scroll(values, 'g_vTranslucentScrollSpeed0_1'),
-                                              floats.get('g_flTranslucentScrollQuantize0_1', 0.0),
-                                              bool(ints.get('g_bUseSecondaryUvForTranslucency') and uv2)))
+    g.put(alpha.inputs['Vector'], translucent_uv(g, scrolled_uv(
+        g, scroll(values, 'g_vTranslucentScrollSpeed0_1'), floats.get('g_flTranslucentScrollQuantize0_1', 0.0),
+        bool(ints.get('g_bUseSecondaryUvForTranslucency') and uv2)), values, 0))
     opacity = alpha.outputs['Alpha']
     alt_path = textures.get((vmat_dict(mat).get('TextureParams') or {}).get('g_tAltTranslucency'))
     if alt_path:
         alt = g.node('ShaderNodeTexImage', image=load_image(alt_path), interpolation='Linear', extension='REPEAT')
-        g.put(alt.inputs['Vector'], scrolled_uv(g, scroll(values, 'g_vTranslucentScrollSpeed1_1'),
-                                                floats.get('g_flTranslucentScrollQuantize1_1', 0.0),
-                                                bool(ints.get('g_bUseSecondaryUvForAltTranslucency') and uv2)))
+        g.put(alt.inputs['Vector'], translucent_uv(g, scrolled_uv(
+            g, scroll(values, 'g_vTranslucentScrollSpeed1_1'), floats.get('g_flTranslucentScrollQuantize1_1', 0.0),
+            bool(ints.get('g_bUseSecondaryUvForAltTranslucency') and uv2)), values, 1))
         red = g.split(alt.outputs['Color'])[0]
         mode = int(ints.get('g_nTranslucencyBlendMode1', 0))
         opacity = (g.math('MULTIPLY', opacity, red) if mode == 0 else
