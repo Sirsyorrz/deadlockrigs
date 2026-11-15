@@ -535,6 +535,113 @@ static void apply(uptr view, const float *xyz, const float *angles) {
     memcpy((void *)gCache.angles, angles, 12);
 }
 
+// Game time for frame-exact renders: frozen = host_framerate at a tiny step, a step = host_framerate at the wanted
+// seconds for exactly one frame (set in one SetUpView, read by the next frame, reset in the next SetUpView).
+// tier0 ConVar ABI from Dolly's reviewed profile for this tier0 (sha 29eae7e1..., image 0x3fa000).
+#define TIER0_IMAGE_SIZE 0x3fa000u
+#define RVA_CVAR_TABLE 0x313208
+#define RVA_CVAR_FIND 0x6c710
+#define RVA_CVAR_DATA 0x6c650
+#define CVAR_DATA_SLOT 41
+#define RVA_CVAR_SET 0x20fe50
+#define CVAR_TYPE 0x28   // u16: 9 float32, 10 float64 (this tier0 numbers types 2 higher than older builds)
+#define CVAR_FLOAT32 9
+#define CVAR_FLOAT64 10
+#define CVAR_VALUE 0x58
+#define FROZEN_STEP 1e-6
+static const u8 kCvarSetPrologue[16] = {0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x4c,
+                                        0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41};
+struct CvarRef {
+    u64 id;
+    uptr data;
+};
+typedef void *(__fastcall *CvarFindFn)(void *, u64 *, const char *, int);
+typedef uptr(__fastcall *CvarDataFn)(void *, u64);
+typedef void(__fastcall *CvarSetFn)(struct CvarRef *, int, const void *, void *, void *);
+static CvarSetFn gCvarSet;
+static struct CvarRef gFramerate;  // host_framerate
+static u16 gFramerateType;
+
+// Requested by the net thread, carried out by the main thread in setup_hook.
+static volatile u32 gTimeFrozen, gStepRequest;
+static volatile float gStepSeconds;
+static struct {
+    char magic[4];  // "DLRT"
+    u32 available, frozen, step_done;
+    double framerate;
+} gTime = {{'D', 'L', 'R', 'T'}};
+static double gFramerateBefore;
+static int gStepping;
+
+static int resolve_cvars(void) {
+    uptr tier0 = (uptr)GetModuleHandleW(L"tier0.dll"), cvar, table, find, data;
+    if (!tier0 || image_size(tier0) != TIER0_IMAGE_SIZE)
+        return 0;
+    Factory factory = (Factory)GetProcAddress((HANDLE)tier0, "CreateInterface");
+    cvar = factory ? (uptr)factory("VEngineCvar007", 0) : 0;
+    if (!cvar || !safe_read(cvar, &table, 8) || table != tier0 + RVA_CVAR_TABLE ||
+        !safe_read(table + 11 * 8, &find, 8) || find != tier0 + RVA_CVAR_FIND ||
+        !safe_read(table + CVAR_DATA_SLOT * 8, &data, 8) || data != tier0 + RVA_CVAR_DATA ||
+        !bytes_equal((const u8 *)(tier0 + RVA_CVAR_SET), kCvarSetPrologue, sizeof(kCvarSetPrologue)))
+        return 0;
+    gFramerate.id = 0xffffffff;
+    ((CvarFindFn)find)((void *)cvar, &gFramerate.id, "host_framerate", 0);
+    gFramerate.data = ((CvarDataFn)data)((void *)cvar, gFramerate.id);
+    char name[16];
+    uptr name_ptr;
+    if (!gFramerate.data || !safe_read(gFramerate.data, &name_ptr, 8) || !safe_read(name_ptr, name, 15) ||
+        !bytes_equal((const u8 *)name, (const u8 *)"host_framerate", 15) ||
+        !safe_read(gFramerate.data + CVAR_TYPE, &gFramerateType, 2) || (gFramerateType != CVAR_FLOAT32 && gFramerateType != CVAR_FLOAT64))
+        return 0;
+    gCvarSet = (CvarSetFn)(tier0 + RVA_CVAR_SET);
+    return 1;
+}
+
+static double framerate_get(void) {
+    return gFramerateType == CVAR_FLOAT32 ? *(float *)(gFramerate.data + CVAR_VALUE) : *(double *)(gFramerate.data + CVAR_VALUE);
+}
+
+static void framerate_set(double value) {
+    u8 typed[16] = {0};
+    if (gFramerateType == CVAR_FLOAT32) {
+        float f = (float)value;
+        memcpy(typed, &f, 4);
+    } else {
+        memcpy(typed, &value, 8);
+    }
+    // The engine's own setter keeps change callbacks and clamping.
+    gCvarSet(&gFramerate, 0, typed, (void *)(gFramerate.data + CVAR_VALUE), 0);
+}
+
+// Main thread only. A Blender that stops talking (crash, closed) gets the game clock back.
+static void update_time(int talking) {
+    if (!gCvarSet)
+        return;
+    int frozen = gTimeFrozen && talking;
+    if (frozen && !gTime.frozen) {
+        gFramerateBefore = framerate_get();
+        framerate_set(FROZEN_STEP);
+        gTime.frozen = 1;
+        gStepping = 0;
+        gTime.step_done = gStepRequest;
+    } else if (!frozen && gTime.frozen) {
+        framerate_set(gFramerateBefore);
+        gTime.frozen = 0;
+        gStepping = 0;
+        gTime.step_done = gStepRequest;
+    } else if (frozen && gStepping) {
+        framerate_set(FROZEN_STEP);
+        gStepping = 0;
+        gTime.step_done = gStepRequest;
+    } else if (frozen && gStepRequest != gTime.step_done) {
+        framerate_set(gStepSeconds);
+        gStepping = 1;
+    }
+    if (!gTime.frozen)
+        gTime.step_done = gStepRequest;
+    gTime.framerate = framerate_get();
+}
+
 static void __fastcall setup_hook(void *self, uptr opaque) {
     uptr caller = (uptr)__builtin_return_address(0);
     gOriginal(self, opaque);
@@ -548,6 +655,9 @@ static void __fastcall setup_hook(void *self, uptr opaque) {
     memcpy(gStatus.game_angles, (void *)(view + VIEW_ANGLES), 12);
     gStatus.game_fov = *(float *)(view + VIEW_FOV);
     gStatus.game_aspect = *(float *)(view + VIEW_ASPECT);
+    i64 time_now;
+    QueryPerformanceCounter(&time_now);
+    update_time(time_now - gLastPacket <= RELEASE_AFTER * gFrequency);
 
     struct Command c;
     u32 before, after;
@@ -625,6 +735,16 @@ static DWORD WINAPI net_thread(void *arg) {
         i64 now;
         QueryPerformanceCounter(&now);
         gLastPacket = now;
+        if (n == 16 && bytes_equal(packet, (const u8 *)"DLRT", 4)) {
+            // frozen u32, step request u32 (a new value = advance once), step seconds f32 -> gTime
+            float seconds = *(const float *)(packet + 12);
+            if (seconds > 0 && seconds < 1)
+                gStepSeconds = seconds;
+            gStepRequest = *(const u32 *)(packet + 8);
+            gTimeFrozen = *(const u32 *)(packet + 4);
+            sendto(s, (const char *)&gTime, sizeof(gTime), 0, &from, from_len);
+            continue;
+        }
         if (n == 68 && bytes_equal(packet, (const u8 *)"DLRL", 4)) {
             // model substring[64] -> "DLRL", count, entity indices (all with a model when the substring is empty)
             static struct List list;
@@ -763,6 +883,7 @@ static DWORD WINAPI worker(void *arg) {
         set_message("camera hook installed; could not patch the skeleton routine: no posing");
     else
         set_message("camera and pose hooks installed");
+    gTime.available = resolve_cvars();
     return 0;
 }
 
