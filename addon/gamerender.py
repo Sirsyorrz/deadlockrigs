@@ -54,10 +54,13 @@ _POSE_HEAD = struct.Struct('<4sIIII64s')  # slot, entity index (0 = newest uncla
 _POSE_REPLY = struct.Struct('<4sIII3f96s')
 _BIND_HEAD = struct.Struct('<4sIII')
 _BIND_BONE = struct.Struct('<8fi60s')
+_TIME_REPLY = struct.Struct('<4sIIId')
 POSE_SLOTS = 8
 # A puppet's entity follows its pose (the game culls a model by its entity's bounds) once the pose has moved this
 # far, in game units.
 FOLLOW_DISTANCE = 16.0
+# Close enough to the pose that the model's bounds still cover it (a fresh spawn starts metres away).
+ARRIVED = 48.0
 SETUP_COMMON = ('citadel_hud_visible 0', 'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
                 'engine_no_focus_sleep 0', 'jpeg_quality 95')
 # Console camera (no bridge): the camera is the hero's own eye.
@@ -283,6 +286,13 @@ class PoseChannel:
         if not f[1]:
             return None
         return {'entity': f[2], 'count': f[3], 'origin': f[4:7], 'model': f[7].split(b'\0')[0].decode()}
+
+    def time(self, frozen, step=0, seconds=0.0):
+        """Freeze the game clock, or with a new `step` number advance it once by `seconds` (exactly one game frame).
+        Returns the bridge's time state."""
+        data = self._exchange(struct.pack('<4sIIf', b'DLRT', 1 if frozen else 0, step, seconds))
+        f = _TIME_REPLY.unpack(data[:_TIME_REPLY.size])
+        return {'available': f[1], 'frozen': f[2], 'step_done': f[3], 'framerate': f[4]}
 
     def entities(self, model):
         """Indices of the game's entities whose model path contains `model`."""
@@ -521,6 +531,8 @@ class Link:
         self.poses = None
         self.puppets = {}  # armature name -> Puppet
         self.declined = set()  # rigs the user took out of the game, or that failed to spawn
+        self.render_frame = None  # last frame rendered while the game clock is frozen
+        self.time_step = 0
 
     @property
     def min_vfov(self):
@@ -603,8 +615,13 @@ class Link:
         if self.stream:
             self.stream.stop()
             self.stream = None
+        had_puppets = bool(self.puppets)
         for puppet in list(self.puppets.values()):
             self.remove_puppet(puppet)
+        self.release_time()
+        if had_puppets and self.con:
+            # Closing the console right after sending can drop the ent_remove commands.
+            time.sleep(0.3)
         if self.poses:
             self.poses.close()
             self.poses = None
@@ -696,7 +713,7 @@ class Link:
             except OSError as error:
                 self.error = f'pose: {error}'
                 continue
-            if bound is None or math.dist(bound['origin'], puppet.origin) > 1.0:
+            if bound is None or math.dist(bound['origin'], puppet.origin) > ARRIVED:
                 arrived = False
         return arrived
 
@@ -706,6 +723,57 @@ class Link:
                 return
             self.wanted = view
         self.event.set()
+
+    def capture_stream(self, view):
+        """Place the game camera and take the next stream frame that shows it: linear float RGBA, rows bottom-up.
+        Same pixels as a png screenshot (mean diff 0.4/255) without the ~2 s the engine takes to write one."""
+        with self.shot_lock:
+            seq = self.bridge.place(view)
+            if not self.bridge.wait_applied(seq):
+                raise TimeoutError('the game did not take the camera')
+            # x11grab shows a game frame 65-105 ms after it is drawn.
+            ready = time.time() + STREAM_LATENCY + 0.04
+            end = ready + 2.0
+            while time.time() < end:
+                latest = self.stream.latest
+                if latest is not None and latest[1] >= ready:
+                    break
+                time.sleep(0.005)
+            else:
+                raise TimeoutError('no frame from the game window stream')
+            self.sent = view
+        w, h = self.stream.size
+        rgb = np.frombuffer(latest[0], np.uint8).reshape(h, w, 4)[::-1].astype(np.float32) / 255.0
+        c = rgb[..., :3]
+        rgb[..., :3] = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+        rgb[..., 3] = 1.0
+        return rgb
+
+    def advance(self, frame, fps):
+        """Game clock for a render frame: frozen while rendering, moved on by exactly the time between this and the
+        last rendered frame, so effects play at the animation's speed however long each capture takes."""
+        if not self.poses:
+            return
+        if self.render_frame is None or frame <= self.render_frame:
+            state = self.poses.time(True, self.time_step)
+        else:
+            self.time_step += 1
+            state = self.poses.time(True, self.time_step, (frame - self.render_frame) / fps)
+            end = time.time() + 2.0
+            while state['step_done'] != self.time_step and time.time() < end:
+                time.sleep(0.005)
+                state = self.poses.time(True, self.time_step)
+        self.render_frame = frame
+        if not state['available']:
+            self.error = 'game clock not available (bridge): effects run in real time during renders'
+
+    def release_time(self):
+        self.render_frame = None
+        if self.poses:
+            try:
+                self.poses.time(False, self.time_step)
+            except OSError:
+                pass
 
     def capture(self, view, kind='jpeg_screenshot', settle=SETTLE):
         """Place the game camera and take a screenshot; returns the file path (the caller moves or deletes it)."""
@@ -1060,7 +1128,8 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         except Exception as error:
             self.report({'ERROR'}, f'Deadlock (game): {error}')
             pixels = np.zeros((width * height, 4), np.float32)
-        result.layers[0].passes['Combined'].rect = pixels
+        # Assigning the array converts it pixel by pixel (~1 s per HD frame); foreach_set copies the buffer.
+        result.layers[0].passes['Combined'].rect.foreach_set(np.ascontiguousarray(pixels, np.float32).ravel())
         self.end_result(result)
 
     def _render_pixels(self, depsgraph, scene, width, height):
@@ -1076,13 +1145,22 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         w, h = lk.bridge.size if lk.bridge else (16, 9)
         view = game_view(camera.matrix_world, proj, w / h, lk.min_vfov)
         lk.sync_puppets(depsgraph)
+        frame_number = scene.frame_current + scene.frame_subframe
+        first = lk.render_frame is None
         if lk.puppets:
-            lk.send_poses(depsgraph, settle=2.0)
-        path = lk.capture(view, 'png_screenshot', settle=0.25)
-        try:
-            frame = _load_linear(path)
-        finally:
-            os.remove(path)
+            # Entities move through server ticks: wait before the clock stops; later frames move during the step.
+            lk.send_poses(depsgraph, settle=2.0 if first else 0.0)
+        lk.advance(frame_number, render.fps / render.fps_base)
+        if lk.puppets and not first:
+            lk.send_poses(depsgraph, settle=1.0)
+        if lk.stream and lk.bridge:
+            frame = lk.capture_stream(view)
+        else:
+            path = lk.capture(view, 'png_screenshot', settle=0.25)
+            try:
+                frame = _load_linear(path)
+            finally:
+                os.remove(path)
         return _resample(frame, view, proj, width, height)
 
 
@@ -1362,10 +1440,21 @@ def register():
     if not bpy.app.timers.is_registered(_poll_frames):
         bpy.app.timers.register(_poll_frames, persistent=True)
     bpy.types.VIEW3D_MT_view.append(_view_menu)
+    for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
+        handlers.append(_render_finished)
+
+
+@bpy.app.handlers.persistent
+def _render_finished(*_args):
+    if _link:
+        _link.release_time()
 
 
 def unregister():
     global _link
+    for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
+        if _render_finished in handlers:
+            handlers.remove(_render_finished)
     if _link:
         _link.stop()
         _link = None
