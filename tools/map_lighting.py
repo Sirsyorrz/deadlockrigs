@@ -798,7 +798,7 @@ def apply_layer_contrast(mat, bsdf, vectors):
 def apply_self_illum(mat, bsdf, floats, vectors):
     """pbr's self-illumination, which the export leaves unlit (it writes no emissive factor), as the game's pixel
     shader has it (pbr_vulkan_60_ps.vcs): the illum colour is the tint mixed towards tint * albedo by
-    g_flSelfIllumAlbedoFactor, both scaled by the fresnel mask when g_vSelfIllumFresnelMaskRange1 is set; the albedo
+    g_flSelfIllumAlbedoFactor, both scaled by the fresnel mask (always on; a no-op at the default white tint); the albedo
     turns to it by mask * saturate(scale) and glows with it * mask * scale. The tints have no Expression in the
     .vfx, so the shader gets them as written, not linearised."""
     g = Graph(mat.node_tree)
@@ -808,13 +808,13 @@ def apply_self_illum(mat, bsdf, floats, vectors):
     albedo = source_of(bsdf.inputs['Base Color']) or tuple(bsdf.inputs['Base Color'].default_value)
     tint = tuple(float(x) for x in list(vectors.get('g_vSelfIllumTint1') or (1, 1, 1))[:3]) + (1.0,)
     illum = g.mix('MIX', tint, g.mix('MULTIPLY', tint, albedo), param(floats, 'g_flSelfIllumAlbedoFactor', 1.0))
-    lo, hi = (list(vectors.get('g_vSelfIllumFresnelMaskRange1') or (0, 0)) + [0, 0])[:2]
-    if hi != lo:
+    lo, hi = (list(vectors.get('g_vSelfIllumFresnelMaskRange1') or (0, 1)) + [0, 1])[:2]
+    fresnel_tint = tuple(float(x) for x in list(vectors.get('g_vSelfIllumFresnelMaskTint1') or (1, 1, 1))[:3])
+    if hi != lo and fresnel_tint != (1.0, 1.0, 1.0):
         facing = g.vec('DOT_PRODUCT', g.node('ShaderNodeNewGeometry').outputs['Incoming'],
                        source_of(bsdf.inputs['Normal']) or g.node('ShaderNodeNewGeometry').outputs['Normal'])
         rim = g.math('POWER', g.math('MAXIMUM', facing, 0.0), float(floats.get('g_flSelfIllumFresnelMaskExponent', 5)))
         f = g.math('DIVIDE', g.math('SUBTRACT', rim, float(lo)), float(hi - lo), clamp=True)
-        fresnel_tint = tuple(float(x) for x in list(vectors.get('g_vSelfIllumFresnelMaskTint1') or (1, 1, 1))[:3])
         fm = g.mix('MIX', fresnel_tint + (1.0,), (1.0, 1.0, 1.0, 1.0), f)
         illum = g.mix('MULTIPLY', illum, fm)
         albedo = g.mix('MULTIPLY', albedo, g.mix('MIX', (1.0, 1.0, 1.0, 1.0), fm, mask))
