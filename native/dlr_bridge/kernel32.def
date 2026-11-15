@@ -16,3 +16,4 @@ CreateFileW
 WriteFile
 QueryPerformanceCounter
 QueryPerformanceFrequency
+ReadProcessMemory

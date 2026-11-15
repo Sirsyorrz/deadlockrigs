@@ -45,6 +45,7 @@ IMPORT HANDLE WINAPI CreateFileW(const WCHAR *, DWORD, DWORD, void *, DWORD, DWO
 IMPORT BOOL WINAPI WriteFile(HANDLE, const void *, DWORD, DWORD *, void *);
 IMPORT BOOL WINAPI QueryPerformanceCounter(i64 *);
 IMPORT BOOL WINAPI QueryPerformanceFrequency(i64 *);
+IMPORT BOOL WINAPI ReadProcessMemory(HANDLE, const void *, void *, u64, u64 *);
 
 typedef u64 SOCKET;
 struct sockaddr_in {
@@ -301,6 +302,130 @@ static int resolve_cache(void) {
     return 1;
 }
 
+// Entities (client 6861). The entity list global and identity layout are Dolly's reviewed FollowTarget values.
+// Scene node fields match schema_detailed_class_layout; the model state was found at node+0x140 in memory (its
+// model name at +0x1e8), not the schema's 0x120.
+#define RVA_ENTITY_LIST 0x3633e68
+#define IDENTITY_STRIDE 0x70
+#define IDENTITY_HANDLE 0x10
+#define ENTITY_IDENTITY 0x10
+#define ENTITY_SCENE_NODE 0x330  // C_BaseEntity::m_pGameSceneNode
+#define NODE_OWNER 0x30          // CGameSceneNode::m_pOwner
+#define NODE_ABS_ORIGIN 0xc8     // CGameSceneNode::m_vecAbsOrigin
+#define NODE_MODEL_STATE 0x140
+#define STATE_BONES 0x80         // world space pose: float pos[3], scale, quat xyzw per bone (32 bytes)
+#define STATE_BONE_COUNT 0x90
+#define STATE_MODEL_NAME 0xa8    // CModelState::m_ModelName (char *)
+#define RVA_PLAYER_PAWN_VTABLE 0x27a5350  // the player's own hero is never posed
+#define MAX_BONES 1024
+#define POSE_SLOTS 8
+
+static int safe_read(uptr address, void *out, u64 size) {
+    u64 done = 0;
+    return address > 0x10000 && ReadProcessMemory(GetCurrentProcess(), (const void *)address, out, size, &done) &&
+           done == size;
+}
+
+static int contains(const char *text, const char *part) {
+    for (; *text; text++) {
+        u64 i = 0;
+        while (part[i] && text[i] == part[i])
+            i++;
+        if (!part[i])
+            return 1;
+    }
+    return 0;
+}
+
+// A slot binds one model entity to a pose sent from Blender. The net thread resolves and fills it; the hook copies
+// the pose into the entity's pose buffer every frame. Slots are guarded by a seqlock like the camera command.
+struct Slot {
+    volatile u32 lock;
+    u32 active;
+    u32 entity_index;
+    uptr node;
+    u32 count;
+    float pose[MAX_BONES][8];
+};
+static struct Slot gSlots[POSE_SLOTS];
+
+static int node_model(uptr node, char *name, u64 size) {
+    uptr name_ptr;
+    if (!safe_read(node + NODE_MODEL_STATE + STATE_MODEL_NAME, &name_ptr, 8) || !safe_read(name_ptr, name, size - 1))
+        return 0;
+    name[size - 1] = 0;
+    return bytes_equal((const u8 *)name, (const u8 *)"models/", 7);
+}
+
+static int claimed(uptr node, u32 except) {
+    for (u32 i = 0; i < POSE_SLOTS; i++)
+        if (i != except && gSlots[i].node == node && gSlots[i].active)
+            return 1;
+    return 0;
+}
+
+// Wanted entity index, or 0 for the newest unclaimed non-player entity whose model path contains `model`.
+static uptr find_entity(const char *model, u32 wanted, u32 slot, u32 *index_out) {
+    uptr list, best = 0;
+    u32 best_index = 0;
+    if (!safe_read(gClient + RVA_ENTITY_LIST, &list, 8) || !list)
+        return 0;
+    for (u32 chunk_index = 0; chunk_index < 0x40; chunk_index++) {
+        uptr chunk;
+        if (!safe_read(list + 8 * chunk_index, &chunk, 8) || !chunk)
+            continue;
+        for (u32 entry = 0; entry < 512; entry++) {
+            uptr identity = chunk + IDENTITY_STRIDE * entry, instance, backlink, vtable, node, owner;
+            u32 handle;
+            char name[128];
+            if (!safe_read(identity, &instance, 8) || !instance ||
+                !safe_read(instance + ENTITY_IDENTITY, &backlink, 8) || backlink != identity ||
+                !safe_read(instance, &vtable, 8) || vtable == gClient + RVA_PLAYER_PAWN_VTABLE ||
+                !safe_read(instance + ENTITY_SCENE_NODE, &node, 8) || !node ||
+                !safe_read(node + NODE_OWNER, &owner, 8) || owner != instance ||
+                !safe_read(identity + IDENTITY_HANDLE, &handle, 4) || !node_model(node, name, sizeof(name)))
+                continue;
+            u32 index = handle & 0x7fff;
+            if (wanted ? index != wanted : (!contains(name, model) || claimed(node, slot) || index < best_index))
+                continue;
+            best = node;
+            best_index = index;
+            if (wanted)
+                break;
+        }
+    }
+    *index_out = best_index;
+    return best;
+}
+
+static void write_poses(void) {
+    static float pose[MAX_BONES][8];
+    for (u32 i = 0; i < POSE_SLOTS; i++) {
+        struct Slot *slot = &gSlots[i];
+        u32 before, after, count;
+        uptr node;
+        do {
+            before = slot->lock;
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+            if (!slot->active)
+                break;
+            node = slot->node;
+            count = slot->count;
+            memcpy(pose, slot->pose, count * 32);
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+            after = slot->lock;
+        } while (before != after || (before & 1));
+        if (!slot->active)
+            continue;
+        uptr bones;
+        u32 game_count;
+        if (!safe_read(node + NODE_MODEL_STATE + STATE_BONES, &bones, 8) || !bones ||
+            !safe_read(node + NODE_MODEL_STATE + STATE_BONE_COUNT, &game_count, 4) || game_count > MAX_BONES)
+            continue;
+        memcpy((void *)bones, pose, (count < game_count ? count : game_count) * 32);
+    }
+}
+
 static void apply(uptr view, const float *xyz, const float *angles) {
     memcpy((void *)(view + VIEW_ORIGIN), xyz, 12);
     memcpy((void *)(view + VIEW_ANGLES), angles, 12);
@@ -328,6 +453,10 @@ static void __fastcall setup_hook(void *self, uptr opaque) {
     gStatus.game_fov = *(float *)(view + VIEW_FOV);
     gStatus.game_aspect = *(float *)(view + VIEW_ASPECT);
 
+    i64 pose_now;
+    QueryPerformanceCounter(&pose_now);
+    if (pose_now - gLastPacket <= RELEASE_AFTER * gFrequency)
+        write_poses();
     struct Command c;
     u32 before, after;
     do {
@@ -394,19 +523,58 @@ static DWORD WINAPI net_thread(void *arg) {
         set_message("could not bind the bridge port");
         return 0;
     }
+    static u8 packet[65536];
     for (;;) {
-        struct Command c;
         struct sockaddr_in from;
         int from_len = sizeof(from);
-        int n = recvfrom(s, (char *)&c, sizeof(c), 0, &from, &from_len);
+        int n = recvfrom(s, (char *)packet, sizeof(packet), 0, &from, &from_len);
         if (n < 4)
             continue;
         i64 now;
         QueryPerformanceCounter(&now);
         gLastPacket = now;
-        if (n == sizeof(c) && bytes_equal((const u8 *)c.magic, (const u8 *)"DLRC", 4)) {
+        if (n >= 84 && bytes_equal(packet, (const u8 *)"DLRP", 4)) {
+            // slot, entity index (0 = find by model), flags (1 = pose), count, model substring[64], count x 32 bytes
+            u32 slot_index = *(const u32 *)(packet + 4), wanted = *(const u32 *)(packet + 8);
+            u32 flags = *(const u32 *)(packet + 12), count = *(const u32 *)(packet + 16);
+            char model[64];
+            memcpy(model, packet + 20, 64);
+            model[63] = 0;
+            struct {
+                char magic[4];
+                u32 found, entity_index, game_count;
+                float origin[3];
+                char model_name[96];
+            } reply = {{'D', 'L', 'R', 'E'}};
+            if (slot_index < POSE_SLOTS && count <= MAX_BONES && (u32)n == 84 + count * 32) {
+                struct Slot *slot = &gSlots[slot_index];
+                uptr node = slot->node;
+                u32 index = slot->entity_index;
+                char name[128];
+                if (!node || (wanted && wanted != index) || !node_model(node, name, sizeof(name)) ||
+                    !contains(name, model))
+                    node = find_entity(model, wanted, slot_index, &index);
+                __atomic_fetch_add(&slot->lock, 1, __ATOMIC_ACQ_REL);
+                slot->node = node;
+                slot->entity_index = index;
+                slot->count = count;
+                memcpy(slot->pose, packet + 84, count * 32);
+                slot->active = node && (flags & 1) && count;
+                __atomic_fetch_add(&slot->lock, 1, __ATOMIC_ACQ_REL);
+                if (node && node_model(node, name, sizeof(name))) {
+                    reply.found = 1;
+                    reply.entity_index = index;
+                    safe_read(node + NODE_MODEL_STATE + STATE_BONE_COUNT, &reply.game_count, 4);
+                    safe_read(node + NODE_ABS_ORIGIN, reply.origin, 12);
+                    memcpy(reply.model_name, name, sizeof(reply.model_name) - 1);
+                }
+            }
+            sendto(s, (const char *)&reply, sizeof(reply), 0, &from, from_len);
+            continue;
+        }
+        if (n == sizeof(struct Command) && bytes_equal(packet, (const u8 *)"DLRC", 4)) {
             __atomic_fetch_add(&gLock, 1, __ATOMIC_ACQ_REL);
-            gCommand = c;
+            memcpy(&gCommand, packet, sizeof(struct Command));
             __atomic_fetch_add(&gLock, 1, __ATOMIC_ACQ_REL);
         }
         sendto(s, (const char *)&gStatus, sizeof(gStatus), 0, &from, from_len);
