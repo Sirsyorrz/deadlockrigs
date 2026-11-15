@@ -1049,9 +1049,25 @@ CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_
            DLR_OT_game_standard_view, DLR_PT_game_render)
 
 
+# Blender panels list the engines they show for; a custom engine has to add itself. Output settings (format,
+# frame range, output path, encoding) and object data (camera lens, mesh, light) are engine independent.
+SHARED_PANEL_CONTEXTS = {'output', 'data'}
+
+
+def _shared_panels():
+    for name in dir(bpy.types):
+        panel = getattr(bpy.types, name)
+        engines = getattr(panel, 'COMPAT_ENGINES', None)
+        if (isinstance(engines, set) and 'BLENDER_RENDER' in engines
+                and getattr(panel, 'bl_context', None) in SHARED_PANEL_CONTEXTS):
+            yield panel
+
+
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
+    for panel in _shared_panels():
+        panel.COMPAT_ENGINES.add(ENGINE_ID)
     if not bpy.app.timers.is_registered(_poll_frames):
         bpy.app.timers.register(_poll_frames, persistent=True)
     bpy.types.VIEW3D_MT_view.append(_view_menu)
@@ -1065,5 +1081,7 @@ def unregister():
     if bpy.app.timers.is_registered(_poll_frames):
         bpy.app.timers.unregister(_poll_frames)
     bpy.types.VIEW3D_MT_view.remove(_view_menu)
+    for panel in _shared_panels():
+        panel.COMPAT_ENGINES.discard(ENGINE_ID)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
