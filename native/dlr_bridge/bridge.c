@@ -616,11 +616,16 @@ static void apply(uptr view, const float *xyz, const float *angles) {
 // tier0 ConVar ABI from Dolly's reviewed profile for this tier0 (sha 29eae7e1..., image 0x3fa000).
 #define CVAR_FIND_SLOT 11
 #define CVAR_DATA_SLOT 41
-#define CVAR_TYPE 0x28   // u16: 9 float32, 10 float64 (this tier0 numbers types 2 higher than older builds)
+#define CVAR_TYPE 0x28   // u16: 5 int32, 9 float32, 10 float64 (this tier0 numbers types 2 higher than older builds)
+#define CVAR_INT32 5
 #define CVAR_FLOAT32 9
 #define CVAR_FLOAT64 10
 #define CVAR_VALUE 0x58
-#define FROZEN_STEP 1e-6
+// Below ~1e-5 the game's auto exposure breaks while frozen (drops to black at random, then creeps back)
+#define FROZEN_STEP 1e-4
+// Frozen time still creeps on by more than frames x FROZEN_STEP: ~0.08 s a second uncapped, ~0.013 at 60 fps. A step
+// takes the creep off, as long as it stays below the step (a long EEVEE frame in between).
+#define FROZEN_FPS 60
 #define GLOBALS_CURTIME 0x30  // CGlobalVarsBase::curtime (float)
 static const u8 kCvarSetPrologue[16] = {0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x4c,
                                         0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41};
@@ -628,12 +633,18 @@ struct CvarRef {
     u64 id;
     uptr data;
 };
+struct Cvar {
+    struct CvarRef ref;
+    u16 type;
+};
 typedef void *(__fastcall *CvarFindFn)(void *, u64 *, const char *, int);
 typedef uptr(__fastcall *CvarDataFn)(void *, u64);
 typedef void(__fastcall *CvarSetFn)(struct CvarRef *, int, const void *, void *, void *);
 static CvarSetFn gCvarSet;
-static struct CvarRef gFramerate;  // host_framerate
-static u16 gFramerateType;
+static struct Cvar gFramerate, gFpsMax;
+static void *gCvar;
+static CvarFindFn gCvarFind;
+static CvarDataFn gCvarData;
 
 // Requested by the net thread, carried out by the main thread in setup_hook.
 static volatile u32 gTimeFrozen, gStepRequest;
@@ -645,9 +656,22 @@ static struct {
     float game_time;  // client curtime, -1 without the globals
     u32 pad;
 } gTime = {{'D', 'L', 'R', 'T'}};
-static double gFramerateBefore;
+static double gFramerateBefore, gFpsMaxBefore;
 static int gStepping;
 static double gTimeTarget;
+
+static int cvar_find(struct Cvar *out, const char *want) {
+    u64 len = slen(want) + 1;
+    char name[32];
+    uptr name_ptr;
+    out->ref.id = 0xffffffff;
+    gCvarFind(gCvar, &out->ref.id, want, 0);
+    out->ref.data = gCvarData(gCvar, out->ref.id);
+    return out->ref.data && len <= sizeof(name) && safe_read(out->ref.data, &name_ptr, 8) &&
+           safe_read(name_ptr, name, len) && bytes_equal((const u8 *)name, (const u8 *)want, len) &&
+           safe_read(out->ref.data + CVAR_TYPE, &out->type, 2) &&
+           (out->type == CVAR_INT32 || out->type == CVAR_FLOAT32 || out->type == CVAR_FLOAT64);
+}
 
 static int resolve_cvars(void) {
     uptr tier0 = (uptr)GetModuleHandleW(L"tier0.dll"), cvar, table, find, data, set, text;
@@ -661,16 +685,16 @@ static int resolve_cvars(void) {
         !within(find, 16, text, text_size) || !safe_read(table + CVAR_DATA_SLOT * 8, &data, 8) ||
         !within(data, 16, text, text_size) || !bytes_equal((const u8 *)set, kCvarSetPrologue, sizeof(kCvarSetPrologue)))
         return 0;
-    gFramerate.id = 0xffffffff;
-    ((CvarFindFn)find)((void *)cvar, &gFramerate.id, "host_framerate", 0);
-    gFramerate.data = ((CvarDataFn)data)((void *)cvar, gFramerate.id);
-    char name[16];
-    uptr name_ptr;
-    if (!gFramerate.data || !safe_read(gFramerate.data, &name_ptr, 8) || !safe_read(name_ptr, name, 15) ||
-        !bytes_equal((const u8 *)name, (const u8 *)"host_framerate", 15) ||
-        !safe_read(gFramerate.data + CVAR_TYPE, &gFramerateType, 2) || (gFramerateType != CVAR_FLOAT32 && gFramerateType != CVAR_FLOAT64))
+    gCvar = (void *)cvar;
+    gCvarFind = (CvarFindFn)find;
+    gCvarData = (CvarDataFn)data;
+    if (!cvar_find(&gFramerate, "host_framerate") || gFramerate.type == CVAR_INT32)
         return 0;
     gCvarSet = (CvarSetFn)set;
+    if (!cvar_find(&gFpsMax, "fps_max")) {
+        gFpsMax.ref.data = 0;
+        log_line("fps_max not found or of an unknown type: frozen time creeps faster");
+    }
     return 1;
 }
 
@@ -685,20 +709,28 @@ static int game_time(double *out) {
     return 1;
 }
 
-static double framerate_get(void) {
-    return gFramerateType == CVAR_FLOAT32 ? *(float *)(gFramerate.data + CVAR_VALUE) : *(double *)(gFramerate.data + CVAR_VALUE);
+static double cvar_get(const struct Cvar *c) {
+    uptr v = c->ref.data + CVAR_VALUE;
+    return c->type == CVAR_INT32 ? *(int *)v : c->type == CVAR_FLOAT32 ? *(float *)v : *(double *)v;
 }
 
-static void framerate_set(double value) {
+static void cvar_set(struct Cvar *c, double value) {
     u8 typed[16] = {0};
-    if (gFramerateType == CVAR_FLOAT32) {
+    if (c->type == CVAR_INT32) {
+        int i = (int)value;
+        memcpy(typed, &i, 4);
+    } else if (c->type == CVAR_FLOAT32) {
         float f = (float)value;
         memcpy(typed, &f, 4);
     } else {
         memcpy(typed, &value, 8);
     }
     // The engine's own setter keeps change callbacks and clamping.
-    gCvarSet(&gFramerate, 0, typed, (void *)(gFramerate.data + CVAR_VALUE), 0);
+    gCvarSet(&c->ref, 0, typed, (void *)(c->ref.data + CVAR_VALUE), 0);
+}
+
+static void framerate_set(double value) {
+    cvar_set(&gFramerate, value);
 }
 
 // Main thread only. A Blender that stops talking (crash, closed) gets the game clock back.
@@ -714,8 +746,13 @@ static void update_time(int talking) {
         return;
     int frozen = gTimeFrozen && talking;
     if (frozen && !gTime.frozen) {
-        gFramerateBefore = framerate_get();
+        gFramerateBefore = cvar_get(&gFramerate);
         framerate_set(FROZEN_STEP);
+        if (gFpsMax.ref.data) {
+            gFpsMaxBefore = cvar_get(&gFpsMax);
+            if (gFpsMaxBefore <= 0 || gFpsMaxBefore > FROZEN_FPS)
+                cvar_set(&gFpsMax, FROZEN_FPS);
+        }
         gTime.frozen = 1;
         gStepping = 0;
         gTime.step_done = gStepRequest;
@@ -723,6 +760,8 @@ static void update_time(int talking) {
             gTimeTarget = -1;
     } else if (!frozen && gTime.frozen) {
         framerate_set(gFramerateBefore);
+        if (gFpsMax.ref.data && cvar_get(&gFpsMax) != gFpsMaxBefore)
+            cvar_set(&gFpsMax, gFpsMaxBefore);
         gTime.frozen = 0;
         gStepping = 0;
         gTime.step_done = gStepRequest;
@@ -741,7 +780,7 @@ static void update_time(int talking) {
     }
     if (!gTime.frozen)
         gTime.step_done = gStepRequest;
-    gTime.framerate = framerate_get();
+    gTime.framerate = cvar_get(&gFramerate);
     double now;
     gTime.game_time = game_time(&now) ? (float)now : -1.0f;
 }
