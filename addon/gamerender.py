@@ -1587,9 +1587,10 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         lk = _link
         if lk is None or not lk.running:
             raise ConnectionError('not connected to the game (Render Properties > Deadlock Game > Connect)')
-        camera = scene.camera
-        if camera is None:
+        if scene.camera is None:
             raise ValueError('the scene has no camera')
+        # The original camera isn't moved to the frame in animation renders (own depsgraph): use the evaluated one.
+        camera = scene.camera.evaluated_get(depsgraph)
         render = scene.render
         proj = camera.calc_matrix_camera(depsgraph, x=width, y=height, scale_x=render.pixel_aspect_x,
                                          scale_y=render.pixel_aspect_y)
@@ -1718,10 +1719,11 @@ def camera_plate(scene, depsgraph, width, height, settle=0.5):
         raise ConnectionError('needs a game session with the bridge\'s frame capture')
     if scene.camera is None:
         raise ValueError('the scene has no camera')
-    proj = scene.camera.calc_matrix_camera(depsgraph, x=width, y=height, scale_x=scene.render.pixel_aspect_x,
-                                           scale_y=scene.render.pixel_aspect_y)
+    camera = scene.camera.evaluated_get(depsgraph)
+    proj = camera.calc_matrix_camera(depsgraph, x=width, y=height, scale_x=scene.render.pixel_aspect_x,
+                                     scale_y=scene.render.pixel_aspect_y)
     w, h = lk.bridge.size
-    view = game_view(scene.camera.matrix_world, proj, w / h, lk.min_vfov)
+    view = game_view(camera.matrix_world, proj, w / h, lk.min_vfov)
     lk.capture_stream(view)
     time.sleep(settle)  # streamed textures, temporal AA and fog settle
     for _ in range(3):
