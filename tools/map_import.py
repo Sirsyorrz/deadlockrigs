@@ -135,7 +135,9 @@ mats = {slot.material for ob in meshes for slot in ob.material_slots if slot.mat
 glass_masks = {path: found[0] for path, name in (settings.get('glass_masks') or {}).items() if (found := find(name))}
 layer_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.get('layer_textures') or {}).items()}
 print(f'parallax windows: UV maps on {map_parallax.add_uv_maps(meshes)} meshes')
+mats = list(mats)
 kinds = [map_lighting.apply_vmat(m, glass_masks, layer_textures) for m in tracked(mats, 'props', 'materials')]
+print(f'unlit meshes without shadows: {map_lighting.unlit_cast_no_shadows(meshes, dict(zip(mats, kinds)))}')
 print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '
       f'{kinds.count("self_illum")} self-illuminated, {kinds.count("overlay")} decals, {kinds.count("veil")} veils')
 print(f'blend layers: {map_blend.applied} materials, {len(layer_textures)} layer textures')

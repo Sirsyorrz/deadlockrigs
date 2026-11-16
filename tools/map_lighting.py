@@ -1388,6 +1388,20 @@ def add_barn_masks(coll, light_obs, specs, title):
     return all_masks
 
 
+def unlit_cast_no_shadows(meshes, kinds):
+    """Meshes drawn only with unlit materials (apply_vmat kind 'unlit') stop casting shadows. Hideout's funnel
+    clouds (opaque F_UNLIT, ~350 m up) sit between the sun and its rooftops and stairs, which the game shows lit
+    (lighting sweep h06/h08/h16). Whether the game skips unlit casters or casters that far out isn't known; on
+    Hideout the only other unlit-only meshes are the ghosts' eyes."""
+    changed = 0
+    for ob in meshes:
+        slots = [slot.material for slot in ob.material_slots]
+        if slots and all(m is not None and kinds.get(m) == 'unlit' for m in slots) and ob.visible_shadow:
+            ob.visible_shadow = False
+            changed += 1
+    return changed
+
+
 def exclude_from_light(light_ob, objects, name):
     """Light linking: the light skips these objects."""
     coll = bpy.data.collections.new(name)

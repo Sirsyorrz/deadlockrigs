@@ -377,7 +377,8 @@ def sun_casters_kept(keeps, suns):
     for sun in suns:
         to_sun = np.array(sun.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0)), np.float64)
         to_sun /= np.linalg.norm(to_sun)
-        found = triangles(keeps, lambda i, ob, mesh, keep: toward_box(faces[i][0].astype(np.float64), to_sun, lo, hi))
+        found = triangles(keeps, lambda i, ob, mesh, keep: toward_box(faces[i][0].astype(np.float64), to_sun, lo, hi)
+                          if ob.visible_shadow else None)
         if found is None:
             continue
         verts, tris, owner, face, clear, cells = found
