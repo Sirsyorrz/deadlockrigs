@@ -167,6 +167,56 @@ def eevee_cutoff(fade, start, end, can_cap=False, samples=160):
     return best
 
 
+def barn_edge(u, v, soft_x, soft_y, exponent):
+    """How much of a barn's light reaches a point of its opening, u and v from -1 to 1 across it
+    (deferred_lighting.vfx): a smoothstep in from each side over soft of the half size for a rectangle, or between
+    the superellipse through the opening and one scaled by 1 - soft for a rounded one (exponent as in lights())."""
+    x, y = abs(u), abs(v)
+    if not exponent:
+        return ((_smoothstep((1 - x) / soft_x) if soft_x > 0 else float(x < 1))
+                * (_smoothstep((1 - y) / soft_y) if soft_y > 0 else float(y < 1)))
+    ax, ay = 1 - soft_x, 1 - soft_y
+    outer = max(x ** exponent + y ** exponent, 1e-38) ** (-1 / exponent)
+    inner = ax * ay * max((ay * x) ** exponent + (ax * y) ** exponent, 1e-38) ** (-1 / exponent)
+    if inner < outer:
+        return _smoothstep((1 - outer) / (inner - outer))
+    return float(outer > 1)
+
+
+def _spot_edge(u, v, a, b, blend, tan_half):
+    """A Blender spot's mask at the same point, its cone's edge an ellipse of half axes a, b in the opening's u, v."""
+    cos_edge = 1 / math.sqrt(1 + tan_half * tan_half)
+    cos_at = 1 / math.sqrt(1 + tan_half * tan_half * ((u / a) ** 2 + (v / b) ** 2))
+    return _smoothstep((cos_at - cos_edge) / ((1 - cos_edge) * blend))
+
+
+def spot_for_barn(tan_x, tan_y, soft_x, soft_y, exponent, samples=8):
+    """A spot's cone, aspect and blend whose round soft edge best fits a barn's (barn_edge) over its opening, which
+    is tan_x, tan_y (half sizes over the distance from the eye) across (least squares, coarse grid then refined).
+    A cone through the opening's corners with the larger soft as its blend lit the sides of Hideout's window beams
+    up to 0.8 stop brighter than the game, which fades them out over 87% of their half width."""
+    # the opening's sides are in the fit: the mask (map_lighting.mask_mesh) cuts the spot there, and whatever it
+    # still lets through shows as a hard edge, long on floors a beam grazes
+    points = [(i / samples, j / samples) for i in range(samples + 1) for j in range(samples + 1)]
+    target = [barn_edge(u, v, soft_x, soft_y, exponent) for u, v in points]
+
+    def error(a, b, blend):
+        tan_half = max(a * tan_x, b * tan_y)
+        return sum((_spot_edge(u, v, a, b, blend, tan_half) - t) ** 2 for (u, v), t in zip(points, target))
+
+    best = min((error(a, b, blend), a, b, blend) for a in (0.4 * 1.25 ** k for k in range(12))
+               for b in (0.4 * 1.25 ** k for k in range(12)) for blend in (0.05 + 0.1 * k for k in range(10)))
+    ratio, step = 1.25, 0.1
+    for _ in range(4):
+        ratio, step = ratio ** 0.5, step / 2
+        _, a0, b0, blend0 = best
+        best = min([best] + [(error(a, b, blend), a, b, blend) for a in (a0 / ratio, a0, a0 * ratio)
+                             for b in (b0 / ratio, b0, b0 * ratio)
+                             for blend in (blend0 - step, blend0, blend0 + step) if 0.001 < blend <= 1])
+    _, a, b, blend = best
+    return 2 * math.atan(max(a * tan_x, b * tan_y)), (a * tan_x) / (b * tan_y), blend
+
+
 def lights(ents):
     """The omni2, barn and rect lights the game draws at runtime (directlight 2 dynamic, 3 stationary): the lightmap
     only has their bounce. As Blender point, spot and area lights, in Blender metres and axes: position, forward and
@@ -227,10 +277,14 @@ def lights(ents):
                 # past the opening; the unshadowed fog copy can't be capped and keeps the range as its cutoff
                 light['mask']['cap'] = (cap - near) * UNIT
                 light['fog_distance'] = (near + rng) * UNIT
+            if e.get('lightcookie'):
+                # the game doesn't soften a cookie's edges
+                cone, aspect, blend = 2 * max(half), math.tan(half[0]) / max(math.tan(half[1]), 1e-6), 0.0
+            else:
+                cone, aspect, blend = spot_for_barn(reach[0] / near, reach[1] / near, num(e, 'soft_x', 0.25),
+                                                    num(e, 'soft_y', 0.25), exponent)
             light.update(type='SPOT', position=to_blender(eye), watts=WATTS * linear * ((near + REFERENCE) / REFERENCE) ** 2,
-                         cone=2 * max(half), aspect=math.tan(half[0]) / max(math.tan(half[1]), 1e-6),
-                         # the game fades from 1 - soft of the way out to the edge (VRF GetBarnLightSoftEdge)
-                         blend=min(max(num(e, 'soft_x', 0.25), num(e, 'soft_y', 0.25)), 1.0),
+                         cone=cone, aspect=aspect, blend=blend,
                          distance=cutoff * UNIT,
                          near=near * UNIT,
                          radius=num(e, 'luminaire_size', 4.0) * UNIT / 2)
