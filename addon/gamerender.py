@@ -76,6 +76,11 @@ PAWN_SLOT = POSE_SLOTS - 1  # holds the player's own hero folded away
 FOLLOW_DISTANCE = 16.0
 # Close enough to the pose that the model's bounds still cover it (a fresh spawn starts metres away).
 ARRIVED = 48.0
+# The server only sends entities near the player (puppets and map props far from the hidden hero are missing or
+# half drawn): the hero follows the bridge camera once it is this far away (game units), and a capture right
+# after a move waits PAWN_STREAM_IN seconds for the entities to arrive.
+PAWN_FOLLOW = 512.0
+PAWN_STREAM_IN = 0.5
 SETUP_COMMON = ('citadel_hud_visible 0', 'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
                 'engine_no_focus_sleep 0', 'jpeg_quality 95')
 # Console camera (no bridge): the camera is the hero's own eye.
@@ -844,6 +849,8 @@ class Link:
         self.stream_restarted = 0.0
         self.time_step = 0
         self.frames_error = ''
+        self.pawn_at = None
+        self.pawn_moved = 0.0
 
     @property
     def min_vfov(self):
@@ -853,8 +860,37 @@ class Link:
         # Only the console camera moves the hero (the game kills it outside the play area).
         return self.bridge is not None or view.inside()
 
+    def follow(self, pos):
+        """Move the hidden hero to the bridge camera when it has gone far (noclip: it floats there). Inside the play
+        area only (the game kills a hero outside it). Returns how long entities still need to stream in."""
+        if not (self.bridge and self.con):
+            return 0.0
+        target = tuple(min(max(v, lo), hi) for v, (lo, hi) in zip(pos, PLAY_AREA))
+        if self.pawn_at is None or math.dist(target, self.pawn_at) > PAWN_FOLLOW:
+            commands = ['setpos_exact {:.1f} {:.1f} {:.1f}'.format(*target)]
+            if self.pawn_at is None:
+                commands.insert(0, 'noclip 1')
+            self.con.send(*commands)
+            self.pawn_at = target
+            self.pawn_moved = time.time()
+        return self.streaming()
+
+    def streaming(self):
+        """Seconds until entities near the hero's last move have arrived."""
+        return max(0.0, self.pawn_moved + PAWN_STREAM_IN - time.time())
+
+    def follow_render(self, pos):
+        """follow() for a render frame. True when the hero moved: a cut far away mid-animation thaws the game clock
+        (entities only stream in while it runs, so effects jump ahead by about PAWN_STREAM_IN there)."""
+        if self.follow(pos) <= 0:
+            return False
+        if self.render_frame is not None:
+            self.release_time()
+        return True
+
     def _place(self, view):
         if self.bridge:
+            self.follow(view.pos)
             return self.bridge.place(view)
         self.con.send(*view.commands())
         return None
@@ -1133,6 +1169,7 @@ class Link:
     def capture_stream(self, view):
         """Place the game camera and take the next stream frame that shows it: linear float RGBA, rows bottom-up."""
         with self.shot_lock:
+            time.sleep(self.follow(view.pos))
             seq = self.bridge.place(view)
             if isinstance(self.stream, BridgeFrames):
                 # Tagged frames: the first one drawn with this camera (and the clock step, while rendering).
@@ -1200,6 +1237,7 @@ class Link:
         ext = '.png' if kind == 'png_screenshot' else '.jpg'
         folder = os.path.join(game_dir() or '', 'citadel', 'screenshots')
         with self.shot_lock:
+            time.sleep(self.follow(view.pos))
             seq = self._place(view)
             if seq is None or not self.bridge.wait_applied(seq):
                 time.sleep(settle)
@@ -1596,12 +1634,15 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
                                          scale_y=render.pixel_aspect_y)
         w, h = lk.bridge.size if lk.bridge else (16, 9)
         view = game_view(camera.matrix_world, proj, w / h, lk.min_vfov)
-        lk.sync_puppets(depsgraph)
+        # Before the puppets: their entities only reach the client near the hero.
         frame_number = scene.frame_current + scene.frame_subframe
         first = lk.render_frame is None
+        moved = lk.follow_render(view.pos)
+        lk.sync_puppets(depsgraph)
         if lk.puppets:
             # Entities move through server ticks: wait before the clock stops; later frames move during the step.
-            lk.send_poses(depsgraph, settle=2.0 if first else 0.0)
+            lk.send_poses(depsgraph, settle=2.0 if first or moved else 0.0)
+        time.sleep(lk.streaming())
         lk.advance(frame_number, render.fps / render.fps_base)
         if lk.puppets and not first:
             lk.send_poses(depsgraph, settle=1.0)
@@ -1845,6 +1886,9 @@ def _final_plate_frame(scene, *_args):
         return
     lk = _link
     depsgraph = scene.view_layers[0].depsgraph
+    if scene.camera:
+        lk.follow_render(tuple(GAME_FROM_BLENDER @ scene.camera.evaluated_get(depsgraph).matrix_world.translation))
+        time.sleep(lk.streaming())
     first = lk.render_frame is None
     lk.advance(scene.frame_current + scene.frame_subframe, scene.render.fps / scene.render.fps_base)
     try:
