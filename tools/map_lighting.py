@@ -701,6 +701,10 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
         map_blend = sibling('map_blend')
         map_blend.apply_blend(mat, bsdf, ints, floats, dict(vmat_dict(mat).get('VectorParams') or {}),
                               layer_textures or {})
+    if vmat_dict(mat).get('ShaderName') == 'environment_layer.vfx':
+        map_blend = sibling('map_blend')
+        map_blend.apply_layer_illum(mat, bsdf, ints, floats, dict(vmat_dict(mat).get('VectorParams') or {}),
+                                    layer_textures or {})
     if vmat_dict(mat).get('ShaderName') == 'environment_parallax_layered.vfx':
         map_parallax = sibling('map_parallax')
         map_parallax.apply_parallax(mat, bsdf, ints, floats, dict(vmat_dict(mat).get('VectorParams') or {}),

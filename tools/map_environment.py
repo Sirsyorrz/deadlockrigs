@@ -12,6 +12,17 @@ UNIT = 0.0254
 BLEND_TEXTURES = ('g_tColor2', 'g_tColor3', 'g_tRevealMask2', 'g_tRevealMask3', 'g_tColorWorldOverlay',
                   'g_tColorWorldOverlay2', 'g_tColorOverlay', 'g_tRevealOverlay', 'g_tNormalRoughness2',
                   'g_tNormalRoughness3', 'g_tPacked2', 'g_tPacked3')
+
+
+def self_illum_textures(vmat):
+    """g_tPacked of the environment_* layers that glow (packed red * g_fLayerSelfIllumScaleN), which the glTF export
+    leaves out. Only layers whose scale is set above 0: VRF's default of 1 would light every layer with red in its
+    packed texture, and no other layer in Midtown sets one."""
+    floats, textures = vmat.get('FloatParams') or {}, vmat.get('TextureParams') or {}
+    return [textures[f'g_tPacked{n}'] for n in (1, 2, 3)
+            if float(floats.get(f'g_fLayerSelfIllumScale{n}', 0)) > 0 and textures.get(f'g_tPacked{n}')]
+
+
 # environment_parallax_layered's interior layers and masks (map_parallax.py)
 PARALLAX_TEXTURES = ('g_tColor2', 'g_tColor3', 'g_tMask', 'g_tMask2')
 

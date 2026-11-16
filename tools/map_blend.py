@@ -3,7 +3,8 @@ first layer; this lays layers 2 and 3, their reveal masks, border tints, the wor
 it, following ValveResourceFormat (Renderer/Shaders/citadel/environment_blend.frag.slang,
 common/surface_environment_layers.slang and common/planar_projection.slang, MIT licence). Roughness (with the
 border roughness) and metalness are blended the same way, after the game's environment_blend pixel shader; normals
-stay layer 1's.
+stay layer 1's. Self-illumination (albedo * packed red * g_fLayerSelfIllumScaleN * tint, blended by the layer
+weights, taken before borders and overlays) also covers environment_layer.vfx.
 
 UVs are worked in the game's convention (v down) and flipped back for Blender's image nodes; world positions are
 Source inches, from Blender metres and axes.
@@ -161,6 +162,7 @@ class Blend:
         self.g = Graph(mat.node_tree)
         self._uv, self._uv2, self._paint = None, None, None
         self.model_tint = None
+        self.glow = None
 
     def i(self, name, default=0):
         return int(self.ints.get(name, default))
@@ -275,6 +277,20 @@ class Blend:
             albedo = g.mix('MIX', albedo, g.mix('MULTIPLY', albedo, self.paint()), amount)
         return (albedo, mask) + self.surface(n, coords, fallback)
 
+    def illum(self, n, albedo):
+        """Layer n's glow, or None: its albedo * g_tPacked's red * g_fLayerSelfIllumScaleN * g_vLayerSelfIllumTintN
+        (as written, like VRF)."""
+        scale = self.f(f'g_fLayerSelfIllumScale{n}', 0.0)
+        packed = self.image(f'g_tPacked{n}', False) if scale > 0 else None
+        if packed is None:
+            return None
+        g = self.g
+        red = g.split(self.sample(packed, self.layer_coords(n))[0])[0]
+        tint = self.v(f'g_vLayerSelfIllumTint{n}', (1.0, 1.0, 1.0))
+        amount = g.math('MULTIPLY', red, scale)
+        return g.mix('MULTIPLY', albedo, g.combine(*(g.math('MULTIPLY', amount, float(t)) if t != 1 else amount
+                                                     for t in tint)))
+
     def reveal_threshold(self, n):
         img = self.image(f'g_tRevealMask{n}', False)
         if img is None:
@@ -359,7 +375,7 @@ class Blend:
 
     def build(self, layer1, mask1, rough1, metal1):
         """The composited albedo, roughness and metalness, from layer 1's (albedo already corrected, tinted and
-        painted)."""
+        painted). Leaves the composited glow (or None) in self.glow."""
         g = self.g
         three = bool(self.i('F_LAYER_COUNT'))
         blend = g.split(g.attribute('_BLEND'))
@@ -378,6 +394,7 @@ class Blend:
                                 clamp=True)
 
         layers = [(layer1, mask1, rough1, metal1)]
+        illums = [self.illum(1, layer1)]
         weights = []
         for n, b in ((2, blend2), (3, blend3)):
             if n == 3 and not three:
@@ -385,6 +402,7 @@ class Blend:
             sampled = self.layer(n, (rough1, metal1))
             if sampled is None:
                 continue
+            illums.append(self.illum(n, sampled[0]))
             threshold = self.reveal_threshold(n)
             if self.i(f'g_bBorderEffects{n}'):
                 amount = self.border_amount(b, threshold, n)
@@ -414,10 +432,16 @@ class Blend:
                           for k, (alb, m, r, mt) in enumerate(layers)]
 
         result, rough, metal = layers[0][0], layers[0][2], layers[0][3]
+        glow = illums[0] if any(illums) else None
+        black = (0.0, 0.0, 0.0, 1.0)
         for index, w in weights:
             result = g.mix('MIX', result, layers[index][0], w)
             rough = fmix(g, rough, layers[index][2], w)
             metal = fmix(g, metal, layers[index][3], w)
+            if glow is not None or illums[index] is not None:
+                glow = g.mix('MIX', black if glow is None else glow,
+                             black if illums[index] is None else illums[index], w)
+        self.glow = glow
         return result, rough, metal
 
 
@@ -484,7 +508,7 @@ def apply_blend(mat, bsdf, ints, floats, vectors, textures):
     if source is None:
         return False
     paths = dict(vmat_dict(mat).get('TextureParams') or {})
-    found = {key: textures[path] for key, path in paths.items() if key in TEXTURES and path in textures}
+    found = {key: textures[path] for key, path in paths.items() if (key in TEXTURES or key == 'g_tPacked1') and path in textures}
     blend = Blend(mat, ints, floats, vectors, found)
     blend.model_tint = model_tint(source)
     layer1_coords(blend, mat)
@@ -496,9 +520,29 @@ def apply_blend(mat, bsdf, ints, floats, vectors, textures):
                 for s in ('Roughness', 'Metallic')]
     result, rough, metal = blend.build(source, mask1, *surface1)
     blend.g.links.new(result, bsdf.inputs['Base Color'])
+    set_glow(blend, bsdf)
     for name, value, before in (('Roughness', rough, surface1[0]), ('Metallic', metal, surface1[1])):
         if value is not before:
             blend.g.put(bsdf.inputs[name], value)
     global applied
     applied += 1
     return True
+
+
+def set_glow(blend, bsdf):
+    if blend.glow is not None:
+        blend.g.links.new(blend.glow, bsdf.inputs['Emission Color'])
+        bsdf.inputs['Emission Strength'].default_value = 1.0
+
+
+def apply_layer_illum(mat, bsdf, ints, floats, vectors, textures):
+    """environment_layer's self-illumination (one layer). Returns whether it applied."""
+    source = bsdf.inputs['Base Color'].links[0].from_socket if bsdf.inputs['Base Color'].is_linked else None
+    paths = dict(vmat_dict(mat).get('TextureParams') or {})
+    found = {key: textures[path] for key, path in paths.items() if key == 'g_tPacked1' and path in textures}
+    if source is None or not found:
+        return False
+    blend = Blend(mat, ints, floats, vectors, found)
+    blend.glow = blend.illum(1, source)
+    set_glow(blend, bsdf)
+    return blend.glow is not None
