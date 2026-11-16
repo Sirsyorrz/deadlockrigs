@@ -608,6 +608,9 @@ static void apply(uptr view, const float *xyz, const float *angles) {
 
 // Game time for frame-exact renders: frozen = host_framerate at a tiny step, a step = host_framerate at the wanted
 // seconds for exactly one frame (set in one SetUpView, read by the next frame, reset in the next SetUpView).
+// The engine floors a frame's time (a 1e-6 host_framerate measured ~5e-5 s a frame), so a frozen game still creeps
+// on at ~700 fps: frozen frames run at a known FROZEN_STEP above that floor, and each step gives back what the
+// frames since the last one took (debt carries over when that is more than the step).
 // tier0 ConVar ABI from Dolly's reviewed profile for this tier0 (sha 29eae7e1..., image 0x3fa000).
 #define CVAR_FIND_SLOT 11
 #define CVAR_DATA_SLOT 41
@@ -615,7 +618,7 @@ static void apply(uptr view, const float *xyz, const float *angles) {
 #define CVAR_FLOAT32 9
 #define CVAR_FLOAT64 10
 #define CVAR_VALUE 0x58
-#define FROZEN_STEP 1e-6
+#define FROZEN_STEP 1e-4
 static const u8 kCvarSetPrologue[16] = {0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x4c,
                                         0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41};
 struct CvarRef {
@@ -639,6 +642,9 @@ static struct {
 } gTime = {{'D', 'L', 'R', 'T'}};
 static double gFramerateBefore;
 static int gStepping;
+static volatile u64 gPresents;  // counted by the present hook (capture.c)
+static u64 gFrozenSince;
+static double gTimeDebt;
 
 static int resolve_cvars(void) {
     uptr tier0 = (uptr)GetModuleHandleW(L"tier0.dll"), cvar, table, find, data, set, text;
@@ -699,6 +705,8 @@ static void update_time(int talking) {
         gTime.frozen = 1;
         gStepping = 0;
         gTime.step_done = gStepRequest;
+        gFrozenSince = gPresents;
+        gTimeDebt = 0;
     } else if (!frozen && gTime.frozen) {
         framerate_set(gFramerateBefore);
         gTime.frozen = 0;
@@ -708,8 +716,11 @@ static void update_time(int talking) {
         framerate_set(FROZEN_STEP);
         gStepping = 0;
         gTime.step_done = gStepRequest;
+        gFrozenSince = gPresents;
     } else if (frozen && gStepRequest != gTime.step_done) {
-        framerate_set(gStepSeconds);
+        double seconds = gStepSeconds - (double)(gPresents - gFrozenSince) * FROZEN_STEP - gTimeDebt;
+        gTimeDebt = seconds < FROZEN_STEP ? FROZEN_STEP - seconds : 0;
+        framerate_set(seconds < FROZEN_STEP ? FROZEN_STEP : seconds);
         gStepping = 1;
     }
     if (!gTime.frozen)

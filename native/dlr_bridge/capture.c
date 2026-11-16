@@ -448,6 +448,7 @@ static struct {
 
 static i32 present_hook(void *queue, const struct VkPresentInfo *info) {
     gCap.presents++;
+    gPresents++;
     gTagHistory[gCap.presents % 3].applied_seq = gStatus.applied_seq;
     gTagHistory[gCap.presents % 3].step_done = gTime.step_done;
     gTagHistory[gCap.presents % 3].views = gStatus.views;
