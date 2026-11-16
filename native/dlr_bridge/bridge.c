@@ -86,6 +86,7 @@ void *memset(void *dst, int c, u64 n) {
 // moves code keeps working; the structure offsets below are still client 6861's and are checked where they can be.
 #include "signatures.h"
 static uptr gSetup, gCaller, gSetupDelegate, gSkeleton, gEntityList, gViewVtable, gPawnVtable;
+static uptr gClientGlobals;  // client.dll's CGlobalVarsBase pointer variable
 static const u8 kSetupPrologue[32] = {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57,
                                       0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf1, 0xc6, 0x81, 0x30, 0x13,
                                       0x00, 0x00, 0x01, 0xb9, 0xff, 0xff, 0xff, 0xff, 0xe8, 0x3d};
@@ -341,6 +342,7 @@ static int resolve_client(void) {
     gSetupDelegate = SIGNATURE(gClient, SETUP_DELEGATE);
     gSkeleton = SIGNATURE(gClient, SKELETON);
     gEntityList = SIGNATURE(gClient, ENTITY_LIST);
+    gClientGlobals = SIGNATURE(gClient, CLIENT_GLOBALS);
     gViewVtable = rtti_vtable(gClient, ".?AVCViewRender@@");
     gPawnVtable = rtti_vtable(gClient, ".?AVC_CitadelPlayerPawn@@");
     // SetUpView's first STOLEN bytes are relocated as they are: they must be the known instructions.
@@ -606,11 +608,11 @@ static void apply(uptr view, const float *xyz, const float *angles) {
     memcpy((void *)gCache.angles, angles, 12);
 }
 
-// Game time for frame-exact renders: frozen = host_framerate at a tiny step, a step = host_framerate at the wanted
-// seconds for exactly one frame (set in one SetUpView, read by the next frame, reset in the next SetUpView).
-// The engine floors a frame's time (a 1e-6 host_framerate measured ~5e-5 s a frame), so a frozen game still creeps
-// on at ~700 fps: frozen frames run at a known FROZEN_STEP above that floor, and each step gives back what the
-// frames since the last one took (debt carries over when that is more than the step).
+// Game time for frame-exact renders: frozen = host_framerate at a tiny step, a step = host_framerate for exactly one
+// frame (set in one SetUpView, read by the next frame, reset in the next SetUpView). The engine floors a frame's
+// time and runs more frames than it draws, so a frozen game still creeps on (~0.1 s a second at ~700 fps): each step
+// aims at a target game time (the client's globals) instead, frozen time + n x the step seconds, so the creep is
+// taken off the next step rather than added up.
 // tier0 ConVar ABI from Dolly's reviewed profile for this tier0 (sha 29eae7e1..., image 0x3fa000).
 #define CVAR_FIND_SLOT 11
 #define CVAR_DATA_SLOT 41
@@ -618,7 +620,8 @@ static void apply(uptr view, const float *xyz, const float *angles) {
 #define CVAR_FLOAT32 9
 #define CVAR_FLOAT64 10
 #define CVAR_VALUE 0x58
-#define FROZEN_STEP 1e-4
+#define FROZEN_STEP 1e-6
+#define GLOBALS_CURTIME 0x30  // CGlobalVarsBase::curtime (float)
 static const u8 kCvarSetPrologue[16] = {0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x4c,
                                         0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41};
 struct CvarRef {
@@ -639,12 +642,12 @@ static struct {
     char magic[4];  // "DLRT"
     u32 available, frozen, step_done;
     double framerate;
+    float game_time;  // client curtime, -1 without the globals
+    u32 pad;
 } gTime = {{'D', 'L', 'R', 'T'}};
 static double gFramerateBefore;
 static int gStepping;
-static volatile u64 gPresents;  // counted by the present hook (capture.c)
-static u64 gFrozenSince;
-static double gTimeDebt;
+static double gTimeTarget;
 
 static int resolve_cvars(void) {
     uptr tier0 = (uptr)GetModuleHandleW(L"tier0.dll"), cvar, table, find, data, set, text;
@@ -668,6 +671,17 @@ static int resolve_cvars(void) {
         !safe_read(gFramerate.data + CVAR_TYPE, &gFramerateType, 2) || (gFramerateType != CVAR_FLOAT32 && gFramerateType != CVAR_FLOAT64))
         return 0;
     gCvarSet = (CvarSetFn)set;
+    return 1;
+}
+
+static int game_time(double *out) {
+    uptr globals;
+    if (!gClientGlobals || !safe_read(gClientGlobals, &globals, 8) || !globals)
+        return 0;
+    float t;
+    if (!safe_read(globals + GLOBALS_CURTIME, &t, 4) || !(t >= 0))
+        return 0;
+    *out = t;
     return 1;
 }
 
@@ -705,8 +719,8 @@ static void update_time(int talking) {
         gTime.frozen = 1;
         gStepping = 0;
         gTime.step_done = gStepRequest;
-        gFrozenSince = gPresents;
-        gTimeDebt = 0;
+        if (!game_time(&gTimeTarget))
+            gTimeTarget = -1;
     } else if (!frozen && gTime.frozen) {
         framerate_set(gFramerateBefore);
         gTime.frozen = 0;
@@ -716,16 +730,20 @@ static void update_time(int talking) {
         framerate_set(FROZEN_STEP);
         gStepping = 0;
         gTime.step_done = gStepRequest;
-        gFrozenSince = gPresents;
     } else if (frozen && gStepRequest != gTime.step_done) {
-        double seconds = gStepSeconds - (double)(gPresents - gFrozenSince) * FROZEN_STEP - gTimeDebt;
-        gTimeDebt = seconds < FROZEN_STEP ? FROZEN_STEP - seconds : 0;
-        framerate_set(seconds < FROZEN_STEP ? FROZEN_STEP : seconds);
+        double seconds = gStepSeconds, now;
+        if (gTimeTarget >= 0 && game_time(&now)) {
+            gTimeTarget += gStepSeconds;
+            seconds = gTimeTarget - now;
+        }
+        framerate_set(seconds < FROZEN_STEP ? FROZEN_STEP : seconds > 1 ? 1 : seconds);
         gStepping = 1;
     }
     if (!gTime.frozen)
         gTime.step_done = gStepRequest;
     gTime.framerate = framerate_get();
+    double now;
+    gTime.game_time = game_time(&now) ? (float)now : -1.0f;
 }
 
 static void __fastcall setup_hook(void *self, uptr opaque) {

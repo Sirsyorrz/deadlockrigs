@@ -66,7 +66,8 @@ _TIME_REPLY = struct.Struct('<4sIIId')
 
 def _time_state(data):
     f = _TIME_REPLY.unpack(data[:_TIME_REPLY.size])
-    return {'available': f[1], 'frozen': f[2], 'step_done': f[3], 'framerate': f[4]}
+    game_time = struct.unpack_from('<f', data, _TIME_REPLY.size)[0] if len(data) >= _TIME_REPLY.size + 4 else -1.0
+    return {'available': f[1], 'frozen': f[2], 'step_done': f[3], 'framerate': f[4], 'game_time': game_time}
 POSE_SLOTS = 8
 PAWN_SLOT = POSE_SLOTS - 1  # holds the player's own hero folded away
 # A puppet's entity follows its pose (the game culls a model by its entity's bounds) once the pose has moved this

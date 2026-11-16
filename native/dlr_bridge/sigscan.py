@@ -28,6 +28,7 @@ TARGETS = [
     ('SETUP_DELEGATE', 'client', 'func', 0x5ee490),
     ('SKELETON', 'client', 'func', 0x188b480),
     ('ENTITY_LIST', 'client', 'ref', 0x3633e68),
+    ('CLIENT_GLOBALS', 'client', 'ref', 0x3472cc0),
     ('CVAR_SET', 'tier0', 'func', 0x20fe50),
     # CCitadelGameRules::BuildGameSessionManifest and the routine adding one resource path to a manifest (found
     # with Modlock's patterns, data/game_signatures.txtpb "game-rules.manifest-builder" / "game-rules.add-resource")
