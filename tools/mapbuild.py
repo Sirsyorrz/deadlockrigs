@@ -283,6 +283,13 @@ class MapBuilder(Builder):
         ents = self.entities(m, vpks)
         self.write_npcs(m, ents)
         settings = {'sun': env.sun(ents), 'lights': env.lights(ents), 'gradient_fog': env.gradient_fog(ents)}
+        cookies = self.decompile_textures(m, vpks, {l['cookie'] for l in settings['lights'] if 'cookie' in l},
+                                          'cookies')
+        for light in settings['lights']:
+            if 'cookie' in light:
+                found = cookies.get(light.pop('cookie'))
+                if found:
+                    light['cookie'] = found
         cube = env.cubemap_fog(ents)
         settings['cubemap_fog'] = cube
         sky = env.sky(ents, cube and cube['sky_entity'])

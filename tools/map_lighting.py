@@ -929,8 +929,26 @@ def apply_glass(mat, bsdf, mask):
     g.links.new(add.outputs[0], output.inputs['Surface'])
 
 
+LUMINANCE = np.array([0.2126, 0.7152, 0.0722])
+
+
+def load_cookie(spec):
+    """A barn light's cookie image, its mean linear colour and its mean and peak luminance; None without one."""
+    path = spec.get('cookie')
+    if not path or not os.path.isfile(path):
+        return None
+    img = bpy.data.images.load(path, check_existing=True)
+    pixels = np.empty(len(img.pixels), np.float32)
+    img.pixels.foreach_get(pixels)
+    rgb = srgb_to_linear(pixels.reshape(-1, 4)[:, :3].astype(float))
+    lum = rgb @ LUMINANCE
+    return img, rgb.mean(0), float(lum.mean()), float(lum.max())
+
+
 def add_lights(coll, lights):
-    """The map's runtime lights (map_environment.lights) as Blender lights in the collection; their objects."""
+    """The map's runtime lights (map_environment.lights) as Blender lights in the collection; their objects. A barn
+    with a cookie is tinted and dimmed by the cookie's mean colour, what its opening lets through on average
+    (add_barn_masks projects the pattern)."""
     from mathutils import Matrix, Vector
     obs = []
     for spec in lights:
@@ -941,6 +959,12 @@ def add_lights(coll, lights):
             data.temperature = spec['temperature']
         else:
             data.color = spec['color']
+        cookie = load_cookie(spec)
+        if cookie:
+            mean = cookie[1]
+            peak = max(float(mean.max()), 1e-6)
+            data.color = [c * m / peak for c, m in zip(data.color, mean)]
+            data.energy *= peak
         data.use_shadow = spec['shadows']
         data.use_custom_distance = True
         data.cutoff_distance = spec['distance']
@@ -1208,9 +1232,36 @@ MASK_POINTS = 96
 RECTANGLE_EXPONENT = 200.0
 
 
-def mask_mesh(name, half, reach, exponent, margin):
+def cookie_material(name, img, peak):
+    """Lets light through as the cookie's luminance over its peak (EEVEE shadows aren't coloured; add_lights
+    put the mean colour in the light)."""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    mat.use_transparent_shadow = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    tex = nt.nodes.new('ShaderNodeTexImage')
+    tex.image = img
+    bw = nt.nodes.new('ShaderNodeRGBToBW')
+    scale = nt.nodes.new('ShaderNodeMath')
+    scale.operation = 'MULTIPLY'
+    scale.use_clamp = True
+    scale.inputs[1].default_value = 1 / max(peak, 1e-6)
+    mix = nt.nodes.new('ShaderNodeMixShader')
+    out = nt.nodes.new('ShaderNodeOutputMaterial')
+    nt.links.new(tex.outputs['Color'], bw.inputs[0])
+    nt.links.new(bw.outputs[0], scale.inputs[0])
+    nt.links.new(scale.outputs[0], mix.inputs['Fac'])
+    nt.links.new(nt.nodes.new('ShaderNodeBsdfDiffuse').outputs[0], mix.inputs[1])
+    nt.links.new(nt.nodes.new('ShaderNodeBsdfTransparent').outputs[0], mix.inputs[2])
+    nt.links.new(mix.outputs[0], out.inputs['Surface'])
+    return mat
+
+
+def mask_mesh(name, half, reach, exponent, margin, cookie=None):
     """A flat ring in XY: the opening (a superellipse of half size `half`) cut out of a rectangle wide enough to
-    take the cone's footprint and the penumbra round it."""
+    take the cone's footprint and the penumbra round it. With a cookie (load_cookie) the opening is filled with a
+    face that lets the cookie's pattern through, the image upright along +Y."""
     p = exponent or RECTANGLE_EXPONENT
     outer = [r * 1.5 + margin for r in reach]
     verts, faces = [], []
@@ -1223,8 +1274,21 @@ def mask_mesh(name, half, reach, exponent, margin):
     for i in range(MASK_POINTS):
         j = (i + 1) % MASK_POINTS
         faces.append((2 * i, 2 * j, 2 * j + 1, 2 * i + 1))
+    if cookie:
+        n = len(verts)
+        verts += [(-half[0], -half[1], 0), (half[0], -half[1], 0), (half[0], half[1], 0), (-half[0], half[1], 0)]
+        faces.append((n, n + 1, n + 2, n + 3))
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(verts, [], faces)
+    if cookie:
+        # the ring keeps no material, which shadows as opaque
+        mesh.materials.append(None)
+        mesh.materials.append(cookie_material(name, cookie[0], cookie[3]))
+        mesh.polygons[-1].material_index = 1
+        uv = mesh.uv_layers.new()
+        for loop, item in zip(mesh.loops, uv.data):
+            x, y, _ = verts[loop.vertex_index]
+            item.uv = (x / half[0] / 2 + 0.5, y / half[1] / 2 + 0.5)
     return mesh
 
 
@@ -1260,8 +1324,16 @@ def add_barn_masks(coll, light_obs, specs, title):
         m = spec.get('mask')
         if not m:
             continue
+        cookie = load_cookie(spec)
+        if cookie:
+            # a projected image is sharp; a light with a size would blur the pattern away from this close
+            ob.data.shadow_soft_size = 0.0
+            # the pattern lets through at most its peak; the fog copy (map_fog.light_fog) isn't shadowed
+            ob.data.energy *= cookie[3] / max(cookie[2], 1e-6)
+            ob['dlr_fog'] = ob.get('dlr_fog', 0.0) * cookie[2] / cookie[3]
         mask = bpy.data.objects.new(f'{ob.name} mask', mask_mesh(f'{ob.name} mask', m['half'], m['reach'],
-                                                                   m['exponent'], 2 * ob.data.shadow_soft_size))
+                                                                   m['exponent'], 2 * ob.data.shadow_soft_size,
+                                                                   cookie))
         rotation = ob.matrix_world.to_quaternion()
         mask.matrix_world = Matrix.LocRotScale(m['origin'], rotation, None)
         mask.visible_camera = mask.visible_diffuse = mask.visible_glossy = False

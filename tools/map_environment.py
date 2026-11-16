@@ -108,8 +108,8 @@ def lights(ents):
     up (the entity's +X and +Z), watts, linear colour or a colour temperature, cone, cutoff distance. Barn lights are
     spots from the eye point of their frustum, which reproduces their falloff, with `near` from the eye to the
     entity. Their cone takes in the whole opening and `mask` describes the opening (half size in metres, superellipse
-    exponent, 0 for a rectangle) for map_lighting.add_barn_masks to cut it to shape; orthographic barns and cookies
-    aren't brought over."""
+    exponent, 0 for a rectangle) for map_lighting.add_barn_masks to cut it to shape, and `cookie`, the texture a
+    barn projects through its opening, if it has one. Orthographic barns aren't brought over."""
     out = []
     for e in ents:
         kind = str(e.get('classname', ''))
@@ -152,6 +152,8 @@ def lights(ents):
             half = [math.atan2(reach[0] * corner, near), math.atan2(reach[1] * corner, near)]
             light['mask'] = {'origin': to_blender(origin), 'half': [size[0] * UNIT, size[1] * UNIT],
                              'reach': [r * UNIT for r in reach], 'exponent': exponent}
+            if e.get('lightcookie'):
+                light['cookie'] = str(e['lightcookie'])
             light.update(type='SPOT', position=to_blender(eye), watts=WATTS * linear * ((near + REFERENCE) / REFERENCE) ** 2,
                          cone=2 * max(half), aspect=math.tan(half[0]) / max(math.tan(half[1]), 1e-6),
                          # the game fades from 1 - soft of the way out to the edge (VRF GetBarnLightSoftEdge)

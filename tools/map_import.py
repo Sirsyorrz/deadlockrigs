@@ -142,6 +142,9 @@ print(f'blend layers: {map_blend.applied} materials, {len(layer_textures)} layer
 print(f'vertex paint: decoded on {map_lighting.decode_paint(meshes)} meshes')
 reached('paint')
 
+for spec in settings.get('lights') or []:
+    if spec.get('cookie'):
+        spec['cookie'] = os.path.join(lighting_dir, spec['cookie'])
 runtime_lights = map_lighting.add_lights(coll, settings.get('lights') or [])
 meshes, split = map_lighting.unlight_before_barns(runtime_lights, meshes)
 print(f'barn lights: {split} meshes split at their near planes')
