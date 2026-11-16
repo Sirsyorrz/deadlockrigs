@@ -532,17 +532,44 @@ def tint_mask(g, alpha, contrast, brightness):
     return g.call(tree, alpha, brightness - 0.5, contrast)[0]
 
 
+def ensure_paint_mix(mat, bsdf):
+    """Gives a material without the glTF import's paint multiply one that does nothing (factor 0), and one without
+    an object tint multiply a white one, so that painted, unpainted, tinted and untinted materials share a node
+    structure. Returns (paint mix or None when the base colour has no chain to put it in, whether it was added)."""
+    g = Graph(mat.node_tree)
+    top = source_of(bsdf.inputs['Base Color'])
+    if top is None:
+        return None, False
+    if not (top.node.type == 'MIX' and top.node.blend_type == 'MULTIPLY' and not top.node.inputs[7].is_linked):
+        top = g.mix('MULTIPLY', top, (1.0, 1.0, 1.0, 1.0))
+        g.links.new(top, bsdf.inputs['Base Color'])
+    mix, _ = paint_mix(bsdf)
+    if mix is not None:
+        return mix, False
+    tint = top.node
+    below = source_of(tint.inputs[6])
+    if below is None:
+        return None, False
+    mix = g.mix('MULTIPLY', below, g.attribute('Color', 'Color'), 0.0).node
+    g.links.new(mix.outputs[2], tint.inputs[6])
+    return mix, True
+
+
 def apply_albedo_correction(mat, bsdf, ints, floats, strength):
     """The first layer's colour correction and tint (g_vAlbedoContrastSaturationBrightness1, g_vColorTint1),
     which the glTF export drops, as the game's GetCitadelAlbedo / SampleLayer apply them: correct, then tint by
     the tint mask, then the vertex paint by the tint mask too. The mask is the colour texture's alpha on
     environment shaders; pbr keeps it in a texture the export doesn't have, so it counts as 1 there.
-    Returns whether anything changed."""
+    Built even where it changes nothing (identity matrices, flags off as factors): EEVEE compiles one shader per
+    node structure, and on Midtown each costs ~15 MB and compile time. Returns whether it built."""
     vmat = vmat_dict(mat)
     shader = str(vmat.get('ShaderName', ''))
     if shader not in CORRECTED_SHADERS:
         return False
     vectors = dict(vmat.get('VectorParams') or {})
+    if ensure_paint_mix(mat, bsdf)[1]:
+        # no mesh with this material has paint
+        strength = 0.0
     mix, albedo = paint_mix(bsdf)
     if albedo is None or (mix is not None and ints.get('g_bApplyTintToVertexColors')):
         albedo = bsdf.inputs['Base Color']
@@ -556,8 +583,6 @@ def apply_albedo_correction(mat, bsdf, ints, floats, strength):
     if shader in TINTED_SHADERS:
         rgb = srgb_to_linear(np.asarray(list(vectors.get('g_vColorTint1') or (1, 1, 1))[:3], float))
         tint = color_tint_matrix(rgb, int(ints.get('g_nTextureColorTintMode1', 0)))
-    if is_identity(correct) and is_identity(tint):
-        return False
 
     g = Graph(mat.node_tree)
     mask = 1.0
@@ -569,17 +594,21 @@ def apply_albedo_correction(mat, bsdf, ints, floats, strength):
         constant = vectors.get('TextureTintMask')
         mask = float(constant[0]) if constant else 1.0
 
-    color = source
-    if not is_identity(correct):
-        color = transform_color(g, color, correct)
-    if not is_identity(tint):
-        tinted = transform_color(g, color, tint)
-        color = tinted if ints.get('g_bMaskColorTint1', 1) == 0 else g.mix('MIX', color, tinted, mask)
+    def masked(flag):
+        """The mask, or 1 where the flag turns masking off; the mask is in 0..1."""
+        if isinstance(mask, float):
+            return mask if flag else 1.0
+        return g.math('MAXIMUM', mask, 0.0 if flag else 1.0)
+
+    color = transform_color(g, source, correct)
+    color = g.mix('MIX', color, transform_color(g, color, tint), masked(ints.get('g_bMaskColorTint1', 1)))
     g.links.new(color, albedo)
-    if mix is not None and ints.get('g_bMaskVertexColorTint1', 1) and not isinstance(mask, float):
-        g.links.new(g.math('MULTIPLY', mask, min(max(strength, 0.0), 1.0)), mix.inputs['Factor'])
-    elif mix is not None and ints.get('g_bMaskVertexColorTint1', 1):
-        mix.inputs['Factor'].default_value = min(max(strength * mask, 0.0), 1.0)
+    if mix is not None:
+        paint = masked(ints.get('g_bMaskVertexColorTint1', 1))
+        if isinstance(paint, float):
+            mix.inputs['Factor'].default_value = min(max(strength * paint, 0.0), 1.0)
+        else:
+            g.links.new(g.math('MULTIPLY', paint, min(max(strength, 0.0), 1.0)), mix.inputs['Factor'])
     return True
 
 
@@ -783,8 +812,6 @@ def apply_layer_contrast(mat, bsdf, vectors):
     for name, key in (('Roughness', 'g_vLayerRoughnessContrastBrightness1'),
                       ('Metallic', 'g_vLayerMetalnessContrastBrightness1')):
         contrast, brightness = (list(vectors.get(key) or (1.0, 0.0)) + [0.0])[:2]
-        if (contrast, brightness) == (1.0, 0.0):
-            continue
         offset = (brightness - 0.5) * contrast + 0.5
         socket = bsdf.inputs[name]
         src = source_of(socket)
