@@ -728,6 +728,37 @@ def append_clip(ob, name):
     return a
 
 
+def stay_in_place(ob, cb):
+    """Drop the clip's horizontal travel: the game moves the character through root_motion (the pelvis rides it), so
+    its keys lose their ground-plane part and keep the vertical one (jumps) and the turn."""
+    if 'root_motion' not in ob.pose.bones:
+        return
+    path = 'pose.bones["root_motion"].location'
+    curves = {f.array_index: f for f in cb.fcurves if f.data_path == path}
+    if not curves:
+        return
+    # root_motion rests on its side, so its local axes aren't the armature's
+    rest = ob.data.bones['root_motion'].matrix_local.to_3x3()
+    inv = rest.inverted()
+    frames = sorted({k.co[0] for f in curves.values() for k in f.keyframe_points})
+    def armature_loc(fr):
+        return rest @ Vector([curves[i].evaluate(fr) if i in curves else 0.0 for i in range(3)])
+    # held where the first frame has it, so the clip's first pose doesn't move
+    start = armature_loc(frames[0])
+    target = {}
+    for fr in frames:
+        loc = armature_loc(fr)
+        loc.x, loc.y = start.x, start.y
+        target[fr] = inv @ loc
+    for i, f in curves.items():
+        for k in f.keyframe_points:
+            d = target[k.co[0]][i] - k.co[1]
+            k.co[1] += d
+            k.handle_left[1] += d
+            k.handle_right[1] += d
+        f.update()
+
+
 def body_bones(ob):
     helpers = ('CTRL_', FACE, 'PHYS-', 'TW-', 'IKC-', 'IKE-', 'IKT-', 'IKR-', 'IKS-', 'MCH-')
     return [b for b in ob.pose.bones if not b.name.startswith(helpers)]
@@ -755,6 +786,8 @@ class DLRIG_OT_game_anim(bpy.types.Operator):
         sc = context.scene
         clip = append_clip(ob, self.clip)
         cb_src = clip.layers[0].strips[0].channelbags[0]
+        if sc.dlrig_in_place:
+            stay_in_place(ob, cb_src)
         mech_on = ob.get('mech_ik', 0.0) > 0.5
         for p in ob.get('clip_off', ['weapon_hold']):
             if p in ob:
@@ -1770,6 +1803,7 @@ class DLRIG_PT_game(bpy.types.Panel):
         col.operator('dlrig.game_anim', text='Load as New Action...', icon='ACTION').mode = 'NEW'
         col.operator('dlrig.game_anim', text='Insert at Current Frame...', icon='NLA_PUSHDOWN').mode = 'INSERT'
         col.operator('dlrig.game_anim', text='Copy Pose...', icon='POSE_HLT').mode = 'POSE'
+        col.prop(context.scene, 'dlrig_in_place')
         idle = idle_clip(context)
         col.label(text=f'Idle motion uses {idle[5:]}' if idle else 'No idle clip found', icon='INFO')
         col.separator()
@@ -2109,6 +2143,9 @@ def register():
     S.dlrig_phys_collide = P.BoolProperty(name='Collide with body', default=True)
     S.dlrig_phys_loop = P.BoolProperty(name='Looping animation', default=False,
                                         description='Simulate the range twice so the end flows into the start')
+    S.dlrig_in_place = P.BoolProperty(name='Stay in Place', default=False,
+                                       description='Load clips without their forward/sideways travel (runs, dashes): '
+                                                   'the body still bobs, jumps still rise')
     S.dlrig_phys_auto = P.BoolProperty(name='Re-bake when playback starts', default=True,
                                         description='Bake physics automatically every time you press play')
     for c in classes:
