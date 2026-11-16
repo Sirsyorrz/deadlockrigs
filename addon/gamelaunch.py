@@ -104,7 +104,8 @@ class Session:
     """One launch. start() returns at once; a thread runs the launch and reports through .status / .error / .ready.
     Everything it changed is undone by stop() or, after a crash, by recover() (run before every start)."""
 
-    def __init__(self, game, port, size=(1920, 1080), mods=False, extra=(), map_name='dl_hideout', borderless=False):
+    def __init__(self, game, port, size=(1920, 1080), mods=False, extra=(), map_name='dl_hideout', borderless=False,
+                 precache=()):
         self.game = game
         self.port = port
         self.size = size
@@ -112,6 +113,9 @@ class Session:
         self.borderless = borderless
         self.mods = mods
         self.extra = list(extra)
+        # Resource paths added to the map's load list by the bridge (models/... .vmdl, particles/... .vpcf): ones
+        # the map doesn't use would otherwise draw as the ERROR model.
+        self.precache = list(precache)
         self.status = ''
         self.error = ''
         self.ready = threading.Event()
@@ -234,13 +238,17 @@ class Session:
     def bridge_path(self):
         return os.path.join(self.game, *OVERLAY.split('/'), 'bin', 'win64', 'server.dll')
 
+    def precache_path(self):
+        return os.path.join(os.path.dirname(self.bridge_path()), 'precache.txt')
+
     def remove_bridge(self):
         """The bridge stays inert without -insecure, but it is only on disk while a session runs, so a normal
         (VAC-secured) launch can never find a foreign server.dll even if gameinfo.gi was left patched."""
-        try:
-            os.remove(self.bridge_path())
-        except OSError:
-            pass
+        for path in (self.bridge_path(), self.precache_path()):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     # launch ---------------------------------------------------------------------------------------------------
     def args(self):
@@ -271,6 +279,8 @@ class Session:
         target = self.bridge_path()
         os.makedirs(os.path.dirname(target), exist_ok=True)
         shutil.copyfile(dll, target)
+        with open(self.precache_path(), 'w') as f:
+            f.write(''.join(path + '\n' for path in self.precache))
         stale = os.path.join(os.path.dirname(target), 'dlr_unlocker.dll')
         if os.path.exists(stale):
             os.remove(stale)
