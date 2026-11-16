@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from collections import deque
 
 import blf
@@ -1807,7 +1808,16 @@ class DLR_OT_game_plate(bpy.types.Operator):
 
 def _poll_frames():
     """Load a new frame and redraw Deadlock viewports. Here, not in view_draw: Blender forbids writing data-blocks
-    while drawing, and the worker thread can't touch Blender at all."""
+    while drawing, and the worker thread can't touch Blender at all. Never raises: Blender drops a timer that does
+    (after an F12 render the viewport then never updated again)."""
+    try:
+        return _poll_frames_once()
+    except Exception:
+        traceback.print_exc()
+        return 0.25
+
+
+def _poll_frames_once():
     global _shown, _outside_shown, _stream_drawn
     lk = _link
     frame = lk.frame if lk else None
@@ -1815,13 +1825,18 @@ def _poll_frames():
     if changed:
         _outside_shown = lk.outside
     stream = lk.stream if lk else None
-    areas = [area for window in bpy.context.window_manager.windows for area in window.screen.areas
+    areas = [area for window in bpy.context.window_manager.windows if window.screen
+             for area in window.screen.areas
              if area.type == 'VIEW_3D' and area.spaces.active.shading.type == 'RENDERED']
     if stream and areas and stream.seq != _stream_drawn:
-        _stream_drawn = stream.seq
         # Uploaded here, not in view_draw: a texture made while drawing costs ~5x (a 4K frame 15 ms, here 3).
         width = max((r.width for area in areas for r in area.regions if r.type == 'WINDOW'), default=0)
-        _stream_texture(lk, width)
+        try:
+            _stream_texture(lk, width)
+        except RuntimeError:
+            # No GPU context in this tick (Blender's render job around an F12 render): next tick
+            return 1 / 60
+        _stream_drawn = stream.seq
         changed = True
     if frame and (_shown is None or frame[2] != _shown[1]):
         _image(frame[0])
@@ -1896,6 +1911,8 @@ def connect(context, port=PORT, setup=(), launched=False):
     except OSError:
         _link = None
         raise
+    if not bpy.app.timers.is_registered(_poll_frames):
+        bpy.app.timers.register(_poll_frames, persistent=True)
     cam = _link.start_camera
     if cam and context.screen:
         jump_viewports(context, *cam)
