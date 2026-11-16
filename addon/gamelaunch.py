@@ -61,8 +61,8 @@ def _game_commandlines():
         out = subprocess.run(
             ['powershell', '-NoProfile', '-Command',
              "Get-CimInstance Win32_Process -Filter \"Name='deadlock.exe'\" | ForEach-Object { $_.CommandLine }"],
-            capture_output=True, text=True, creationflags=0x08000000)
-        if out.returncode:
+            capture_output=True, text=True, errors='replace', creationflags=0x08000000)
+        if out.returncode or out.stdout is None:
             return None
         return [line.split() for line in out.stdout.splitlines() if line.strip()]
     found = []
@@ -85,9 +85,14 @@ def game_running(game):
     """The game's process. Never probe the console port for this: a console client that connects and leaves while
     the game replays its log to it can hang the game for good."""
     if os.name == 'nt':
-        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq deadlock.exe', '/NH'], capture_output=True,
-                             text=True, creationflags=0x08000000).stdout
-        return 'deadlock.exe' in out.lower()
+        # tasklist's output can come back as None (seen from Blender on Windows); the command lines are the fallback.
+        try:
+            out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq deadlock.exe', '/NH'], capture_output=True,
+                                 text=True, errors='replace', creationflags=0x08000000).stdout
+        except OSError:
+            out = None
+        if out:
+            return 'deadlock.exe' in out.lower()
     return bool(_game_commandlines())
 
 
