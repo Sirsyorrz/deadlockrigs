@@ -102,6 +102,71 @@ def to_blender(v, scale=UNIT):
     return [v[1] * scale, -v[0] * scale, v[2] * scale]
 
 
+def _smoothstep(x):
+    x = min(max(x, 0.0), 1.0)
+    return x * x * (3 - 2 * x)
+
+
+def omni_fade(rng, skirt):
+    """An omni2 or rect light's range fade at a distance from it: full to (1 - skirt) * range, smoothstep to none at
+    range (VRF ComputeDistanceFade)."""
+    width = max(skirt, 1e-3) * rng
+    return lambda d: _smoothstep((rng - d) / width)
+
+
+def barn_fade(near, rng, skirt, skirt_near):
+    """A perspective barn's fade at a distance from its frustum's eye: in by skirt_near of the range past the barn,
+    out over the last skirt of it, both in the frustum's projective depth (deferred_lighting.vfx, VRF
+    ComputePerspectiveBarnGeometry); nothing outside the frustum."""
+    far = near + rng
+    fade_in = (near + skirt_near * rng) / (far * skirt_near) if skirt_near > 0 else 0.0
+    fade_out = (near + (1 - skirt) * rng) / (near * skirt) if skirt > 0 else 0.0
+
+    def fade(d):
+        z = far / rng * (1 - near / d)
+        if not 0 < z < 1:
+            return 0.0
+        return (_smoothstep(z * fade_in) if fade_in else 1.0) * (_smoothstep((1 - z) * fade_out) if fade_out else 1.0)
+    return fade
+
+
+def _window(d, cutoff):
+    return (1 - min(d / cutoff, 1.0) ** 4) ** 2
+
+
+# where EEVEE's window is still 0.9
+WINDOW_FULL = 0.476
+
+
+def eevee_cutoff(fade, start, end, can_cap=False, samples=160):
+    """How to stand in for the game's range fade with EEVEE's influence window, (1 - (d / cutoff)^4)^2 from the
+    light: (cutoff, cap, squared error), cap None or the distance from the light to cut it off sharply at some other
+    way (can_cap: a barn's far cap). Fitted from the fade's peak to end and a quarter of the range past it (least
+    squares). Cutting off at the range itself dimmed lights long before the game's fade starts. EEVEE can't fade a
+    light in, so a barn's fade-in (skirt_near) is left out: lit fully there instead.
+    A barn far behind its opening fades over a sliver of its distance from the eye, faster than the window can:
+    Hideout's window beams (eye 60 m back, 13-17 m of range) fitted 0.4 at the floor where the game has 0.86. A
+    cap where the fade halves, with the window kept near full up to it, does better there."""
+    span = end - start
+    ds = [start + span * 1.25 * (i + 0.5) / samples for i in range(samples)]
+    target = [fade(d) for d in ds]
+    peak = target.index(max(target))
+    ds, target = ds[peak:], target[peak:]
+    best = (end, None, float('inf'))
+    for k in range(200):
+        cutoff = end * 0.5 * 100 ** (k / 199)
+        err = sum((_window(d, cutoff) - t) ** 2 for d, t in zip(ds, target))
+        if err < best[2]:
+            best = (cutoff, None, err)
+    cap = next((d for d, t in zip(ds, target) if t < 0.5 * target[0]), None) if can_cap else None
+    if cap is not None:
+        cutoff = cap / WINDOW_FULL
+        err = sum(((_window(d, cutoff) if d < cap else 0.0) - t) ** 2 for d, t in zip(ds, target))
+        if err < best[2]:
+            best = (cutoff, cap, err)
+    return best
+
+
 def lights(ents):
     """The omni2, barn and rect lights the game draws at runtime (directlight 2 dynamic, 3 stationary): the lightmap
     only has their bounce. As Blender point, spot and area lights, in Blender metres and axes: position, forward and
@@ -124,8 +189,10 @@ def lights(ents):
         origin = [float(v) for v in e['origin']]
         size = [float(v) for v in (e.get('size_params') or (0, 0, 0))]
         rng = num(e, 'range', 512.0)
+        skirt = num(e, 'skirt', 0.1)
         light = {'name': e.get('targetname') or kind, 'forward': to_blender(forward, 1.0), 'up': to_blender(up, 1.0),
-                 'distance': rng * UNIT, 'shadows': int(num(e, 'castshadows', 1)) != 0,
+                 'distance': eevee_cutoff(omni_fade(rng, skirt), 0.0, rng)[0] * UNIT,
+                 'shadows': int(num(e, 'castshadows', 1)) != 0,
                  # how strongly it lights the volumetric fog: fogstrength is a base 2 logarithm, like brightness
                  # (VRF SceneLight.BarnFogIntensity); read as linear, the base and street lights with a negative
                  # strength (the Archmother's skylight shaft) were left out of the fog
@@ -154,11 +221,17 @@ def lights(ents):
                              'reach': [r * UNIT for r in reach], 'exponent': exponent}
             if e.get('lightcookie'):
                 light['cookie'] = str(e['lightcookie'])
+            cutoff, cap, _ = eevee_cutoff(barn_fade(near, rng, skirt, num(e, 'skirt_near', 0.05)), near, near + rng,
+                                          can_cap=True)
+            if cap is not None:
+                # past the opening; the unshadowed fog copy can't be capped and keeps the range as its cutoff
+                light['mask']['cap'] = (cap - near) * UNIT
+                light['fog_distance'] = (near + rng) * UNIT
             light.update(type='SPOT', position=to_blender(eye), watts=WATTS * linear * ((near + REFERENCE) / REFERENCE) ** 2,
                          cone=2 * max(half), aspect=math.tan(half[0]) / max(math.tan(half[1]), 1e-6),
                          # the game fades from 1 - soft of the way out to the edge (VRF GetBarnLightSoftEdge)
                          blend=min(max(num(e, 'soft_x', 0.25), num(e, 'soft_y', 0.25)), 1.0),
-                         distance=(near + rng) * UNIT,
+                         distance=cutoff * UNIT,
                          near=near * UNIT,
                          radius=num(e, 'luminaire_size', 4.0) * UNIT / 2)
         elif kind == 'light_rect':

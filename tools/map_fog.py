@@ -177,6 +177,9 @@ def light_fog(coll, lights):
         copy.data.diffuse_factor = copy.data.specular_factor = copy.data.transmission_factor = 0.0
         # the shadow pool is already full on big maps, and volume shadows are off by default
         copy.data.use_shadow = False
+        # a barn ended by its mask's cap keeps its window to the range here (map_environment.eevee_cutoff)
+        if ob.get('dlr_fog_distance'):
+            copy.data.cutoff_distance = ob['dlr_fog_distance']
         coll.objects.link(copy)
         count += 1
     return count

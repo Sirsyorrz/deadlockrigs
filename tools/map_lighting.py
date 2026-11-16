@@ -1016,6 +1016,8 @@ def add_lights(coll, lights):
         ob.matrix_world = Matrix.LocRotScale(Vector(spec['position']), basis.to_quaternion(), Vector(scale))
         ob['dlr_fog'] = spec.get('fog', 0.0)
         ob['dlr_near'] = spec.get('near', 0.0)
+        if spec.get('fog_distance'):
+            ob['dlr_fog_distance'] = spec['fog_distance']
         ob['dlr_map_light'] = True
         coll.objects.link(ob)
         obs.append(ob)
@@ -1285,10 +1287,11 @@ def cookie_material(name, img, peak):
     return mat
 
 
-def mask_mesh(name, half, reach, exponent, margin, cookie=None):
+def mask_mesh(name, half, reach, exponent, margin, cookie=None, cap=None, near=0.0):
     """A flat ring in XY: the opening (a superellipse of half size `half`) cut out of a rectangle wide enough to
     take the cone's footprint and the penumbra round it. With a cookie (load_cookie) the opening is filled with a
-    face that lets the cookie's pattern through, the image upright along +Y."""
+    face that lets the cookie's pattern through, the image upright along +Y. With a cap (map_environment.lights),
+    a face that far down -Z, across the whole cone, ends the light there (`near` from the eye to the opening)."""
     p = exponent or RECTANGLE_EXPONENT
     outer = [r * 1.5 + margin for r in reach]
     verts, faces = [], []
@@ -1301,6 +1304,11 @@ def mask_mesh(name, half, reach, exponent, margin, cookie=None):
     for i in range(MASK_POINTS):
         j = (i + 1) % MASK_POINTS
         faces.append((2 * i, 2 * j, 2 * j + 1, 2 * i + 1))
+    if cap:
+        n = len(verts)
+        sx, sy = (r * (near + cap) / max(near, 1e-6) for r in outer)
+        verts += [(-sx, -sy, -cap), (sx, -sy, -cap), (sx, sy, -cap), (-sx, sy, -cap)]
+        faces.append((n, n + 1, n + 2, n + 3))
     if cookie:
         n = len(verts)
         verts += [(-half[0], -half[1], 0), (half[0], -half[1], 0), (half[0], half[1], 0), (-half[0], half[1], 0)]
@@ -1360,7 +1368,7 @@ def add_barn_masks(coll, light_obs, specs, title):
             ob['dlr_fog'] = ob.get('dlr_fog', 0.0) * cookie[2] / cookie[3]
         mask = bpy.data.objects.new(f'{ob.name} mask', mask_mesh(f'{ob.name} mask', m['half'], m['reach'],
                                                                    m['exponent'], 2 * ob.data.shadow_soft_size,
-                                                                   cookie))
+                                                                   cookie, m.get('cap'), spec.get('near', 0.0)))
         rotation = ob.matrix_world.to_quaternion()
         mask.matrix_world = Matrix.LocRotScale(m['origin'], rotation, None)
         mask.visible_camera = mask.visible_diffuse = mask.visible_glossy = False
