@@ -45,6 +45,7 @@ IMPORT HANDLE WINAPI GetCurrentProcess(void);
 IMPORT WCHAR *WINAPI GetCommandLineW(void);
 IMPORT HANDLE WINAPI CreateFileW(const WCHAR *, DWORD, DWORD, void *, DWORD, DWORD, HANDLE);
 IMPORT BOOL WINAPI WriteFile(HANDLE, const void *, DWORD, DWORD *, void *);
+IMPORT BOOL WINAPI ReadFile(HANDLE, void *, DWORD, DWORD *, void *);
 IMPORT BOOL WINAPI QueryPerformanceCounter(i64 *);
 IMPORT BOOL WINAPI QueryPerformanceFrequency(i64 *);
 IMPORT BOOL WINAPI ReadProcessMemory(HANDLE, const void *, void *, u64, u64 *);
@@ -81,12 +82,10 @@ void *memset(void *dst, int c, u64 n) {
 
 #define BRIDGE_PORT 29001
 
-// Client 6861 (sha256 d0341ce7...): Dolly's reviewed profile.
-#define CLIENT_IMAGE_SIZE 71380992u
-#define RVA_SETUP 0x1a120a0
-#define RVA_CALLER 0x1a0bac4
-#define RVA_VIEW_VTABLE 0x27b8a90
-#define RVA_SETUP_DELEGATE 0x5ee490
+// Addresses come from byte signatures (signatures.h, made by sigscan.py) and RTTI names, so a game update that only
+// moves code keeps working; the structure offsets below are still client 6861's and are checked where they can be.
+#include "signatures.h"
+static uptr gSetup, gCaller, gSetupDelegate, gSkeleton, gEntityList, gViewVtable, gPawnVtable;
 static const u8 kSetupPrologue[32] = {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57,
                                       0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf1, 0xc6, 0x81, 0x30, 0x13,
                                       0x00, 0x00, 0x01, 0xb9, 0xff, 0xff, 0xff, 0xff, 0xe8, 0x3d};
@@ -96,7 +95,6 @@ static const u8 kSetupPrologue[32] = {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 
 // CSkeletonInstance routine that builds the world-space bones for a bone mask (this = scene node, edx = mask) and
 // writes the pose buffer. Found by trapping writes to a prop's pose buffer; runs on tier0 job threads after
 // SetUpView, ~30 callers.
-#define RVA_SKELETON 0x188b480
 static const u8 kSkeletonPrologue[16] = {0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56,
                                          0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41};
 #define SKELETON_STOLEN 5  // mov [rsp+8], rcx
@@ -145,6 +143,7 @@ static uptr gClient;
 static SetupFn gOriginal;
 static SkeletonFn gSkeletonOriginal;
 static Factory gUnlockerFactory;
+static uptr gServer;  // the game's own server.dll
 static volatile long gStarted;
 static HANDLE gLog = (HANDLE)-1;
 
@@ -286,13 +285,67 @@ static int section_range(uptr module, const char *name, uptr *base, u64 *size) {
     return 0;
 }
 
-static u32 image_size(uptr module) {
-    u32 pe = *(u32 *)(module + 0x3c);
-    return *(u32 *)(module + pe + 24 + 56);
-}
-
 static int within(uptr value, u64 bytes, uptr base, u64 length) {
     return value >= base && bytes <= length && value - base <= length - bytes;
+}
+
+// The one place in the module's .text a signature matches (0 if none or several), resolved per its kind.
+static uptr find_signature(uptr module, const u8 *pattern, const u8 *mask, u64 length, u64 delta, int kind) {
+    uptr text;
+    u64 text_size, at;
+    if (!section_range(module, ".text", &text, &text_size) ||
+        count_pattern((const u8 *)text, text_size, pattern, mask, length, &at) != 1)
+        return 0;
+    uptr hit = text + at + delta;
+    return kind ? (uptr)((i64)hit + 4 + *(const i32 *)hit) : hit;
+}
+#define SIGNATURE(module, name) \
+    find_signature(module, kSig##name, kSig##name##Mask, sizeof(kSig##name), SIG_##name##_DELTA, SIG_##name##_KIND)
+
+// The primary vtable of a class by its MSVC RTTI name (".?AVCViewRender@@"): type descriptor (name at +16) <-
+// complete object locator (signature 1, offset 0, type descriptor RVA at +12, its own RVA at +20) <- the qword
+// just before the vtable.
+static uptr rtti_vtable(uptr module, const char *name) {
+    uptr data, rdata;
+    u64 data_size, rdata_size, n = slen(name) + 1;
+    if (!section_range(module, ".data", &data, &data_size) || !section_range(module, ".rdata", &rdata, &rdata_size))
+        return 0;
+    uptr descriptor = 0;
+    for (u64 i = 16; i + n <= data_size; i += 8)
+        if (bytes_equal((const u8 *)(data + i), (const u8 *)name, n)) {
+            descriptor = data + i - 16;
+            break;
+        }
+    if (!descriptor)
+        return 0;
+    u32 td = (u32)(descriptor - module);
+    uptr locator = 0;
+    for (u64 i = 0; i + 24 <= rdata_size; i += 4) {
+        const u32 *col = (const u32 *)(rdata + i);
+        if (col[3] == td && col[0] == 1 && col[1] == 0 && col[5] == (u32)(rdata + i - module)) {
+            locator = rdata + i;
+            break;
+        }
+    }
+    if (!locator)
+        return 0;
+    for (u64 i = 0; i + 16 <= rdata_size; i += 8)
+        if (*(const uptr *)(rdata + i) == locator)
+            return rdata + i + 8;
+    return 0;
+}
+
+static int resolve_client(void) {
+    gSetup = SIGNATURE(gClient, SETUP);
+    gCaller = SIGNATURE(gClient, CALLER);
+    gSetupDelegate = SIGNATURE(gClient, SETUP_DELEGATE);
+    gSkeleton = SIGNATURE(gClient, SKELETON);
+    gEntityList = SIGNATURE(gClient, ENTITY_LIST);
+    gViewVtable = rtti_vtable(gClient, ".?AVCViewRender@@");
+    gPawnVtable = rtti_vtable(gClient, ".?AVC_CitadelPlayerPawn@@");
+    // SetUpView's first STOLEN bytes are relocated as they are: they must be the known instructions.
+    return gSetup && gCaller && gSetupDelegate && gViewVtable &&
+           bytes_equal((const u8 *)gSetup, kSetupPrologue, 30);
 }
 
 // Dolly's decode_updated: find where SetUpView stores the global camera copies and the AngleVectors helper.
@@ -301,7 +354,7 @@ static int resolve_cache(void) {
     u64 data_size, text_size;
     if (!section_range(gClient, ".data", &data, &data_size) || !section_range(gClient, ".text", &text, &text_size))
         return 0;
-    const u8 *producer = (const u8 *)(gClient + RVA_SETUP_DELEGATE);
+    const u8 *producer = (const u8 *)gSetupDelegate;
     u8 all[sizeof(kAuxiliaryCopy)];
     memset(all, 1, sizeof(all));
     u64 at;
@@ -311,11 +364,11 @@ static int resolve_cache(void) {
     memset(mask, 1, sizeof(mask));
     for (u64 i = 0; i < sizeof(kCacheMasked); i++)
         memset(mask + kCacheMasked[i], 0, 4);
-    const u8 *code = (const u8 *)(gClient + RVA_SETUP);
+    const u8 *code = (const u8 *)gSetup;
     u64 offset;
     if (count_pattern(code, 0xc9, kCachePattern, mask, sizeof(kCachePattern), &offset) != 1)
         return 0;
-#define TARGET(op) ((uptr)((i64)(gClient + RVA_SETUP + offset + (op) + 4) + *(const i32 *)(code + offset + (op))))
+#define TARGET(op) ((uptr)((i64)(gSetup + offset + (op) + 4) + *(const i32 *)(code + offset + (op))))
     gCache.up = TARGET(3);
     gCache.right = TARGET(18);
     gCache.forward = TARGET(25);
@@ -335,7 +388,6 @@ static int resolve_cache(void) {
 // Entities (client 6861). The entity list global and identity layout are Dolly's reviewed FollowTarget values.
 // Scene node fields match schema_detailed_class_layout; the model state was found at node+0x140 in memory (its
 // model name at +0x1e8), not the schema's 0x120.
-#define RVA_ENTITY_LIST 0x3633e68
 #define IDENTITY_STRIDE 0x70
 #define IDENTITY_HANDLE 0x10
 #define ENTITY_IDENTITY 0x10
@@ -352,7 +404,6 @@ static int resolve_cache(void) {
 #define MODEL_BONE_PARENTS 0x180 // int16[]
 #define MODEL_INV_BIND 0x210     // model space inverse bind, 32-byte entries like the pose buffer
 #define BIND_CHUNK 256
-#define RVA_PLAYER_PAWN_VTABLE 0x27a5350  // the player's own hero is never posed
 #define MAX_BONES 1024
 #define POSE_SLOTS 8
 
@@ -405,7 +456,7 @@ typedef int (*Visit)(void *, uptr, u32, const char *);
 // The local player's pawn is left out unless asked for by index (hiding it from shots).
 static void walk_entities(Visit visit, void *context, int with_pawn) {
     uptr list;
-    if (!safe_read(gClient + RVA_ENTITY_LIST, &list, 8) || !list)
+    if (!gEntityList || !safe_read(gEntityList, &list, 8) || !list)
         return;
     for (u32 chunk_index = 0; chunk_index < 0x40; chunk_index++) {
         uptr chunk;
@@ -417,7 +468,7 @@ static void walk_entities(Visit visit, void *context, int with_pawn) {
             char name[128];
             if (!safe_read(identity, &instance, 8) || !instance ||
                 !safe_read(instance + ENTITY_IDENTITY, &backlink, 8) || backlink != identity ||
-                !safe_read(instance, &vtable, 8) || (!with_pawn && vtable == gClient + RVA_PLAYER_PAWN_VTABLE) ||
+                !safe_read(instance, &vtable, 8) || (!with_pawn && vtable == gPawnVtable) ||
                 !safe_read(instance + ENTITY_SCENE_NODE, &node, 8) || !node ||
                 !safe_read(node + NODE_OWNER, &owner, 8) || owner != instance ||
                 !safe_read(identity + IDENTITY_HANDLE, &handle, 4) || !node_model(node, name, sizeof(name)))
@@ -507,7 +558,7 @@ static u64 __fastcall skeleton_hook(uptr node, u64 mask, u64 r8, u64 r9) {
 // like SetUpView. Its first instruction is 5 bytes and the entry is 16-aligned: one atomic 8-byte store puts a
 // rel32 jump to a stub allocated within 2 GB of client.dll.
 static int install_skeleton_hook(void) {
-    u8 *target = (u8 *)(gClient + RVA_SKELETON);
+    u8 *target = (u8 *)gSkeleton;
     u8 *near = 0;
     for (uptr at = (gClient - 0x10000) & ~0xffffull; !near && at > gClient - 0x70000000; at -= 0x10000)
         near = VirtualAlloc((void *)at, 0x1000, 0x3000, 0x40);
@@ -558,12 +609,8 @@ static void apply(uptr view, const float *xyz, const float *angles) {
 // Game time for frame-exact renders: frozen = host_framerate at a tiny step, a step = host_framerate at the wanted
 // seconds for exactly one frame (set in one SetUpView, read by the next frame, reset in the next SetUpView).
 // tier0 ConVar ABI from Dolly's reviewed profile for this tier0 (sha 29eae7e1..., image 0x3fa000).
-#define TIER0_IMAGE_SIZE 0x3fa000u
-#define RVA_CVAR_TABLE 0x313208
-#define RVA_CVAR_FIND 0x6c710
-#define RVA_CVAR_DATA 0x6c650
+#define CVAR_FIND_SLOT 11
 #define CVAR_DATA_SLOT 41
-#define RVA_CVAR_SET 0x20fe50
 #define CVAR_TYPE 0x28   // u16: 9 float32, 10 float64 (this tier0 numbers types 2 higher than older builds)
 #define CVAR_FLOAT32 9
 #define CVAR_FLOAT64 10
@@ -594,15 +641,16 @@ static double gFramerateBefore;
 static int gStepping;
 
 static int resolve_cvars(void) {
-    uptr tier0 = (uptr)GetModuleHandleW(L"tier0.dll"), cvar, table, find, data;
-    if (!tier0 || image_size(tier0) != TIER0_IMAGE_SIZE)
+    uptr tier0 = (uptr)GetModuleHandleW(L"tier0.dll"), cvar, table, find, data, set, text;
+    u64 text_size;
+    if (!tier0 || !section_range(tier0, ".text", &text, &text_size))
         return 0;
     Factory factory = (Factory)GetProcAddress((HANDLE)tier0, "CreateInterface");
     cvar = factory ? (uptr)factory("VEngineCvar007", 0) : 0;
-    if (!cvar || !safe_read(cvar, &table, 8) || table != tier0 + RVA_CVAR_TABLE ||
-        !safe_read(table + 11 * 8, &find, 8) || find != tier0 + RVA_CVAR_FIND ||
-        !safe_read(table + CVAR_DATA_SLOT * 8, &data, 8) || data != tier0 + RVA_CVAR_DATA ||
-        !bytes_equal((const u8 *)(tier0 + RVA_CVAR_SET), kCvarSetPrologue, sizeof(kCvarSetPrologue)))
+    set = SIGNATURE(tier0, CVAR_SET);
+    if (!cvar || !set || !safe_read(cvar, &table, 8) || !safe_read(table + CVAR_FIND_SLOT * 8, &find, 8) ||
+        !within(find, 16, text, text_size) || !safe_read(table + CVAR_DATA_SLOT * 8, &data, 8) ||
+        !within(data, 16, text, text_size) || !bytes_equal((const u8 *)set, kCvarSetPrologue, sizeof(kCvarSetPrologue)))
         return 0;
     gFramerate.id = 0xffffffff;
     ((CvarFindFn)find)((void *)cvar, &gFramerate.id, "host_framerate", 0);
@@ -613,7 +661,7 @@ static int resolve_cvars(void) {
         !bytes_equal((const u8 *)name, (const u8 *)"host_framerate", 15) ||
         !safe_read(gFramerate.data + CVAR_TYPE, &gFramerateType, 2) || (gFramerateType != CVAR_FLOAT32 && gFramerateType != CVAR_FLOAT64))
         return 0;
-    gCvarSet = (CvarSetFn)(tier0 + RVA_CVAR_SET);
+    gCvarSet = (CvarSetFn)set;
     return 1;
 }
 
@@ -672,7 +720,7 @@ static void update_time(int talking) {
 static void __fastcall setup_hook(void *self, uptr opaque) {
     uptr caller = (uptr)__builtin_return_address(0);
     gOriginal(self, opaque);
-    if (caller != gClient + RVA_CALLER || *(uptr *)self != gClient + RVA_VIEW_VTABLE)
+    if (caller != gCaller || *(uptr *)self != gViewVtable)
         return;
     uptr view = (uptr)self + 0x10;
     gStatus.views++;
@@ -708,7 +756,7 @@ static void __fastcall setup_hook(void *self, uptr opaque) {
 }
 
 static int install_hook(void) {
-    u8 *target = (u8 *)(gClient + RVA_SETUP);
+    u8 *target = (u8 *)gSetup;
     u8 *tramp = VirtualAlloc(0, 64, 0x3000, 0x40);  // MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE
     if (!tramp)
         return 0;
@@ -739,6 +787,92 @@ static int install_hook(void) {
     return 1;
 }
 
+
+// Extra resources in every map's load list (session manifest), so models, particles and NPCs the map doesn't use can
+// be spawned for reference (unlisted ones draw as the ERROR model). Read from precache.txt beside this file, one
+// path per line, at each manifest build: after editing it, a map load (`map <name>`) brings them in. As Modlock's
+// GameRulesHooks: the original builds the manifest, then each path goes through the game's own add routine.
+typedef i64(__fastcall *ManifestFn)(void *, void **);
+typedef void(__fastcall *AddResourceFn)(const char *, void *);
+static ManifestFn gManifestOriginal;
+static AddResourceFn gAddResource;
+#define MANIFEST_STOLEN 14  // mov [rsp+10h], rdx; mov [rsp+8], rcx; push rbp/rbx/rsi/rdi
+static const u8 kManifestPrologue[MANIFEST_STOLEN] = {0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4c,
+                                                      0x24, 0x08, 0x55, 0x53, 0x56, 0x57};
+
+static i64 __fastcall manifest_hook(void *self, void **args) {
+    i64 result = gManifestOriginal(self, args);
+    void *manifest = args ? *args : 0;
+    WCHAR path[600];
+    beside_module(path, L"precache.txt");
+    HANDLE file = CreateFileW(path, 0x80000000, 1, 0, 3, 0x80, 0);  // GENERIC_READ, share read, OPEN_EXISTING
+    if (!manifest || file == (HANDLE)-1)
+        return result;
+    static char text[65536];
+    DWORD size = 0;
+    ReadFile(file, text, sizeof(text) - 1, &size, 0);
+    CloseHandle(file);
+    text[size] = 0;
+    int added = 0;
+    for (char *line = text; *line;) {
+        char *end = line;
+        while (*end && *end != '\n' && *end != '\r')
+            end++;
+        char next = *end;
+        *end = 0;
+        if (end - line > 4) {
+            gAddResource(line, manifest);
+            added++;
+        }
+        line = next ? end + 1 : end;
+    }
+    char note[64] = "precache: added ";
+    u64 n = slen(note);
+    char digits[12];
+    int d = 0;
+    do
+        digits[d++] = (char)('0' + added % 10);
+    while ((added /= 10) && d < 11);
+    while (d)
+        note[n++] = digits[--d];
+    note[n] = 0;
+    log_line(note);
+    return result;
+}
+
+// On the thread that loads server.dll, before any map: the first manifest build is the first map's.
+static void install_manifest_hook(uptr server) {
+    u8 *target = (u8 *)SIGNATURE(server, MANIFEST);
+    gAddResource = (AddResourceFn)SIGNATURE(server, ADD_RESOURCE);
+    if (!target || !gAddResource || !bytes_equal(target, kManifestPrologue, MANIFEST_STOLEN)) {
+        log_line("precache hook: signatures not found");
+        return;
+    }
+    u8 *tramp = VirtualAlloc(0, 64, 0x3000, 0x40);
+    if (!tramp)
+        return;
+    memcpy(tramp, target, MANIFEST_STOLEN);
+    u8 *jump = tramp + MANIFEST_STOLEN;
+    jump[0] = 0xff;
+    jump[1] = 0x25;
+    memset(jump + 2, 0, 4);
+    uptr back = (uptr)target + MANIFEST_STOLEN;
+    memcpy(jump + 6, &back, 8);
+    gManifestOriginal = (ManifestFn)tramp;
+    u8 patch[MANIFEST_STOLEN];
+    patch[0] = 0xff;
+    patch[1] = 0x25;
+    memset(patch + 2, 0, 4);
+    uptr hook = (uptr)&manifest_hook;
+    memcpy(patch + 6, &hook, 8);
+    DWORD old;
+    if (!VirtualProtect(target, MANIFEST_STOLEN, 0x40, &old))
+        return;
+    memcpy(target, patch, MANIFEST_STOLEN);
+    VirtualProtect(target, MANIFEST_STOLEN, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), target, MANIFEST_STOLEN);
+    log_line("precache hook installed");
+}
 
 #include "capture.c"
 
@@ -905,10 +1039,9 @@ static DWORD WINAPI worker(void *arg) {
         return 0;
     }
     gClient = (uptr)client;
-    if (image_size(gClient) != CLIENT_IMAGE_SIZE ||
-        !bytes_equal((const u8 *)(gClient + RVA_SETUP), kSetupPrologue, sizeof(kSetupPrologue))) {
+    if (!resolve_client()) {
         gStatus.state = 2;
-        set_message("client.dll is not build 6861: camera hook not installed");
+        set_message("client.dll signatures not found (game update?): camera hook not installed");
         return 0;
     }
     if (!resolve_cache()) {
@@ -922,7 +1055,7 @@ static DWORD WINAPI worker(void *arg) {
         return 0;
     }
     gStatus.state = 1;
-    if (!bytes_equal((const u8 *)(gClient + RVA_SKELETON), kSkeletonPrologue, sizeof(kSkeletonPrologue)))
+    if (!gSkeleton || !gEntityList || !bytes_equal((const u8 *)gSkeleton, kSkeletonPrologue, sizeof(kSkeletonPrologue)))
         set_message("camera hook installed; skeleton routine differs: no posing");
     else if (!install_skeleton_hook())
         set_message("camera hook installed; could not patch the skeleton routine: no posing");
@@ -942,8 +1075,10 @@ EXPORT void *CreateInterface(const char *name, int *result) {
             game_server_dll(path);
             server = LoadLibraryExW(path, 0, 0x8);  // LOAD_WITH_ALTERED_SEARCH_PATH
         }
-        if (server)
+        if (server) {
             gUnlockerFactory = (Factory)GetProcAddress(server, "CreateInterface");
+            gServer = (uptr)server;
+        }
         if (!gUnlockerFactory) {
             if (result)
                 *result = 1;
@@ -955,6 +1090,8 @@ EXPORT void *CreateInterface(const char *name, int *result) {
         beside_module(path, L"dlr_bridge.log");
         gLog = CreateFileW(path, 0x40000000, 1, 0, 2, 0x80, 0);  // GENERIC_WRITE, share read, CREATE_ALWAYS
         log_line("dlr bridge loaded");
+        if (gServer)
+            install_manifest_hook(gServer);
         CloseHandle(CreateThread(0, 0, worker, 0, 0, 0));
     }
     return gUnlockerFactory(name, result);
