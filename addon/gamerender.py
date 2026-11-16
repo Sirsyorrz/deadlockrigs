@@ -388,6 +388,17 @@ class Puppet:
         return out.tobytes(), anchor
 
 
+def rig_models():
+    """Every hero, form and NPC model the add-on has rigs for, with their extra models. A map only loads the models
+    its match uses (The Doorman isn't in Midtown's), and a model spawned without being loaded has no skeleton."""
+    from . import heroes
+    models = set()
+    for hero in heroes():
+        models.add(hero.get('model'))
+        models.update(extra.get('model') for extra in (hero.get('extra_models') or {}).values())
+    return sorted(m for m in models if m)
+
+
 def _arm_model(arm):
     if arm.get('dlr_model'):
         return arm['dlr_model']
@@ -1002,6 +1013,10 @@ class Link:
                 bound = self.poses.pose(slot, model, entity=max(new), active=False)
         if bound is None:
             raise TimeoutError(f'the game did not spawn {model}')
+        if not bound['count']:
+            self.con.send(f'ent_remove {bound["entity"]}')
+            raise ValueError('the map did not load this model: quit Deadlock and start it again from Blender '
+                             '(Start Deadlock loads every rig\'s model)')
         names, parents, inv_binds = self.poses.skeleton(slot)
         puppet = Puppet(arm.name, slot, bound['entity'], model, names, parents, inv_binds, arm)
         self.puppets[arm.name] = puppet
@@ -2114,7 +2129,7 @@ class DLR_OT_game_start(bpy.types.Operator):
         if screen and height > screen[1]:
             height = screen[1]
         session = gamelaunch.Session(game, PORT, map_name=self.map, size=(height * 16 // 9, height),
-                                     borderless=bool(screen) and height >= screen[1])
+                                     borderless=bool(screen) and height >= screen[1], precache=rig_models())
         try:
             session.start()
         except (OSError, RuntimeError) as error:
