@@ -53,7 +53,6 @@ STREAM_LATENCY_BRIDGE = 0.025
 SPAWNED = os.path.expanduser('~/.cache/dlr-game/spawned.json')  # models this Blender put in the game
 SEND_INTERVAL = 1 / 60
 FRAME = '.dlr_game_frame'
-CAMERA_FRAME = 'Deadlock Game Frame'
 ENGINE_ID = 'DLR_DEADLOCK_GAME'
 BRIDGE_PORT = 29001
 _BRIDGE_COMMAND = struct.Struct('<4sII3f3fff')
@@ -1622,102 +1621,6 @@ def _draw_message(region, text):
 _outside_shown = False
 
 
-OVERLAY_MODES = (
-    ('OFF', 'Off', 'No game overlay'),
-    ('WIPE', 'Wipe', 'The game on the left of the split, Blender on the right'),
-    ('BLEND', 'Blend', 'The game frame over Blender at the given opacity'),
-    ('EDGES', 'Edges', 'The game\'s edges drawn over Blender: missing, moved or misshaped map parts stand out'),
-)
-_overlay_shaders = {}
-_overlay_handle = None
-
-
-def overlay_shader(bgr=False):
-    """The packed stream frame for comparing against another engine's viewport, cut at a wipe, blended, or as an
-    edge mask. Decoded to linear like the engine's frames: the viewport colour-manages what handlers draw too."""
-    if bgr not in _overlay_shaders:
-        info = gpu.types.GPUShaderCreateInfo()
-        info.sampler(0, 'FLOAT_2D', 'image')
-        info.push_constant('INT', 'mode')
-        info.push_constant('FLOAT', 'amount')
-        info.push_constant('FLOAT', 'split')
-        info.vertex_in(0, 'VEC2', 'pos')
-        info.vertex_in(1, 'VEC2', 'texCoord')
-        iface = gpu.types.GPUStageInterfaceInfo('dlr_overlay_iface')
-        iface.smooth('VEC2', 'uv')
-        iface.smooth('FLOAT', 'screen_x')
-        info.vertex_out(iface)
-        info.fragment_out(0, 'VEC4', 'frag')
-        info.vertex_source('void main() { uv = texCoord; screen_x = pos.x * 0.5 + 0.5;'
-                           ' gl_Position = vec4(pos, 0.0, 1.0); }')
-        info.fragment_source(
-            'vec3 texel(ivec2 p) {'
-            '  ivec2 size = textureSize(image, 0);'
-            '  uint b = floatBitsToUint(texelFetch(image, clamp(p, ivec2(0), size - 1), 0).r);'
-            '  vec3 c = vec3(float(b & 255u), float((b >> 8u) & 255u), float((b >> 16u) & 255u)) / 255.0;'
-            + ('  c = c.bgr;' if bgr else '') +
-            '  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));'
-            '}'
-            'float luma(ivec2 p) { return log2(dot(texel(p), vec3(0.2126, 0.7152, 0.0722)) + 0.003); }'
-            'void main() {'
-            '  ivec2 size = textureSize(image, 0);'
-            '  ivec2 p = ivec2(vec2(uv.x, 1.0 - uv.y) * vec2(size));'
-            '  if (mode == 1) {'
-            '    if (screen_x > split) discard;'
-            '    frag = vec4(texel(p), 1.0);'
-            '  } else if (mode == 2) {'
-            '    frag = vec4(texel(p), amount);'
-            '  } else {'
-            '    float gx = luma(p + ivec2(1, 0)) - luma(p - ivec2(1, 0));'
-            '    float gy = luma(p + ivec2(0, 1)) - luma(p - ivec2(0, 1));'
-            '    float e = smoothstep(0.6, 1.6, length(vec2(gx, gy)));'
-            '    if (e <= 0.0) discard;'
-            '    frag = vec4(1.0, 0.0, 1.0, e * max(amount, 0.2));'
-            '  }'
-            '}')
-        _overlay_shaders[bgr] = gpu.shader.create_from_info(info)
-    return _overlay_shaders[bgr]
-
-
-def _overlay_wanted(scene, space):
-    return (scene.dlr_game_overlay != 'OFF' and space.shading.type != 'WIREFRAME'
-            and not (scene.render.engine == ENGINE_ID and space.shading.type == 'RENDERED'))
-
-
-def _overlay_draw():
-    context = bpy.context
-    scene, rv3d, region = context.scene, context.region_data, context.region
-    lk = _link
-    if (lk is None or not lk.running or not lk.stream or rv3d is None or not rv3d.is_perspective
-            or not _overlay_wanted(scene, context.space_data)):
-        return
-    w, h = lk.stream.size
-    lk.want(game_view(rv3d.view_matrix.inverted(), rv3d.window_matrix, w / h, lk.min_vfov))
-    frame = _stream_tex
-    if frame is None or frame[2] is None or lk.outside:
-        return
-    shader = overlay_shader(frame[3])
-    mode = {'WIPE': 1, 'BLEND': 2, 'EDGES': 3}[scene.dlr_game_overlay]
-    shot, wm = frame[2], rv3d.window_matrix
-    tv = math.tan(math.radians(shot.vfov) / 2)
-    th = tv * w / h
-    x0, x1 = -wm[0][0] * th - wm[0][2], wm[0][0] * th - wm[0][2]
-    y0, y1 = -wm[1][1] * tv - wm[1][2], wm[1][1] * tv - wm[1][2]
-    batch = batch_for_shader(shader, 'TRI_FAN', {'pos': ((x0, y0), (x1, y0), (x1, y1), (x0, y1)),
-                                                 'texCoord': ((0, 0), (1, 0), (1, 1), (0, 1))})
-    gpu.state.blend_set('ALPHA')
-    with gpu.matrix.push_pop(), gpu.matrix.push_pop_projection():
-        gpu.matrix.load_identity()
-        gpu.matrix.load_projection_matrix(Matrix.Identity(4))
-        shader.bind()
-        shader.uniform_sampler('image', frame[1])
-        shader.uniform_int('mode', mode)
-        shader.uniform_float('amount', scene.dlr_game_overlay_amount)
-        shader.uniform_float('split', scene.dlr_game_overlay_amount)
-        batch.draw(shader)
-    gpu.state.blend_set('NONE')
-
-
 def camera_frame(context, width, height):
     """The game's view of the scene camera as linear float RGBA (rows bottom-up), width x height."""
     lk = _link
@@ -1738,69 +1641,6 @@ def camera_frame(context, width, height):
     return _resample(lk.capture_stream(view), view, proj, width, height)
 
 
-class DLR_OT_game_camera_frame(bpy.types.Operator):
-    bl_idname = 'dlr.game_camera_frame'
-    bl_label = 'Game Frame for Camera'
-    bl_description = ('Grab what the game shows from the scene camera, at the render size, into the image '
-                      '"Deadlock Game Frame" (compare it with a render in the Image Editor)')
-
-    @classmethod
-    def poll(cls, context):
-        return _link is not None and _link.running and context.scene.camera is not None
-
-    def execute(self, context):
-        r = context.scene.render
-        w, h = r.resolution_x * r.resolution_percentage // 100, r.resolution_y * r.resolution_percentage // 100
-        try:
-            pixels = camera_frame(context, w, h)
-        except (OSError, ValueError, TimeoutError) as error:
-            self.report({'ERROR'}, str(error))
-            return {'CANCELLED'}
-        img = bpy.data.images.get(CAMERA_FRAME)
-        if img is not None and tuple(img.size) != (w, h):
-            bpy.data.images.remove(img)
-            img = None
-        if img is None:
-            img = bpy.data.images.new(CAMERA_FRAME, w, h, float_buffer=True)
-        img.pixels.foreach_set(pixels.ravel())
-        img.update()
-        for area in context.screen.areas:
-            if area.type == 'IMAGE_EDITOR':
-                area.spaces.active.image = img
-                break
-        self.report({'INFO'}, f'{CAMERA_FRAME}: {w}x{h}')
-        return {'FINISHED'}
-
-
-class DLR_PT_game_compare(bpy.types.Panel):
-    bl_label = 'Compare with Game'
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Deadlock Rigs'
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        col = self.layout.column()
-        lk = _link
-        if not (lk and lk.running):
-            if _session and not _session.error and not _session.ready.is_set():
-                col.label(text=_session.status + '...', icon='TIME')
-            else:
-                row = col.row()
-                row.operator(DLR_OT_game_start.bl_idname, icon='PLAY')
-                row.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
-            return
-        scene = context.scene
-        col.prop(scene, 'dlr_game_overlay', expand=True)
-        if scene.dlr_game_overlay != 'OFF':
-            col.prop(scene, 'dlr_game_overlay_amount',
-                     text={'WIPE': 'Split', 'BLEND': 'Opacity', 'EDGES': 'Strength'}[scene.dlr_game_overlay])
-            if not lk.stream:
-                col.label(text='Needs frames from the game (bridge or window capture)', icon='ERROR')
-        col.operator(DLR_OT_game_camera_frame.bl_idname, icon='IMAGE_DATA')
-        col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
-
-
 def _poll_frames():
     """Load a new frame and redraw Deadlock viewports. Here, not in view_draw: Blender forbids writing data-blocks
     while drawing, and the worker thread can't touch Blender at all."""
@@ -1812,8 +1652,7 @@ def _poll_frames():
         _outside_shown = lk.outside
     stream = lk.stream if lk else None
     areas = [area for window in bpy.context.window_manager.windows for area in window.screen.areas
-             if area.type == 'VIEW_3D' and (area.spaces.active.shading.type == 'RENDERED'
-                                           or _overlay_wanted(window.scene, area.spaces.active))]
+             if area.type == 'VIEW_3D' and area.spaces.active.shading.type == 'RENDERED']
     if stream and areas and stream.seq != _stream_drawn:
         _stream_drawn = stream.seq
         # Uploaded here, not in view_draw: a texture made while drawing costs ~5x (a 4K frame 15 ms, here 3).
@@ -2123,8 +1962,7 @@ def _view_menu(self, context):
 
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
            DLR_OT_game_jump,
-           DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_OT_game_standard_view, DLR_PT_game_render,
-           DLR_OT_game_camera_frame, DLR_PT_game_compare)
+           DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_OT_game_standard_view, DLR_PT_game_render)
 
 
 # Blender panels list the engines they show for; a custom engine has to add itself. Output settings (format,
@@ -2149,13 +1987,6 @@ def register():
     if not bpy.app.timers.is_registered(_poll_frames):
         bpy.app.timers.register(_poll_frames, persistent=True)
     bpy.types.VIEW3D_MT_view.append(_view_menu)
-    global _overlay_handle
-    bpy.types.Scene.dlr_game_overlay = bpy.props.EnumProperty(
-        name='Game Overlay', items=OVERLAY_MODES, description='Show the game\'s view of this viewport over it')
-    bpy.types.Scene.dlr_game_overlay_amount = bpy.props.FloatProperty(
-        name='Amount', default=0.5, min=0.0, max=1.0, subtype='FACTOR')
-    if _overlay_handle is None:
-        _overlay_handle = bpy.types.SpaceView3D.draw_handler_add(_overlay_draw, (), 'WINDOW', 'POST_PIXEL')
     for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
         handlers.append(_render_finished)
 
@@ -2173,11 +2004,7 @@ def _render_finished(*_args):
 
 
 def unregister():
-    global _link, _overlay_handle
-    if _overlay_handle is not None:
-        bpy.types.SpaceView3D.draw_handler_remove(_overlay_handle, 'WINDOW')
-        _overlay_handle = None
-    del bpy.types.Scene.dlr_game_overlay, bpy.types.Scene.dlr_game_overlay_amount
+    global _link
     for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
         if _render_finished in handlers:
             handlers.remove(_render_finished)
