@@ -544,6 +544,13 @@ def _window_size(wid):
 
 
 _CAPTURE_STATUS = struct.Struct('<4sIIIIIQQQ64s')
+_DEPTH_STATUS = struct.Struct('<4sIIIIIQ64s')  # magic, state, done request, width, height, format, present, message
+_DEPTH_HEADER = struct.Struct('<4sIIIIIIIIIQ')  # magic, version, seq, w, h, format, stride, camera seq, step, views,
+#                                                 present; texels from DEPTH_DATA
+DEPTH_DATA = 4096
+# The game's near plane (r_nearz default) with an infinite reversed-Z projection: stored depth = NEAR_Z / view z.
+# Measured through the depth copy against the hideout floor (r_nearz 10 scaled the fit exactly).
+NEAR_Z = 7.0
 _FRAME_HEADER = struct.Struct('<IIIIIIIIQQQQ')  # seq, w, h, format, stride, camera seq, clock step, views, present,
                                                 # data offset, capacity, time
 _BGRA_FORMATS = (44, 50)  # VK_FORMAT_B8G8R8A8_UNORM / _SRGB
@@ -692,6 +699,38 @@ class BridgeFrames:
                 return frame
             time.sleep(0.002)
         return None
+
+    def depth(self, timeout=3.0):
+        """One snapshot of the scene depth (the bridge copies it where the game copies it, mid-frame): view-axis
+        distance in game units (inf for sky), rows bottom-up, and its tags."""
+        self.depth_request = (getattr(self, 'depth_request', int(time.time()) & 0xffffff) + 1) & 0xffffffff
+        end = time.time() + timeout
+        while True:
+            with self.lock:
+                self.sock.sendto(struct.pack('<4sI', b'DLRD', self.depth_request), ('127.0.0.1', self.port))
+                data = self.sock.recv(4096)
+            f = _DEPTH_STATUS.unpack(data[:_DEPTH_STATUS.size])
+            if f[1] == 3:
+                raise OSError('no game depth: ' + f[7].split(b'\0')[0].decode(errors='replace'))
+            if f[1] == 0 and f[2] == self.depth_request:
+                break
+            if time.time() > end:
+                raise TimeoutError('the game did not copy its depth')
+            self._ping()  # keeps the bridge capturing (it stops a while after the last packet)
+            time.sleep(0.01)
+        with open(self.path + '-depth', 'rb') as file:
+            data = file.read()
+        _, _, seq, w, h, fmt, stride, camera, step, views, present = _DEPTH_HEADER.unpack_from(data)
+        if seq & 1:
+            raise OSError('the depth file was being written')
+        raw = np.frombuffer(data, np.uint32, h * stride // 4, DEPTH_DATA).reshape(h, stride // 4)[::-1, :w]
+        if fmt == 129:  # D24_UNORM_S8: depth in the low 24 bits
+            stored = (raw & 0xffffff).astype(np.float32) * np.float32(1 / 0xffffff)
+        else:
+            stored = raw.view(np.float32)
+        with np.errstate(divide='ignore'):
+            z = np.where(stored > 0, np.float32(NEAR_Z) / stored, np.float32(np.inf))
+        return z, {'camera': camera, 'step': step, 'views': views}
 
     def stop(self):
         try:
@@ -1611,6 +1650,19 @@ def _resample(frame, view, proj, width, height):
     return (across[at] * (1 - fy) + across[at + 1] * fy).reshape(-1, 4)
 
 
+def _resample_nearest(values, view, proj, width, height):
+    """The scene camera's view out of a centred game image, nearest texel (depth must not blend across edges)."""
+    fh, fw = values.shape[:2]
+    tv = math.tan(math.radians(view.vfov) / 2)
+    th = tv * fw / fh
+    (u0, u1), (v0, v1) = tangent_extents(proj)
+    u = u0 + (np.arange(width) + 0.5) / width * (u1 - u0)
+    v = v0 + (np.arange(height) + 0.5) / height * (v1 - v0)
+    x = np.clip(((u + th) / (2 * th) * fw).astype(np.int32), 0, fw - 1)
+    y = np.clip(((v + tv) / (2 * tv) * fh).astype(np.int32), 0, fh - 1)
+    return values[y][:, x]
+
+
 def _draw_message(region, text):
     blf.size(0, 16)
     width, _ = blf.dimensions(0, text)
@@ -1640,6 +1692,117 @@ def camera_frame(context, width, height):
     # Again once the game has drawn the new view a while: streamed textures, temporal AA and fog settle.
     time.sleep(0.5)
     return _resample(lk.capture_stream(view), view, proj, width, height)
+
+
+def camera_plate(context, width, height):
+    """The game's view of the scene camera as a plate for compositing: linear float RGBA (rows bottom-up) and the
+    view-axis depth in Blender units (inf for sky), both width x height."""
+    lk = _link
+    if lk is None or not lk.running or not isinstance(lk.stream, BridgeFrames):
+        raise ConnectionError('needs a game session with the bridge\'s frame capture')
+    scene = context.scene
+    if scene.camera is None:
+        raise ValueError('the scene has no camera')
+    depsgraph = context.evaluated_depsgraph_get()
+    proj = scene.camera.calc_matrix_camera(depsgraph, x=width, y=height, scale_x=scene.render.pixel_aspect_x,
+                                           scale_y=scene.render.pixel_aspect_y)
+    w, h = lk.bridge.size
+    view = game_view(scene.camera.matrix_world, proj, w / h, lk.min_vfov)
+    lk.capture_stream(view)
+    time.sleep(0.5)  # streamed textures, temporal AA and fog settle
+    for _ in range(3):
+        rgb = lk.capture_stream(view)
+        z, tags = lk.stream.depth()
+        if tags['camera'] == lk.bridge.seq:
+            break
+    else:
+        raise TimeoutError('the game depth never showed this camera')
+    return (_resample(rgb, view, proj, width, height),
+            _resample_nearest(z, view, proj, width, height) * np.float32(UNIT))
+
+
+PLATE_IMAGE = 'Deadlock Game Plate'
+PLATE_DEPTH = 'Deadlock Game Depth'
+PLATE_GROUP = 'Deadlock Game Plate'
+
+
+def _plate_image(name, pixels, width, height, non_color):
+    img = bpy.data.images.get(name)
+    if img is not None and (tuple(img.size) != (width, height) or not img.is_float):
+        bpy.data.images.remove(img)
+        img = None
+    if img is None:
+        img = bpy.data.images.new(name, width, height, alpha=True, float_buffer=True)
+    img.colorspace_settings.name = 'Non-Color' if non_color else 'Linear Rec.709'
+    img.pixels.foreach_set(pixels.ravel())
+    img.update()
+    img.pack()  # survives a save; the plate is one grab, not a file
+    return img
+
+
+def plate_compositor(scene):
+    """Compositor: the render over the game plate by depth (Z Combine), so the game's walls and props hide what
+    is behind them. The render needs its Z pass and a transparent film."""
+    tree = bpy.data.node_groups.get(PLATE_GROUP)
+    if tree is None:
+        tree = bpy.data.node_groups.new(PLATE_GROUP, 'CompositorNodeTree')
+    scene.render.film_transparent = True
+    for layer in scene.view_layers:
+        layer.use_pass_z = True  # before the Render Layers node: its Depth output only exists with the pass
+    tree.nodes.clear()
+    if not tree.interface.items_tree:
+        tree.interface.new_socket('Image', in_out='OUTPUT', socket_type='NodeSocketColor')
+    layers = tree.nodes.new('CompositorNodeRLayers')
+    layers.scene = scene
+    plate = tree.nodes.new('CompositorNodeImage')
+    plate.image = bpy.data.images[PLATE_IMAGE]
+    depth = tree.nodes.new('CompositorNodeImage')
+    depth.image = bpy.data.images[PLATE_DEPTH]
+    split = tree.nodes.new('CompositorNodeSeparateColor')
+    combine = tree.nodes.new('CompositorNodeZcombine')
+    combine.inputs['Use Alpha'].default_value = True
+    out = tree.nodes.new('NodeGroupOutput')
+    for i, node in enumerate((layers, plate, depth, split, combine, out)):
+        node.location = (300 * (i // 3 + (node is combine) + 2 * (node is out)), -300 * (i % 3))
+    links = tree.links
+    links.new(layers.outputs['Image'], combine.inputs['A'])
+    links.new(layers.outputs['Depth'], combine.inputs['Depth A'])
+    links.new(plate.outputs['Image'], combine.inputs['B'])
+    links.new(depth.outputs['Image'], split.inputs['Image'])
+    links.new(split.outputs['Red'], combine.inputs['Depth B'])
+    links.new(combine.outputs['Result'], out.inputs[0])
+    scene.compositing_node_group = tree
+
+
+class DLR_OT_game_plate(bpy.types.Operator):
+    bl_idname = 'dlr.game_plate'
+    bl_label = 'Game Plate for Camera'
+    bl_description = ('Grab the game\'s view of the scene camera with its depth and composite renders over it '
+                      '(the game\'s walls and props hide what is behind them). Turns on Transparent film and the Z '
+                      'pass; the plate matches the game best with the Standard view transform')
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return _link is not None and _link.running and context.scene.camera is not None
+
+    def execute(self, context):
+        r = context.scene.render
+        w, h = r.resolution_x * r.resolution_percentage // 100, r.resolution_y * r.resolution_percentage // 100
+        try:
+            rgb, z = camera_plate(context, w, h)
+        except (OSError, ValueError, TimeoutError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        depth = np.empty((h, w, 4), np.float32)
+        # Blender's own background depth: far past anything, but finite (inf breaks the comparison's anti-aliasing)
+        depth[..., :3] = np.minimum(z.reshape(h, w), np.float32(1e10))[..., None]
+        depth[..., 3] = 1.0
+        _plate_image(PLATE_IMAGE, rgb, w, h, False)
+        _plate_image(PLATE_DEPTH, depth, w, h, True)
+        plate_compositor(context.scene)
+        self.report({'INFO'}, f'game plate {w}x{h} with depth; compositor set to "{PLATE_GROUP}"')
+        return {'FINISHED'}
 
 
 def _poll_frames():
@@ -1959,11 +2122,14 @@ class DLR_PT_game_render(bpy.types.Panel):
 def _view_menu(self, context):
     if context.scene.render.engine == ENGINE_ID:
         self.layout.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
+    elif _link is not None and _link.running:
+        self.layout.operator(DLR_OT_game_plate.bl_idname, icon='IMAGE_BACKGROUND')
 
 
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
            DLR_OT_game_jump,
-           DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_OT_game_standard_view, DLR_PT_game_render)
+           DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_OT_game_standard_view, DLR_PT_game_render,
+           DLR_OT_game_plate)
 
 
 # Blender panels list the engines they show for; a custom engine has to add itself. Output settings (format,
