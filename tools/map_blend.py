@@ -8,17 +8,21 @@ weights, taken before borders and overlays) also covers environment_layer.vfx.
 
 UVs are worked in the game's convention (v down) and flipped back for Blender's image nodes; world positions are
 Source inches, from Blender metres and axes.
+
+Optional steps that only depend on parameters (transforms, corrections, tints, contrast, borders, inverts) are built
+even when they change nothing, with neutral values: EEVEE compiles one shader per node structure, so materials
+that differ only in numbers share one. Only the textures a material has change its structure.
 """
 import numpy as np
 
 if __package__:
     from .map_environment import BLEND_TEXTURES as TEXTURES
     from .map_lighting import (Graph, average_color, cached_image, color_correct_matrix, color_tint_matrix,
-                               is_identity, node_group, srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
+                               node_group, srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
 else:
     from map_environment import BLEND_TEXTURES as TEXTURES
     from map_lighting import (Graph, average_color, cached_image, color_correct_matrix, color_tint_matrix,
-                              is_identity, node_group, srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
+                              node_group, srgb_to_linear, tint_mask, transform_color, vmat_dict, UNIT)
 SHADER = 'environment_blend.vfx'
 NO_TRANSFORM = (1.0, 0.0, 0.0, 0.0)
 
@@ -195,8 +199,6 @@ class Blend:
     def transform(self, uv, srt):
         """ApplyUvTransform: scale * rotate(uv + translation / scale)."""
         scale, rotation, tu, tv = (list(srt) + [0, 0, 0, 0])[:4]
-        if np.allclose((scale, rotation, tu, tv), NO_TRANSFORM):
-            return uv
         safe = scale or 1.0
         c, s = np.cos(np.radians(rotation)), np.sin(np.radians(rotation))
         return self.g.call(uv_transform_group(), uv, (tu / safe, tv / safe, 0.0), float(c), float(s),
@@ -219,8 +221,7 @@ class Blend:
         """The game's vertex colour: the object's tint times the vertex paint."""
         if self._paint is None:
             self._paint = self.g.node('ShaderNodeVertexColor', layer_name='Color').outputs['Color']
-            if self.model_tint is not None:
-                self._paint = self.g.mix('MULTIPLY', self._paint, self.model_tint)
+            self._paint = self.g.mix('MULTIPLY', self._paint, self.model_tint or (1.0, 1.0, 1.0, 1.0))
         return self._paint
 
     # layers
@@ -237,8 +238,6 @@ class Blend:
     def contrast(self, x, key):
         """saturate((x - 0.5 + brightness) * contrast + 0.5)."""
         c, b = (list(self.v(key, (1.0, 0.0))) + [0.0])[:2]
-        if (c, b) == (1.0, 0.0):
-            return x
         out = self.g.math('MULTIPLY_ADD', x, c, clamp=True)
         self.g.put(out.node.inputs[2], (b - 0.5) * c + 0.5)
         return out
@@ -265,17 +264,18 @@ class Blend:
         mask = self.tint_mask(alpha, n)
         correct = color_correct_matrix(self.v(f'g_vAlbedoContrastSaturationBrightness{n}', (1, 1, 1)),
                                        average_color(img))
-        albedo = color if is_identity(correct) else transform_color(g, color, correct)
+        albedo = transform_color(g, color, correct)
         tint = color_tint_matrix(srgb_to_linear(np.asarray(self.v(f'g_vColorTint{n}', (1, 1, 1)), float)),
                                  self.i(f'g_nTextureColorTintMode{n}'))
-        if not is_identity(tint):
-            tinted = transform_color(g, albedo, tint)
-            albedo = g.mix('MIX', albedo, tinted, mask if self.i(f'g_bMaskColorTint{n}', 1) else 1.0)
-        if self.i(f'g_bModelTint{n}', 1):
-            strength = self.f(f'g_fVertexColorStrength{n}', 1.0)
-            amount = g.math('MULTIPLY', mask, strength) if self.i(f'g_bMaskVertexColorTint{n}', 1) else strength
-            albedo = g.mix('MIX', albedo, g.mix('MULTIPLY', albedo, self.paint()), amount)
+        albedo = g.mix('MIX', albedo, transform_color(g, albedo, tint), self.masked(mask, f'g_bMaskColorTint{n}'))
+        strength = self.f(f'g_fVertexColorStrength{n}', 1.0) if self.i(f'g_bModelTint{n}', 1) else 0.0
+        amount = g.math('MULTIPLY', self.masked(mask, f'g_bMaskVertexColorTint{n}'), strength)
+        albedo = g.mix('MIX', albedo, g.mix('MULTIPLY', albedo, self.paint()), amount)
         return (albedo, mask) + self.surface(n, coords, fallback)
+
+    def masked(self, mask, flag):
+        """The tint mask (0..1), or 1 where the flag turns masking off."""
+        return self.g.math('MAXIMUM', mask, 0.0 if self.i(flag, 1) else 1.0)
 
     def illum(self, n, albedo):
         """Layer n's glow, or None: its albedo * g_tPacked's red * g_fLayerSelfIllumScaleN * g_vLayerSelfIllumTintN
@@ -288,8 +288,7 @@ class Blend:
         red = g.split(self.sample(packed, self.layer_coords(n))[0])[0]
         tint = self.v(f'g_vLayerSelfIllumTint{n}', (1.0, 1.0, 1.0))
         amount = g.math('MULTIPLY', red, scale)
-        return g.mix('MULTIPLY', albedo, g.combine(*(g.math('MULTIPLY', amount, float(t)) if t != 1 else amount
-                                                     for t in tint)))
+        return g.mix('MULTIPLY', albedo, g.combine(*(g.math('MULTIPLY', amount, float(t)) for t in tint)))
 
     def reveal_threshold(self, n):
         img = self.image(f'g_tRevealMask{n}', False)
@@ -298,12 +297,17 @@ class Blend:
         g = self.g
         uv = self.transform(self.uv(bool(self.i(f'g_bRevealUseSecondaryUv{n}'))),
                             self.v(f'g_vRevealScaleRotationTranslation{n}', NO_TRANSFORM))
-        reveal = g.split(self.sample(img, uv)[0])[0]
-        if self.i(f'g_bRevealInvert{n}'):
-            reveal = g.math('SUBTRACT', 1.0, reveal)
+        reveal = self.invert(g.split(self.sample(img, uv)[0])[0], f'g_bRevealInvert{n}')
         half = self.f(f'g_flRevealOffset{n}') * 0.5
         softness = self.f(f'g_flRevealSoftness{n}', 0.125)
         return g.call(reveal_group(), reveal, 0.5 + half, 0.5 - half, 1 - 2 * softness, softness)[0]
+
+    def invert(self, x, flag):
+        """1 - x where the flag is set."""
+        on = 1.0 if self.i(flag) else 0.0
+        out = self.g.math('MULTIPLY_ADD', x, 1.0 - 2.0 * on)
+        self.g.put(out.node.inputs[2], on)
+        return out
 
     def weight(self, blend, threshold, softness):
         return self.g.call(weight_group(), blend, threshold, -softness, softness)[0]
@@ -331,8 +335,14 @@ class Blend:
 
     def overlay_layer(self, albedo, mask, factor, mode, strength):
         g = self.g
-        amount = 1.0 if mode == 0 else (g.math('SUBTRACT', 1.0, mask) if mode == 2 else mask)
-        amount = g.math('MULTIPLY', amount, strength) if not isinstance(amount, float) else strength
+        # mode 0: everywhere, 1: by the tint mask, 2: by its inverse
+        scale, offset = {0: (0.0, 1.0), 2: (-1.0, 1.0)}.get(mode, (1.0, 0.0))
+        if isinstance(mask, float):
+            amount = (mask * scale + offset) * strength
+        else:
+            amount = g.math('MULTIPLY_ADD', mask, scale)
+            g.put(amount.node.inputs[2], offset)
+            amount = g.math('MULTIPLY', amount, strength)
         return g.mix('MIX', albedo, g.mix('MULTIPLY', albedo, factor), amount)
 
     def world_overlays(self):
@@ -366,8 +376,6 @@ class Blend:
 
     def border_roughness(self, rough, amount, n):
         strength = self.f(f'g_flBorderRoughnessStrength{n}', 0.0)
-        if not strength:
-            return rough
         g = self.g
         target = self.f(f'g_flBorderRoughness{n}', 1.0)
         return g.math('ADD', rough, g.math('MULTIPLY', g.math('SUBTRACT', target, rough),
@@ -387,9 +395,8 @@ class Blend:
         if self.i('F_UV_OVERLAY'):
             img = self.image('g_tRevealOverlay', False)
             if img is not None:
-                reveal = g.split(self.sample(img, self.uv_overlay_coords())[0])[0]
-                if self.i('g_bRevealOverlayInvert2'):
-                    reveal = g.math('SUBTRACT', 1.0, reveal)
+                reveal = self.invert(g.split(self.sample(img, self.uv_overlay_coords())[0])[0],
+                                     'g_bRevealOverlayInvert2')
                 blend2 = g.math('ADD', blend2, g.math('MULTIPLY', reveal, self.f('g_flRevealOverlayStrength2', 1.0)),
                                 clamp=True)
 
@@ -404,17 +411,19 @@ class Blend:
                 continue
             illums.append(self.illum(n, sampled[0]))
             threshold = self.reveal_threshold(n)
-            if self.i(f'g_bBorderEffects{n}'):
-                amount = self.border_amount(b, threshold, n)
-                amounts = list(self.v(f'g_vBorderLayerAmount{n}', (1.0, 1.0, 1.0)))
-                if n == 2:
-                    amounts = amounts[:2] + [0.0]
-                touched = layers + [sampled]
-                layers = []
-                for k, (alb, m, r, mt) in enumerate(touched):
-                    each = g.math('MULTIPLY', amount, amounts[k])
-                    layers.append((self.border_tint(alb, each, n), m, self.border_roughness(r, each, n), mt))
-                sampled = layers.pop()
+            # without border effects the border is built at zero strength
+            amount = self.border_amount(b, threshold, n)
+            amounts = list(self.v(f'g_vBorderLayerAmount{n}', (1.0, 1.0, 1.0)))
+            if n == 2:
+                amounts = amounts[:2] + [0.0]
+            if not self.i(f'g_bBorderEffects{n}'):
+                amounts = [0.0, 0.0, 0.0]
+            touched = layers + [sampled]
+            layers = []
+            for k, (alb, m, r, mt) in enumerate(touched):
+                each = g.math('MULTIPLY', amount, amounts[k])
+                layers.append((self.border_tint(alb, each, n), m, self.border_roughness(r, each, n), mt))
+            sampled = layers.pop()
             layers.append(sampled)
             weights.append((len(layers) - 1, self.weight(b, threshold, self.f(f'g_flRevealSoftness{n}', 0.125))))
 
@@ -456,10 +465,7 @@ def layer1_coords(blend, mat):
     if blend.i('F_LAYER1_BIPLANAR'):
         coords = blend.planar_uv(blend.f('g_flBiPlanarTiling1', 196.0))[0]
     else:
-        srt = blend.v('g_vScaleRotationTranslation1', NO_TRANSFORM)
-        if np.allclose(srt, NO_TRANSFORM):
-            return
-        coords = blend.transform(blend.uv(), srt)
+        coords = blend.transform(blend.uv(), blend.v('g_vScaleRotationTranslation1', NO_TRANSFORM))
     vector = blend.to_blender_uv(coords)
     for node in [n for n in mat.node_tree.nodes if n.type == 'TEX_IMAGE' and n.image]:
         if not node.inputs['Vector'].is_linked or node.inputs['Vector'].links[0].from_node.type in ('UVMAP', 'TEX_COORD'):
