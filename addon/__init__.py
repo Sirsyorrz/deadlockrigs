@@ -448,6 +448,9 @@ def append_map(path, slug, link=False):
     scene = bpy.context.scene
     for c in dst.collections:
         scene.collection.children.link(c)
+        # maps built before ff6bfd3 were saved with every object selected, which slows every redraw
+        for ob in c.all_objects:
+            ob.select_set(False)
     if dst.worlds:
         scene.world = dst.worlds[0]
     look.enable(scene)
