@@ -406,8 +406,12 @@ def open_rig(path):
 def append_rig(path, slug):
     idle = bpy.context.scene.dlr_idle_pose
     collections = load_rig(path, slug)
+    cursor = bpy.context.scene.cursor.location
     for c in collections:
         bpy.context.scene.collection.children.link(c)
+        for ob in c.all_objects:
+            if ob.parent is None:
+                ob.matrix_world.translation += cursor
     ui = register_rig_ui()
     if idle:
         idle_pose(ui, [o for c in collections for o in c.all_objects])
@@ -502,6 +506,12 @@ class DLR_OT_open(bpy.types.Operator):
     bl_description = 'Open the built rig (unsaved changes in this file are lost)'
 
     append: bpy.props.BoolProperty()
+
+    @classmethod
+    def description(cls, context, props):
+        if props.append:
+            return 'Append the built rig into this scene at the 3D cursor'
+        return cls.bl_description
 
     def execute(self, context):
         slug = context.scene.dlr_hero
@@ -712,7 +722,7 @@ def register():
     bpy.types.Scene.dlr_after = bpy.props.EnumProperty(
         name='After building', default='OPEN',
         items=[('OPEN', 'Then Open', 'Open the rig when it is built'),
-               ('APPEND', 'Then Append', 'Append the rig into this scene when it is built'),
+               ('APPEND', 'Then Append', 'Append the rig into this scene at the 3D cursor when it is built'),
                ('NONE', 'Just Save', 'Only save it to the output folder')])
     bpy.types.Scene.dlr_idle_pose = bpy.props.BoolProperty(
         name='Start in Idle Pose', default=False,
