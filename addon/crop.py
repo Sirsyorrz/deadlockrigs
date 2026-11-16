@@ -213,17 +213,15 @@ def see_through(mat):
 OCCLUSION_CELL = 2.0
 
 
-def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
-    """Narrows each object's kept faces to the parts of the map the camera actually sees, past what is in front of
-    them: `rays` across each sampled view (`aspect` its height over width) hit the kept faces, through see-through materials, and only map cells
-    (OCCLUSION_CELL) a ray reaches stay, with their neighbours. Objects in `never` aren't narrowed (they still hide
-    what is behind them)."""
-    from mathutils import Vector
-    from mathutils.bvhtree import BVHTree
+def triangles(keeps, faces_of):
+    """The map triangles of the faces faces_of(i, ob, mesh, keep) picks (bool per face, or None): world vertices,
+    vertex indices, and per triangle its object's index in keeps, its face, whether its material is see-through and
+    its map cell (OCCLUSION_CELL). None when no face is picked."""
     verts, tris, owner, face, clear, cells = [], [], [], [], [], []
     base = 0
     for i, (ob, mesh, keep) in enumerate(keeps):
-        if not keep.any():
+        picked = faces_of(i, ob, mesh, keep)
+        if picked is None or not picked.any():
             continue
         mesh.calc_loop_triangles()
         n = len(mesh.loop_triangles)
@@ -233,7 +231,7 @@ def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
         mesh.loop_triangles.foreach_get('polygon_index', tp)
         tm = np.empty(n, np.int32)
         mesh.loop_triangles.foreach_get('material_index', tm)
-        inside = keep[tp]
+        inside = picked[tp]
         if not inside.any():
             continue
         tv = tv.reshape(-1, 3)[inside]
@@ -249,9 +247,47 @@ def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
         clear.append(np.array(mats, bool)[np.minimum(tm[inside], len(mats) - 1)])
         cells.append(np.floor(points[tv].mean(1) / OCCLUSION_CELL).astype(np.int64))
     if not tris:
+        return None
+    return (np.concatenate(verts), np.concatenate(tris)) + tuple(map(np.concatenate, (owner, face, clear, cells)))
+
+
+def cast(tree, clear, hit, origin, direction, distance):
+    """Marks the triangles a ray hits, through see-through ones, up to the first opaque one."""
+    while distance > 0:
+        loc, _, index, d = tree.ray_cast(origin, direction, distance)
+        if index is None:
+            break
+        hit[index] = True
+        if not clear[index]:
+            break
+        origin = loc + direction * 1e-3
+        distance -= d + 1e-3
+
+
+def near_hit(cells, hit):
+    """Per triangle, whether its cell or a neighbouring one has a hit triangle."""
+    offset = cells.min(0) - 1
+    span = cells.max(0) - offset + 2
+
+    def key(c):
+        c = c - offset
+        return (c[:, 0] * span[1] + c[:, 1]) * span[2] + c[:, 2]
+    near = np.array([(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0, 1)])
+    seen = np.unique(cells[hit], axis=0)
+    return np.isin(key(cells), np.unique(key((seen[:, None, :] + near[None]).reshape(-1, 3))))
+
+
+def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
+    """Narrows each object's kept faces to the parts of the map the camera actually sees, past what is in front of
+    them: `rays` across each sampled view (`aspect` its height over width) hit the kept faces, through see-through materials, and only map cells
+    (OCCLUSION_CELL) a ray reaches stay, with their neighbours. Objects in `never` aren't narrowed (they still hide
+    what is behind them)."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    found = triangles(keeps, lambda i, ob, mesh, keep: keep)
+    if found is None:
         return keeps
-    verts, tris = np.concatenate(verts), np.concatenate(tris)
-    owner, face, clear, cells = map(np.concatenate, (owner, face, clear, cells))
+    verts, tris, owner, face, clear, cells = found
     # numpy arrays rather than lists: lists of a street shot's millions of triangles took gigabytes more
     tree = BVHTree.FromPolygons(verts, tris, all_triangles=True)
     del verts, tris
@@ -270,29 +306,10 @@ def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
             direction = Vector(end - start)
             distance = direction.length
             direction.normalize()
-            origin = Vector(start)
-            while distance > 0:
-                loc, _, index, d = tree.ray_cast(origin, direction, distance)
-                if index is None:
-                    break
-                hit[index] = True
-                if not clear[index]:
-                    break
-                origin = loc + direction * 1e-3
-                distance -= d + 1e-3
-    seen = cells[hit]
-    if not len(seen):
+            cast(tree, clear, hit, Vector(start), direction, distance)
+    if not hit.any():
         return [(ob, mesh, np.zeros_like(keep)) for ob, mesh, keep in keeps]
-    offset = cells.min(0) - 1
-    span = cells.max(0) - offset + 2
-
-    def key(c):
-        c = c - offset
-        return (c[:, 0] * span[1] + c[:, 1]) * span[2] + c[:, 2]
-    near = np.array([(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0, 1)])
-    seen = np.unique(seen, axis=0)
-    visible = np.unique(key((seen[:, None, :] + near[None]).reshape(-1, 3)))
-    shown = np.isin(key(cells), visible)
+    shown = near_hit(cells, hit)
     out = []
     for i, (ob, mesh, keep) in enumerate(keeps):
         if ob in never or not keep.any():
@@ -303,6 +320,88 @@ def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
         narrowed[face[mine & shown]] = True
         out.append((ob, mesh, keep & narrowed))
     return out
+
+
+# kept faces cast this many rays at most toward each shadowing sun
+SUN_SAMPLES = 200_000
+
+
+def shadow_suns(scene):
+    return [ob for ob in scene.objects if ob.type == 'LIGHT' and ob.data.type == 'SUN' and ob.data.use_shadow
+            and ob.data.energy > 0 and not ob.hide_render]
+
+
+def toward_box(points, direction, lo, hi):
+    """Whether each point, moved away from the light (along -direction), passes through the box lo..hi."""
+    t_lo = np.zeros(len(points))
+    t_hi = np.full(len(points), np.inf)
+    for a in range(3):
+        d = direction[a]
+        if abs(d) < 1e-9:
+            inside = (points[:, a] >= lo[a]) & (points[:, a] <= hi[a])
+            t_hi = np.where(inside, t_hi, -1.0)
+            continue
+        near, far = (points[:, a] - hi[a]) / d, (points[:, a] - lo[a]) / d
+        t_lo = np.maximum(t_lo, np.minimum(near, far))
+        t_hi = np.minimum(t_hi, np.maximum(near, far))
+    return t_hi >= t_lo
+
+
+def sun_casters_kept(keeps, suns):
+    """Adds back what shades the kept faces from each sun: a crop drops the roof over an interior shot (behind the
+    camera or hidden behind the ceiling), and the sun then lights the room. Kept faces facing a sun cast rays to it
+    (SUN_SAMPLES at most), through the map faces in the box of kept faces swept toward it; the map cells
+    (OCCLUSION_CELL) they hit stay, with their neighbours."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    faces = []
+    for ob, mesh, keep in keeps:
+        n = len(mesh.polygons)
+        centres = np.empty(n * 3, np.float32)
+        mesh.polygons.foreach_get('center', centres)
+        normals = np.empty(n * 3, np.float32)
+        mesh.polygons.foreach_get('normal', normals)
+        m = np.array(ob.matrix_world, np.float32)
+        centres = centres.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
+        normals = normals.reshape(-1, 3) @ np.linalg.inv(m[:3, :3]).astype(np.float32)
+        normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-9)
+        faces.append((centres, normals))
+    kept_centres = [c[k] for (c, _), (_, _, k) in zip(faces, keeps) if k.any()]
+    if not kept_centres:
+        return keeps
+    allc = np.concatenate(kept_centres)
+    lo, hi = allc.min(0) - 2 * OCCLUSION_CELL, allc.max(0) + 2 * OCCLUSION_CELL
+    del allc, kept_centres
+    rng = np.random.default_rng(0)
+    added = [np.zeros_like(k) for _, _, k in keeps]
+    for sun in suns:
+        to_sun = np.array(sun.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0)), np.float64)
+        to_sun /= np.linalg.norm(to_sun)
+        found = triangles(keeps, lambda i, ob, mesh, keep: toward_box(faces[i][0].astype(np.float64), to_sun, lo, hi))
+        if found is None:
+            continue
+        verts, tris, owner, face, clear, cells = found
+        tree = BVHTree.FromPolygons(verts, tris, all_triangles=True)
+        del verts, tris
+        origins = []
+        for (centres, normals), (_, _, keep) in zip(faces, keeps):
+            lit = keep & (normals @ to_sun.astype(np.float32) > 0.0)
+            origins.append(centres[lit] + normals[lit] * 0.02)
+        origins = np.concatenate(origins)
+        if len(origins) > SUN_SAMPLES:
+            origins = origins[rng.choice(len(origins), SUN_SAMPLES, replace=False)]
+        direction = Vector(to_sun)
+        hit = np.zeros(len(owner), bool)
+        reach = float(np.linalg.norm(hi - lo)) * 4 + 1000.0
+        for start in origins:
+            cast(tree, clear, hit, Vector(start), direction, reach)
+        del tree
+        if not hit.any():
+            continue
+        shading = near_hit(cells, hit)
+        for i in np.unique(owner[shading]):
+            added[i][face[shading & (owner == i)]] = True
+    return [(ob, mesh, keep | more) for (ob, mesh, keep), more in zip(keeps, added)]
 
 
 def particle_kept(ob, region_codes):
@@ -416,6 +515,9 @@ def crop(scene, region_codes, whole_objects, keep, occlusion=None):
     if occlusion:
         never = {ob for ob, _, _ in keeps if is_kept(ob, keep_re)}
         keeps = unseen_dropped(keeps, *occlusion, never)
+    suns = shadow_suns(scene)
+    if suns:
+        keeps = sun_casters_kept(keeps, suns)
     keeps = {ob: k for ob, _, k in keeps}
     if whole_objects:
         for k in keeps.values():
@@ -637,8 +739,9 @@ def register():
     S.dlr_crop_hidden = bpy.props.BoolProperty(
         name='Hidden Behind',
         description=('Crop to Camera also hides the parts of the map the camera never sees because other map parts '
-                     'are in front (a building behind another one). Rays are cast over each sampled frame; parts '
-                     "out of sight can still cast shadows or show in reflections, which they then won't"))
+                     'are in front (a building behind another one). Rays are cast over each sampled frame. What '
+                     "shades the kept parts from the sun stays; other shadows and reflections of parts out of sight "
+                     'are lost'))
     S.dlr_crop_rays = bpy.props.IntProperty(
         name='Rays Across', default=480, min=32, soft_max=1920,
         description=('Rays across the frame for Hidden Behind, per sampled frame. More catch thin gaps (fences, '
