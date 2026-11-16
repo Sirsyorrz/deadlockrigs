@@ -952,6 +952,18 @@ static DWORD WINAPI net_thread(void *arg) {
             sendto(s, (const char *)&gCapStatus, sizeof(gCapStatus), 0, &from, from_len);
             continue;
         }
+        if (n == 8 && bytes_equal(packet, (const u8 *)"DLRD", 4)) {
+            // request u32 (a new value = one depth snapshot into <frame file>-depth) -> depth status
+            u32 request = *(const u32 *)(packet + 4);
+            if (request != gDepth.request) {
+                if (gDepth.state == 3)
+                    gDepth.state = 0;
+                gDepth.request = request;
+            }
+            depth_status();
+            sendto(s, (const char *)&gDepthStatus, sizeof(gDepthStatus), 0, &from, from_len);
+            continue;
+        }
         if (n == 68 && bytes_equal(packet, (const u8 *)"DLRL", 4)) {
             // model substring[64] -> "DLRL", count, entity indices (all with a model when the substring is empty)
             static struct List list;

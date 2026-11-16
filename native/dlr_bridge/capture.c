@@ -4,6 +4,9 @@
 // rendersystemvulkan.dll loads vulkan-1.dll itself and keeps the device functions in a table in .data; the bridge
 // swaps the vkCreateSwapchainKHR slot (adds TRANSFER_SRC usage, learns size and format) and the vkQueuePresentKHR
 // slot (records the copy in front of the present). No code is patched.
+//
+// Depth: the scene depth (D24S8/D32S8 at render size) is copied where the game itself copies it (its barrier to
+// TRANSFER_SRC, recorded in the game's command buffer: its layout is only known there), on request, once.
 
 IMPORT HANDLE WINAPI CreateFileMappingW(HANDLE, void *, DWORD, DWORD, DWORD, const WCHAR *);
 IMPORT void *WINAPI MapViewOfFile(HANDLE, DWORD, DWORD, DWORD, u64);
@@ -87,6 +90,9 @@ struct VkMemoryProperties {
 };
 
 typedef void *(*VkGetDeviceProcAddr)(void *, const char *);
+typedef i32 (*VkCreateImage)(void *, const void *, const void *, u64 *);
+typedef void (*VkCmdBarrier2)(void *, const void *);
+typedef i32 (*VkQueueWaitIdle)(void *);
 typedef i32 (*VkCreateSwapchain)(void *, const struct VkSwapchainInfo *, const void *, u64 *);
 typedef i32 (*VkAcquireNextImage)(void *, u64, u64, u64, u64, u32 *);
 typedef i32 (*VkQueuePresent)(void *, const struct VkPresentInfo *);
@@ -130,6 +136,9 @@ static struct {
     VkCmdCopyImageToBuffer copy;
     VkWaitForFences wait_fences;
     VkResetFences reset_fences;
+    VkQueueWaitIdle queue_wait_idle;
+    VkCreateImage create_image;
+    VkCmdBarrier2 barrier2;
 } vk;
 
 #define KNOWN_SWAPCHAINS 8
@@ -246,7 +255,8 @@ static int load_device(void *device) {
     LOAD(copy, "vkCmdCopyImageToBuffer");
     LOAD(wait_fences, "vkWaitForFences");
     LOAD(reset_fences, "vkResetFences");
-    void **all = (void **)&vk.swapchain_images, **last = (void **)&vk.reset_fences;
+    LOAD(queue_wait_idle, "vkQueueWaitIdle");
+    void **all = (void **)&vk.swapchain_images, **last = (void **)&vk.queue_wait_idle;
     for (; all <= last; all++)
         if (!*all)
             return 0;
@@ -430,6 +440,257 @@ static void record_copy(int slot, u64 image) {
     vk.end(cmd);
 }
 
+static void fast_copy(void *dst, const void *src, u64 n);
+static int swap_slot(uptr data, u64 size, uptr value, void *hook, void **original);
+
+#define DEPTH_IMAGES 8
+#define VK_LAYOUT_TRANSFER_SRC 6
+#define VK_ASPECT_DEPTH 2u
+
+// Depth file: "DLRD", version, seq (odd while written), width, height, format, stride, applied_seq, step_done,
+// views, present (u64); the depth texels at FILE_HEADER (the copy's packing: D24 in the low 24 bits, or f32).
+struct DepthHeader {
+    char magic[4];
+    u32 version;
+    volatile u32 seq;
+    u32 width, height, format, stride, applied_seq, step_done, views;
+    u64 present;
+};
+
+static struct {
+    struct {
+        u64 image;
+        u32 width, height, format;
+    } images[DEPTH_IMAGES];
+    volatile u32 image_count;
+    volatile u32 request, done;  // a new request arms one snapshot
+    volatile u32 state;          // 0 idle, 1 armed, 2 copy recorded, 3 failed
+    volatile u64 recorded_at;    // presents when the copy went into the game's commands
+    u64 buffer, memory, size;
+    u8 *mapped;
+    u32 width, height, format, applied_seq, step_done, views;
+    HANDLE file, mapping;
+    u8 *view;
+    u64 view_size;
+    char message[64];
+} gDepth;
+
+static struct {
+    char magic[4];  // "DLRD"
+    u32 state, done, width, height, format;
+    u64 present;
+    char message[64];
+} gDepthStatus = {{'D', 'L', 'R', 'D'}};
+
+static i32 create_image_hook(void *device, const void *info, const void *alloc, u64 *out) {
+    i32 result = vk.create_image(device, info, alloc, out);
+    const u8 *b = info;
+    u32 format = *(const u32 *)(b + 24), usage = *(const u32 *)(b + 56);
+    // D24_UNORM_S8 / D32_SFLOAT_S8: scene depth carries stencil (shadow maps are D16 / D32 without), copyable
+    if (!result && (format == 129 || format == 130) && (usage & VK_USAGE_TRANSFER_SRC)) {
+        u32 i = gDepth.image_count % DEPTH_IMAGES;
+        gDepth.images[i].image = *out;
+        gDepth.images[i].width = *(const u32 *)(b + 28);
+        gDepth.images[i].height = *(const u32 *)(b + 32);
+        gDepth.images[i].format = format;
+        __atomic_store_n(&gDepth.image_count, gDepth.image_count + 1, __ATOMIC_RELEASE);
+    }
+    return result;
+}
+
+static int depth_image(u64 image) {
+    u32 n = gDepth.image_count < DEPTH_IMAGES ? gDepth.image_count : DEPTH_IMAGES;
+    for (u32 i = 0; i < n; i++)
+        if (gDepth.images[i].image == image)
+            return (int)i;
+    return -1;
+}
+
+// Game threads recording their command buffers. Every copy recorded while the first one's frame is still being
+// recorded writes the same buffer; the GPU's last one (the most finished depth) is what stays.
+static void barrier2_hook(void *cmd, const void *dependency) {
+    vk.barrier2(cmd, dependency);
+    u32 state = gDepth.state;
+    if (state != 1 && !(state == 2 && gCap.presents == gDepth.recorded_at))
+        return;
+    const u8 *d = dependency;
+    u32 count = *(const u32 *)(d + 48);
+    const u8 *barrier = *(const u8 *const *)(d + 56);
+    for (u32 i = 0; i < count; i++, barrier += 96) {  // VkImageMemoryBarrier2
+        u64 image = *(const u64 *)(barrier + 64);
+        int at = *(const u32 *)(barrier + 52) == VK_LAYOUT_TRANSFER_SRC ? depth_image(image) : -1;
+        if (at < 0)
+            continue;
+        u32 width = gDepth.images[at].width, height = gDepth.images[at].height;
+        if ((u64)width * height * 4 > gDepth.size)
+            continue;
+        if (state == 1) {
+            u32 expected = 1;
+            if (!__atomic_compare_exchange_n(&gDepth.state, &expected, 2, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                if (gDepth.state != 2)
+                    return;
+            } else {
+                gDepth.recorded_at = gCap.presents;
+                gDepth.width = width;
+                gDepth.height = height;
+                gDepth.format = gDepth.images[at].format;
+                gDepth.applied_seq = gStatus.applied_seq;
+                gDepth.step_done = gTime.step_done;
+                gDepth.views = gStatus.views;
+            }
+        }
+        struct VkBufferImageCopy region = {0, 0, 0, VK_ASPECT_DEPTH, 0, 0, 1, 0, 0, 0, width, height, 1};
+        vk.copy(cmd, image, VK_LAYOUT_TRANSFER_SRC, gDepth.buffer, 1, &region);
+        struct VkMemoryBarrier to_host = {46, 0, VK_ACCESS_TRANSFER_WRITE, VK_ACCESS_HOST_READ};
+        vk.barrier(cmd, VK_STAGE_TRANSFER, VK_STAGE_HOST, 0, 1, &to_host, 0, 0, 0, 0);
+        return;
+    }
+}
+
+static int depth_buffer(void) {
+    u64 size = 0;
+    u32 n = gDepth.image_count < DEPTH_IMAGES ? gDepth.image_count : DEPTH_IMAGES;
+    for (u32 i = 0; i < n; i++)
+        if ((u64)gDepth.images[i].width * gDepth.images[i].height * 4 > size)
+            size = (u64)gDepth.images[i].width * gDepth.images[i].height * 4;
+    if (!size)
+        return 0;
+    if (size <= gDepth.size)
+        return 1;
+    // Only grows, never freed: a copy recorded into a command buffer the game replays keeps writing it.
+    struct {
+        u32 type;
+        const void *next;
+        u32 flags;
+        u64 size;
+        u32 usage, sharing, family_count;
+        const u32 *families;
+    } buffer_info = {12, 0, 0, size, 2, 0, 0, 0};
+    u64 requirements[3], buffer, memory;
+    u8 *mapped;
+    if (vk.create_buffer(gCap.device, &buffer_info, 0, &buffer))
+        return 0;
+    vk.buffer_requirements(gCap.device, buffer, requirements);
+    int type = pick_memory_type((u32)requirements[2]);
+    struct {
+        u32 type;
+        const void *next;
+        u64 size;
+        u32 memory_type;
+    } memory_info = {5, 0, requirements[0], (u32)type};
+    if (type < 0 || vk.allocate_memory(gCap.device, &memory_info, 0, &memory) ||
+        vk.bind_buffer(gCap.device, buffer, memory, 0) ||
+        vk.map_memory(gCap.device, memory, 0, ~0ull, 0, (void **)&mapped))
+        return 0;
+    gDepth.buffer = buffer;
+    gDepth.memory = memory;
+    gDepth.mapped = mapped;
+    gDepth.size = size;
+    return 1;
+}
+
+static void depth_fail(const char *text) {
+    u64 i = 0;
+    for (; text[i] && i < sizeof(gDepth.message) - 1; i++)
+        gDepth.message[i] = text[i];
+    gDepth.message[i] = 0;
+    gDepth.state = 3;
+    gDepth.done = gDepth.request;
+}
+
+static void publish_depth(void) {
+    u64 bytes = (u64)gDepth.width * gDepth.height * 4, size = FILE_HEADER + bytes;
+    if (!gDepth.view || size > gDepth.view_size) {
+        if (gDepth.view)
+            UnmapViewOfFile(gDepth.view);
+        if (gDepth.mapping)
+            CloseHandle(gDepth.mapping);
+        gDepth.view = 0;
+        gDepth.mapping = 0;
+        if (!gDepth.file) {
+            WCHAR path[310];
+            u32 n = 0;
+            for (; gCap.path[n]; n++)
+                path[n] = gCap.path[n];
+            const char *suffix = "-depth";
+            for (u32 i = 0; suffix[i]; i++)
+                path[n++] = suffix[i];
+            path[n] = 0;
+            gDepth.file = CreateFileW(path, 0xC0000000, 7, 0, 4, 0x80, 0);
+            if (gDepth.file == (HANDLE)-1) {
+                gDepth.file = 0;
+                return depth_fail("could not open the depth file");
+            }
+        }
+        gDepth.mapping = CreateFileMappingW(gDepth.file, 0, 4, (DWORD)(size >> 32), (DWORD)size, 0);
+        gDepth.view = gDepth.mapping ? MapViewOfFile(gDepth.mapping, 2, 0, 0, size) : 0;
+        if (!gDepth.view)
+            return depth_fail("could not map the depth file");
+        gDepth.view_size = size;
+    }
+    struct DepthHeader *h = (struct DepthHeader *)gDepth.view;
+    __atomic_fetch_add(&h->seq, 1, __ATOMIC_ACQ_REL);
+    memcpy(h->magic, "DLRD", 4);
+    h->version = 1;
+    h->width = gDepth.width;
+    h->height = gDepth.height;
+    h->format = gDepth.format;
+    h->stride = gDepth.width * 4;
+    h->applied_seq = gDepth.applied_seq;
+    h->step_done = gDepth.step_done;
+    h->views = gDepth.views;
+    h->present = gDepth.recorded_at;
+    fast_copy(gDepth.view + FILE_HEADER, gDepth.mapped, bytes);
+    __atomic_fetch_add(&h->seq, 1, __ATOMIC_ACQ_REL);
+    gDepth.message[0] = 0;
+    gDepth.state = 0;
+    gDepth.done = gDepth.request;
+}
+
+static uptr gRendererData;
+static u64 gRendererDataSize;
+static u32 gBarrierTried;
+
+// The renderer keeps vkCmdPipelineBarrier2KHR as the device's own entry (vkGetDeviceProcAddr), not the loader's.
+static void hook_barrier2(void) {
+    gBarrierTried = 1;
+    uptr entry = (uptr)vk.get_device_proc(gCap.device, "vkCmdPipelineBarrier2KHR");
+    if (!entry || !swap_slot(gRendererData, gRendererDataSize, entry, (void *)barrier2_hook, (void **)&vk.barrier2))
+        vk.barrier2 = 0;
+}
+
+// Render thread, in the present: arm a requested snapshot, publish a recorded one once its frame has surely run.
+static void depth_present(void *queue) {
+    if (gDepth.state == 0 && gDepth.request != gDepth.done) {
+        if (!gBarrierTried)
+            hook_barrier2();
+        if (!gCap.path_set)
+            return depth_fail("no shared file path yet");
+        if (!vk.barrier2)
+            return depth_fail("the renderer's barrier slot was not found");
+        if (gCap.device_ready == 0)
+            gCap.device_ready = prepare_device(queue) ? 1 : -1;
+        if (gCap.device_ready < 0)
+            return depth_fail("capture device setup failed");
+        if (!depth_buffer())
+            return depth_fail("no scene depth image seen (made before the bridge loaded?)");
+        gDepth.state = 1;
+    } else if (gDepth.state == 2 && gCap.presents >= gDepth.recorded_at + 3) {
+        vk.queue_wait_idle(queue);
+        publish_depth();
+    }
+}
+
+static void depth_status(void) {
+    gDepthStatus.state = gDepth.state;
+    gDepthStatus.done = gDepth.done;
+    gDepthStatus.width = gDepth.width;
+    gDepthStatus.height = gDepth.height;
+    gDepthStatus.format = gDepth.format;
+    gDepthStatus.present = gDepth.recorded_at;
+    memcpy(gDepthStatus.message, gDepth.message, sizeof(gDepthStatus.message));
+}
+
 static i32 acquire_hook(void *device, u64 swapchain, u64 timeout, u64 semaphore, u64 fence, u32 *index) {
     if (gCap.kick) {
         gCap.kick = 0;
@@ -455,6 +716,8 @@ static i32 present_hook(void *queue, const struct VkPresentInfo *info) {
     QueryPerformanceCounter(&now);
     if (now - gLastPacket > RELEASE_AFTER * gFrequency)
         gCap.wanted = 0;
+    if (gCap.device && (gDepth.state == 1 || gDepth.state == 2 || gDepth.request != gDepth.done))
+        depth_present(queue);
     if (!gCap.wanted || info->swapchain_count != 1 || info->wait_count > 8 || !gCap.path_set)
         return vk.present(queue, info);
     if (info->swapchains[0] != gCap.swapchain) {
@@ -656,6 +919,11 @@ static void install_capture(void) {
         cap_fail("renderer's swapchain slot not found");
         return;
     }
+    uptr create_image = (uptr)GetProcAddress(loader, "vkCreateImage");
+    if (create_image)
+        swap_slot(data, size, create_image, (void *)create_image_hook, (void **)&vk.create_image);
+    gRendererData = data;
+    gRendererDataSize = size;
     if (!acquire || !swap_slot(data, size, acquire, (void *)acquire_hook, (void **)&vk.acquire)) {
         cap_fail("renderer's acquire slot not found");
         return;
