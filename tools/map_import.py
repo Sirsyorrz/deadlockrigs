@@ -273,5 +273,8 @@ for size in map_textures.SIZES:
 print(f'smaller textures: {map_textures.make_tiers(out_dir)}')
 
 reached('textures')
+# the glTF importer leaves everything selected: selection outlines over thousands of objects slow every redraw
+for ob in bpy.context.view_layer.objects:
+    ob.select_set(False)
 bpy.ops.wm.save_as_mainfile(filepath=out_blend, relative_remap=True)
 print(f'wrote {out_blend}: {len(meshes)} meshes, {len(bpy.data.images)} textures')
