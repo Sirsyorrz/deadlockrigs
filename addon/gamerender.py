@@ -1695,22 +1695,20 @@ def camera_frame(context, width, height):
     return _resample(lk.capture_stream(view), view, proj, width, height)
 
 
-def camera_plate(context, width, height):
+def camera_plate(scene, depsgraph, width, height, settle=0.5):
     """The game's view of the scene camera as a plate for compositing: linear float RGBA (rows bottom-up) and the
     view-axis depth in Blender units (inf for sky), both width x height."""
     lk = _link
     if lk is None or not lk.running or not isinstance(lk.stream, BridgeFrames):
         raise ConnectionError('needs a game session with the bridge\'s frame capture')
-    scene = context.scene
     if scene.camera is None:
         raise ValueError('the scene has no camera')
-    depsgraph = context.evaluated_depsgraph_get()
     proj = scene.camera.calc_matrix_camera(depsgraph, x=width, y=height, scale_x=scene.render.pixel_aspect_x,
                                            scale_y=scene.render.pixel_aspect_y)
     w, h = lk.bridge.size
     view = game_view(scene.camera.matrix_world, proj, w / h, lk.min_vfov)
     lk.capture_stream(view)
-    time.sleep(0.5)  # streamed textures, temporal AA and fog settle
+    time.sleep(settle)  # streamed textures, temporal AA and fog settle
     for _ in range(3):
         rgb = lk.capture_stream(view)
         z, tags = lk.stream.depth()
@@ -1788,21 +1786,161 @@ class DLR_OT_game_plate(bpy.types.Operator):
         return _link is not None and _link.running and context.scene.camera is not None
 
     def execute(self, context):
-        r = context.scene.render
-        w, h = r.resolution_x * r.resolution_percentage // 100, r.resolution_y * r.resolution_percentage // 100
         try:
-            rgb, z = camera_plate(context, w, h)
+            w, h = write_plate(context.scene, context.evaluated_depsgraph_get())
         except (OSError, ValueError, TimeoutError) as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
-        depth = np.empty((h, w, 4), np.float32)
-        # Blender's own background depth: far past anything, but finite (inf breaks the comparison's anti-aliasing)
-        depth[..., :3] = np.minimum(z.reshape(h, w), np.float32(1e10))[..., None]
-        depth[..., 3] = 1.0
-        _plate_image(PLATE_IMAGE, rgb, w, h, False)
-        _plate_image(PLATE_DEPTH, depth, w, h, True)
         plate_compositor(context.scene)
         self.report({'INFO'}, f'game plate {w}x{h} with depth; compositor set to "{PLATE_GROUP}"')
+        return {'FINISHED'}
+
+
+def write_plate(scene, depsgraph, settle=0.5):
+    """The game plate and its depth for the scene camera into the plate images, at the render size."""
+    r = scene.render
+    w, h = r.resolution_x * r.resolution_percentage // 100, r.resolution_y * r.resolution_percentage // 100
+    rgb, z = camera_plate(scene, depsgraph, w, h, settle)
+    depth = np.empty((h, w, 4), np.float32)
+    # Blender's own background depth: far past anything, but finite (inf breaks the comparison's anti-aliasing)
+    depth[..., :3] = np.minimum(z.reshape(h, w), np.float32(1e10))[..., None]
+    depth[..., 3] = 1.0
+    _plate_image(PLATE_IMAGE, rgb, w, h, False)
+    _plate_image(PLATE_DEPTH, depth, w, h, True)
+    return w, h
+
+
+FINAL_ENGINES = (('BLENDER_EEVEE', 'EEVEE', 'Render with EEVEE'), ('CYCLES', 'Cycles', 'Render with Cycles'))
+FINAL_BACKGROUNDS = (
+    ('MAP', 'Imported Map', 'Everything from Blender: rigs and the map imported into the scene (best quality; faces '
+     'and all shape keys show)'),
+    ('PLATE', 'Game Plate', 'The game draws the background each frame (with its depth, so walls still hide rigs '
+     'behind them); Blender renders only the scene\'s own objects over it. No map import needed'),
+)
+# What the final render changed, put back when it ends: scene name, engine, compositor group, film, lock, rigs
+_final = None
+
+
+def _final_plate_frame(scene, *_args):
+    """render_pre for each frame of a plate render: the game clock to this frame, then its plate (render thread,
+    interface locked)."""
+    if _final is None or scene.name != _final['scene'] or _link is None:
+        return
+    lk = _link
+    depsgraph = scene.view_layers[0].depsgraph
+    first = lk.render_frame is None
+    lk.advance(scene.frame_current + scene.frame_subframe, scene.render.fps / scene.render.fps_base)
+    try:
+        write_plate(scene, depsgraph, settle=0.5 if first else 0.05)
+    except (OSError, ValueError, TimeoutError) as error:
+        print(f'Deadlock game plate, frame {scene.frame_current}: {error}')
+
+
+def _layer_collection(root, name):
+    if root.collection.name == name:
+        return root
+    for child in root.children:
+        found = _layer_collection(child, name)
+        if found:
+            return found
+    return None
+
+
+def _hold_out_maps(scene):
+    """An imported map stays in the scene for its lights and probe light on the rigs, but the plate shows the map:
+    its collections render as holdouts (they still cast shadows and hide rigs behind them). Returns what to restore."""
+    changed = []
+    for layer in scene.view_layers:
+        stack = [layer.layer_collection]
+        while stack:
+            lc = stack.pop()
+            if any(k in lc.collection for k in ('dlr_map', 'dlr_crop_of', 'dlr_npcs')):
+                changed.append((layer.name, lc.collection.name, lc.holdout))
+                lc.holdout = True
+            else:
+                stack.extend(lc.children)
+    return changed
+
+
+@bpy.app.handlers.persistent
+def _final_restore(*_args):
+    # Not from the render thread's handler itself: changing the engine there races the render job's own teardown.
+    def restore():
+        global _final
+        state, _final = _final, None
+        if state is None:
+            return None
+        if _final_plate_frame in bpy.app.handlers.render_pre:
+            bpy.app.handlers.render_pre.remove(_final_plate_frame)
+        scene = bpy.data.scenes.get(state['scene'])
+        if scene is not None:
+            scene.render.engine = state['engine']
+            scene.render.use_lock_interface = state['lock']
+            if 'compositor' in state:
+                scene.compositing_node_group = state['compositor']
+                scene.render.film_transparent = state['film']
+                for layer_name, collection_name, holdout in state['holdouts']:
+                    layer = scene.view_layers.get(layer_name)
+                    found = layer and _layer_collection(layer.layer_collection, collection_name)
+                    if found:
+                        found.holdout = holdout
+        if _link is not None:
+            _link.release_time()
+            _link.declined -= state['rigs']
+        return None
+    bpy.app.timers.register(restore, first_interval=0.1)
+
+
+class DLR_OT_game_final_render(bpy.types.Operator):
+    bl_idname = 'dlr.game_final_render'
+    bl_label = 'Final Render'
+    bl_description = ('Render with EEVEE or Cycles instead of the game (the game stays the viewport preview): over '
+                      'the imported map, or over game plates drawn per frame')
+    animation: bpy.props.BoolProperty(name='Animation', default=False)
+
+    @classmethod
+    def poll(cls, context):
+        return _final is None and context.scene.camera is not None
+
+    def execute(self, context):
+        global _final
+        scene = context.scene
+        background = scene.dlr_final_background
+        state = {'scene': scene.name, 'engine': scene.render.engine, 'lock': scene.render.use_lock_interface,
+                 'rigs': set()}
+        lk = _link
+        if background == 'PLATE':
+            if lk is None or not lk.running or not isinstance(lk.stream, BridgeFrames):
+                self.report({'ERROR'}, 'Game Plate needs a connected game session with the bridge\'s frame capture')
+                return {'CANCELLED'}
+            # The rigs come from Blender: out of the game while it draws the plates.
+            for puppet in list(lk.puppets.values()):
+                lk.remove_puppet(puppet)
+                lk.declined.add(puppet.arm_name)
+                state['rigs'].add(puppet.arm_name)
+            for obj in scene.objects:
+                if obj.type == 'ARMATURE' and obj.get('dlrig') and obj.name not in lk.declined:
+                    lk.declined.add(obj.name)
+                    state['rigs'].add(obj.name)
+            lk.render_frame = None
+            try:
+                write_plate(scene, context.evaluated_depsgraph_get())
+            except (OSError, ValueError, TimeoutError) as error:
+                lk.declined -= state['rigs']
+                self.report({'ERROR'}, str(error))
+                return {'CANCELLED'}
+            state.update(compositor=scene.compositing_node_group, film=scene.render.film_transparent,
+                         holdouts=_hold_out_maps(scene))
+            scene.render.engine = scene.dlr_final_engine  # the Depth output of Render Layers is the engine's
+            plate_compositor(scene)
+            bpy.app.handlers.render_pre.append(_final_plate_frame)
+        _final = state
+        scene.render.engine = scene.dlr_final_engine
+        scene.render.use_lock_interface = True  # the plate handler writes images during the render
+        result = bpy.ops.render.render('INVOKE_DEFAULT', animation=self.animation)
+        if 'CANCELLED' in result:
+            _final_restore()
+            return {'CANCELLED'}
         return {'FINISHED'}
 
 
@@ -2106,6 +2244,7 @@ class DLR_PT_game_render(bpy.types.Panel):
             if lk.outside:
                 col.label(text='View is outside the play area', icon='ERROR')
             col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
+            _draw_final(col.box(), context.scene)
             if lk.poses:
                 col.label(text='Visible Deadlock rigs are posed in the game (Rendered shading or F12)')
                 arm = puppet_armature(context.active_object)
@@ -2136,6 +2275,17 @@ class DLR_PT_game_render(bpy.types.Panel):
             box.operator(DLR_OT_game_standard_view.bl_idname)
 
 
+def _draw_final(box, scene):
+    box.label(text='Final Render (the game stays the preview)', icon='RENDER_STILL')
+    box.prop(scene, 'dlr_final_engine', text='Engine')
+    box.prop(scene, 'dlr_final_background', text='Background')
+    if scene.dlr_final_background == 'MAP':
+        box.label(text='Import a map in Deadlock Rigs > Maps (Crop it to the camera)', icon='INFO')
+    row = box.row()
+    row.operator(DLR_OT_game_final_render.bl_idname, text='Image', icon='RENDER_STILL').animation = False
+    row.operator(DLR_OT_game_final_render.bl_idname, text='Animation', icon='RENDER_ANIMATION').animation = True
+
+
 def _view_menu(self, context):
     if context.scene.render.engine == ENGINE_ID:
         self.layout.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
@@ -2146,7 +2296,7 @@ def _view_menu(self, context):
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
            DLR_OT_game_jump,
            DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_OT_game_standard_view, DLR_PT_game_render,
-           DLR_OT_game_plate)
+           DLR_OT_game_plate, DLR_OT_game_final_render)
 
 
 # Blender panels list the engines they show for; a custom engine has to add itself. Output settings (format,
@@ -2168,6 +2318,10 @@ def register():
         bpy.utils.register_class(c)
     for panel in _shared_panels():
         panel.COMPAT_ENGINES.add(ENGINE_ID)
+    bpy.types.Scene.dlr_final_engine = bpy.props.EnumProperty(name='Final Engine', items=FINAL_ENGINES)
+    bpy.types.Scene.dlr_final_background = bpy.props.EnumProperty(name='Final Background', items=FINAL_BACKGROUNDS)
+    for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
+        handlers.append(_final_restore)
     if not bpy.app.timers.is_registered(_poll_frames):
         bpy.app.timers.register(_poll_frames, persistent=True)
     bpy.types.VIEW3D_MT_view.append(_view_menu)
@@ -2190,8 +2344,12 @@ def _render_finished(*_args):
 def unregister():
     global _link
     for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
-        if _render_finished in handlers:
-            handlers.remove(_render_finished)
+        for handler in (_render_finished, _final_restore):
+            if handler in handlers:
+                handlers.remove(handler)
+    if _final_plate_frame in bpy.app.handlers.render_pre:
+        bpy.app.handlers.render_pre.remove(_final_plate_frame)
+    del bpy.types.Scene.dlr_final_engine, bpy.types.Scene.dlr_final_background
     if _link:
         _link.stop()
         _link = None
