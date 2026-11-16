@@ -1650,10 +1650,10 @@ def make_world(name, sky_img, strength):
     return world
 
 
-def ramp(g, x, start, end, exponent):
-    """clamp((x - start) / (end - start), 1e-4, 1) ** exponent."""
+def ramp(g, x, start, end, exponent, low=1e-4):
+    """clamp((x - start) / (end - start), low, 1) ** exponent."""
     t = g.math('MULTIPLY', g.math('SUBTRACT', x, start), 1.0 / (end - start) if end != start else 0.0)
-    t = g.math('MINIMUM', g.math('MAXIMUM', t, 1e-4), 1.0)
+    t = g.math('MINIMUM', g.math('MAXIMUM', t, low), 1.0)
     return g.math('POWER', t, exponent)
 
 
@@ -1689,10 +1689,15 @@ def fog_group(cube=None, gradient=None, sky_mips=None, sky_strength=1.0, sky_fac
 
     if gradient:
         f = gradient
-        amount = ramp(g, distance, f['start'], f['end'], f['falloff'])
+        # deferred_fogging.vfx: horizontal distance, saturate() so nothing nearer than the start (VRF clamps to 1e-4,
+        # which still fogs ~3% at a 0.38 falloff)
+        across = g.vec('SCALE', g.node('ShaderNodeNewGeometry').outputs['Incoming'], distance)
+        xyz = g.split(across)
+        flat = g.combine(xyz[0], xyz[1], 0.0)
+        amount = ramp(g, g.vec('LENGTH', flat), f['start'], f['end'], f['falloff'], low=0.0)
         if f['height_start'] != f['height_end']:
             amount = g.math('MULTIPLY', amount, ramp(g, height, f['height_end'], f['height_start'],
-                                                     f['vertical_exponent']))
+                                                     f['vertical_exponent'], low=0.0))
         shader = layer(shader, list(f['color']) + [1.0], g.math('MULTIPLY', amount, f['opacity']))
 
     if cube and sky_mips:

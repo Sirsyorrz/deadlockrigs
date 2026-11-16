@@ -282,8 +282,8 @@ def gradient_fog(ents):
     e = first(ents, 'env_gradient_fog')
     if not e:
         return None
-    # VRF uses the colour as it is stored (0-255 scaled), not linearised
-    rgb = [float(c) / 255 * num(e, 'fogstrength', 1.0) for c in list(e.get('fogcolor') or (255, 255, 255))[:3]]
+    # linearised, unlike VRF: the game's most fogged pixels have the linear colour's hue (Hideout R/B 4.2, stored 1.9)
+    rgb = [c * num(e, 'fogstrength', 1.0) for c in color(e, 'fogcolor')]
     return {'start': num(e, 'fogstart') * UNIT, 'end': num(e, 'fogend') * UNIT,
             'falloff': num(e, 'fogfalloffexponent', 1.0), 'height_start': num(e, 'fogstartheight') * UNIT,
             'height_end': num(e, 'fogendheight') * UNIT, 'vertical_exponent': num(e, 'fogverticalexponent', 1.0),
