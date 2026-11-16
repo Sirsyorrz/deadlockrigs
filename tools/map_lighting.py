@@ -356,15 +356,42 @@ def srgb_to_linear(c):
     return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
 
 
+def reads_paint(tree, seen=None):
+    """Whether a node tree (or a group in it) reads the 'Color' vertex colour."""
+    seen = set() if seen is None else seen
+    if tree is None or tree.name in seen:
+        return False
+    seen.add(tree.name)
+    for n in tree.nodes:
+        if n.type == 'VERTEX_COLOR' and n.layer_name == 'Color' or \
+                n.type == 'ATTRIBUTE' and n.attribute_name == 'Color':
+            return True
+        if n.type == 'GROUP' and reads_paint(n.node_tree, seen):
+            return True
+    return False
+
+
 def decode_paint(objects):
     """Source2Viewer writes the vertex paint as stored (sRGB bytes) and Blender reads it as linear; the game's
     shaders decode it, and Deadlock's environment_* shaders fade it to white by its alpha (unpainted vertices are
-    all zero). Returns the number of meshes changed."""
+    all zero). Meshes without paint get white, as the game reads a missing vertex colour stream; Blender reads a
+    missing attribute as black (rebatched cells of unpainted meshes have none). Returns the number of meshes
+    changed."""
     count = 0
+    reads = {}
     for ob in objects:
         attr = ob.data.color_attributes.get('Color')
         mats = [s.material for s in ob.material_slots if s.material]
-        if attr is None or not mats:
+        if not mats:
+            continue
+        if attr is None:
+            for m in mats:
+                if m.name not in reads:
+                    reads[m.name] = reads_paint(m.node_tree)
+            if any(reads[m.name] for m in mats):
+                white = ob.data.color_attributes.new('Color', 'BYTE_COLOR', 'POINT')
+                white.data.foreach_set('color', np.ones(len(white.data) * 4, np.float32))
+                count += 1
             continue
         rgba = np.empty(len(attr.data) * 4, np.float32)
         attr.data.foreach_get('color', rgba)
