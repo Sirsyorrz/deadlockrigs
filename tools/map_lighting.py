@@ -670,10 +670,9 @@ def apply_skins(objects, skins):
 
 def add_bloom_amount(mat, floats):
     """g_flOverrideBloomAmount1 as the BLOOM_AOV pass. The game writes it to the G-buffer and its bloom downsample
-    (bloom_downsample.vfx, citadel) blooms those pixels by their colour times the amount, past the threshold."""
-    amount = float(floats.get('g_flOverrideBloomAmount1', 0.0))
-    if amount <= 0:
-        return
+    (bloom_downsample.vfx, citadel) blooms those pixels by their colour times the amount, past the threshold.
+    Written at 0 too (the pass's default), so materials with and without bloom share one EEVEE shader."""
+    amount = max(float(floats.get('g_flOverrideBloomAmount1', 0.0)), 0.0)
     node = mat.node_tree.nodes.new('ShaderNodeOutputAOV')
     node.aov_name = BLOOM_AOV
     node.inputs['Value'].default_value = amount
@@ -699,10 +698,12 @@ def apply_alpha_test(mat, bsdf, floats):
         if power < 0:
             fade = g.math('POWER', g.math('MAXIMUM', g.math('SUBTRACT', 1.0, facing), 0.001), -power)
         opacity = g.math('MULTIPLY', opacity, fade)
+    # built at a neutral x1 when off, so materials with and without the boost share one EEVEE shader
     boost, distance = param(floats, 'g_flAlphaBoostStrength', 1.0), param(floats, 'g_flAlphaBoostDistance', 0.0)
-    if boost != 1.0 and distance > 0:
-        far = g.math('DIVIDE', g.node('ShaderNodeCameraData').outputs['View Distance'], distance * UNIT, clamp=True)
-        opacity = g.math('MULTIPLY', opacity, g.math('ADD', g.math('MULTIPLY', far, boost - 1.0), 1.0))
+    if distance <= 0:
+        boost, distance = 1.0, 1.0
+    far = g.math('DIVIDE', g.node('ShaderNodeCameraData').outputs['View Distance'], distance * UNIT, clamp=True)
+    opacity = g.math('MULTIPLY', opacity, g.math('ADD', g.math('MULTIPLY', far, boost - 1.0), 1.0))
     g.links.new(opacity, test.node.inputs[0])
     return True
 
@@ -829,7 +830,8 @@ def apply_layer_contrast(mat, bsdf, vectors):
 def apply_self_illum(mat, bsdf, floats, vectors):
     """pbr's self-illumination, which the export leaves unlit (it writes no emissive factor), as the game's pixel
     shader has it (pbr_vulkan_60_ps.vcs): the illum colour is the tint mixed towards tint * albedo by
-    g_flSelfIllumAlbedoFactor, both scaled by the fresnel mask (always on; a no-op at the default white tint); the albedo
+    g_flSelfIllumAlbedoFactor, both scaled by the fresnel mask (always on; a no-op at the default white tint, built
+    behind factor-0 mixes then so every self-illum material shares its EEVEE shader structure); the albedo
     turns to it by mask * saturate(scale) and glows with it * mask * scale. The tints have no Expression in the
     .vfx, so the shader gets them as written, not linearised."""
     g = Graph(mat.node_tree)
@@ -841,14 +843,16 @@ def apply_self_illum(mat, bsdf, floats, vectors):
     illum = g.mix('MIX', tint, g.mix('MULTIPLY', tint, albedo), param(floats, 'g_flSelfIllumAlbedoFactor', 1.0))
     lo, hi = (list(vectors.get('g_vSelfIllumFresnelMaskRange1') or (0, 1)) + [0, 1])[:2]
     fresnel_tint = tuple(float(x) for x in list(vectors.get('g_vSelfIllumFresnelMaskTint1') or (1, 1, 1))[:3])
-    if hi != lo and fresnel_tint != (1.0, 1.0, 1.0):
-        facing = g.vec('DOT_PRODUCT', g.node('ShaderNodeNewGeometry').outputs['Incoming'],
-                       source_of(bsdf.inputs['Normal']) or g.node('ShaderNodeNewGeometry').outputs['Normal'])
-        rim = g.math('POWER', g.math('MAXIMUM', facing, 0.0), float(floats.get('g_flSelfIllumFresnelMaskExponent', 5)))
-        f = g.math('DIVIDE', g.math('SUBTRACT', rim, float(lo)), float(hi - lo), clamp=True)
-        fm = g.mix('MIX', fresnel_tint + (1.0,), (1.0, 1.0, 1.0, 1.0), f)
-        illum = g.mix('MULTIPLY', illum, fm)
-        albedo = g.mix('MULTIPLY', albedo, g.mix('MIX', (1.0, 1.0, 1.0, 1.0), fm, mask))
+    fresnel = 1.0 if hi != lo and fresnel_tint != (1.0, 1.0, 1.0) else 0.0
+    if not fresnel:
+        lo, hi = 0.0, 1.0
+    facing = g.vec('DOT_PRODUCT', g.node('ShaderNodeNewGeometry').outputs['Incoming'],
+                   source_of(bsdf.inputs['Normal']) or g.node('ShaderNodeNewGeometry').outputs['Normal'])
+    rim = g.math('POWER', g.math('MAXIMUM', facing, 0.0), float(floats.get('g_flSelfIllumFresnelMaskExponent', 5)))
+    f = g.math('DIVIDE', g.math('SUBTRACT', rim, float(lo)), float(hi - lo), clamp=True)
+    fm = g.mix('MIX', fresnel_tint + (1.0,), (1.0, 1.0, 1.0, 1.0), f)
+    illum = g.mix('MULTIPLY', illum, fm, fresnel)
+    albedo = g.mix('MULTIPLY', albedo, g.mix('MIX', (1.0, 1.0, 1.0, 1.0), fm, mask), fresnel)
     amount = g.math('MULTIPLY', mask, min(max(scale, 0.0), 1.0)) if mask_source else mask * min(max(scale, 0.0), 1.0)
     lit = g.mix('MIX', albedo, illum, amount)
     g.links.new(lit, bsdf.inputs['Base Color'])
