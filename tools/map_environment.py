@@ -388,5 +388,8 @@ def post_processing(ents):
 
 def sky_texture(vmat_dump):
     m = re.search(r'm_name = "g_tSkyTexture"\s*m_pValue = resource:"([^"]+)"', vmat_dump)
-    bias = re.search(r'm_name = "g_flBrightnessExposureBias"\s*m_flValue = (-?[\d.e-]+)', vmat_dump)
-    return (m.group(1) if m else None), (float(bias.group(1)) if bias else 0.0)
+    def bias(name):
+        found = re.search(rf'm_name = "{name}"\s*m_flValue = (-?[\d.e-]+)', vmat_dump)
+        return float(found.group(1)) if found else 0.0
+    # sky.vfx: the drawn sky gets both biases, the cubemap fog only reads SkyBrightnessExposureBias
+    return (m.group(1) if m else None), bias('g_flBrightnessExposureBias'), bias('g_flRenderOnlyExposureBias')

@@ -294,14 +294,15 @@ class MapBuilder(Builder):
         settings['cubemap_fog'] = cube
         sky = env.sky(ents, cube and cube['sky_entity'])
         if sky:
-            texture, bias = env.sky_texture(self.dump(m, sky['material'], vpks))
+            texture, bias, render_bias = env.sky_texture(self.dump(m, sky['material'], vpks))
             sky_dir = os.path.join(m.lighting, 'sky')
             if texture and self.decompile(m, texture, vpks, sky_dir):
                 found = [os.path.join(d, f) for d, _, fs in os.walk(sky_dir) for f in fs if f.endswith('.exr')]
                 if found:
                     os.replace(found[0], os.path.join(m.lighting, 'sky.exr'))
                     shutil.rmtree(sky_dir, ignore_errors=True)
-            settings['sky'] = {'strength': sky['brightness'] * 2 ** bias}
+            settings['sky'] = {'strength': sky['brightness'] * 2 ** bias,
+                               'render_strength': sky['brightness'] * 2 ** (bias + render_bias)}
         vpost, exposure = env.post_processing(ents)
         settings['tonemap'] = env.tonemap(self.dump(m, vpost, vpks)) if vpost else None
         settings['exposure'] = exposure

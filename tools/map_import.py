@@ -207,8 +207,7 @@ sky_mips = None
 if sky_files:
     sky_img = bpy.data.images.load(keep(sky_files[0]))
     sky_img.colorspace_settings.name = 'Linear Rec.709'
-    strength = sky.get('strength', 1.0)
-    world = map_lighting.make_world(f'{title} sky', sky_img, strength)
+    world = map_lighting.make_world(f'{title} sky', sky_img, sky.get('render_strength', sky.get('strength', 1.0)))
     world.use_fake_user = True
     coll['dlr_world'] = world.name
     bpy.context.scene.world = world
