@@ -99,7 +99,9 @@ class Decay(Operator):
 
 @register(OPERATORS, "C_OP_FadeInSimple")
 class FadeInSimple(Operator):
-    """Fades alpha in from 0 over the first part of the particle's life (a fraction of it)."""
+    """Fades the field in from 0 along a smoothstep over the first fraction of the particle's life. The game stops
+    writing once the age at the start of the step passes that fraction of the lifetime (client.dll; VRF is linear
+    and keeps writing, a 1/240 s capture of the game matches the smoothstep)."""
 
     def __init__(self, p: Params):
         super().__init__(p)
@@ -107,16 +109,16 @@ class FadeInSimple(Operator):
         self.field = p.int("m_nFieldOutput", F.ALPHA)
 
     def operate(self, sim, v, dt, strength):
-        t = v.normalized_age
-        mask = t <= self.time
+        mask = np.maximum(v.get("age") - dt, 0.0) < self.time * v.get("lifetime")
         if mask.any():
-            value = (t / self.time) * v.initial("alpha") if self.time > 0 else v.initial("alpha")
+            value = smoothstep(0.0, max(self.time, 1e-12), saturate(v.normalized_age)) * v.initial("alpha")
             v.set_field(self.field, np.where(mask, value, v.field(self.field)))
 
 
 @register(OPERATORS, "C_OP_FadeOutSimple")
 class FadeOutSimple(Operator):
-    """Fades alpha out to 0 over the last part of the particle's life (a fraction of it)."""
+    """Fades the field out to 0 along a smoothstep over the last fraction of the particle's life, only ever lowering
+    it (client.dll; matches a 1/240 s capture of the game, VRF is linear)."""
 
     def __init__(self, p: Params):
         super().__init__(p)
@@ -127,8 +129,9 @@ class FadeOutSimple(Operator):
         left = 1.0 - v.normalized_age
         mask = left <= self.time
         if mask.any():
-            value = (left / self.time) * v.initial("alpha") if self.time > 0 else 0.0
-            v.set_field(self.field, np.where(mask, value, v.field(self.field)))
+            value = smoothstep(0.0, max(self.time, 1e-12), np.maximum(left, 0.0)) * v.initial("alpha")
+            current = v.field(self.field)
+            v.set_field(self.field, np.where(mask, np.minimum(value, current), current))
 
 
 class _RandomFade(Operator):
