@@ -90,6 +90,19 @@ def pack_atlas(atlas, volumes, blocks, size):
 
 def encode(rgb):
     """HDR RGB -> 8 bit RGBA, the largest channel's log2 in alpha, rounded up so RGB stays in range."""
+    # numpy lets go of the GIL inside each operation (Midtown's 25M texels: 8 s on one thread in the import)
+    from concurrent.futures import ThreadPoolExecutor
+    out = np.empty(rgb.shape[:2] + (4,), np.float32)
+    step = max(1, -(-len(rgb) // 64))
+
+    def rows(start):
+        out[start:start + step] = encode_rows(rgb[start:start + step])
+    with ThreadPoolExecutor(min(8, os.cpu_count() or 4)) as pool:
+        list(pool.map(rows, range(0, len(rgb), step)))
+    return out
+
+
+def encode_rows(rgb):
     peak = rgb.max(-1)
     level = np.ceil((np.log2(np.maximum(peak, 2 ** LOG_MIN)) - LOG_MIN) / (LOG_MAX - LOG_MIN) * 255)
     level = np.clip(level, 0, 255)
@@ -134,6 +147,35 @@ def cells_near(corners, lo, cell, dims):
     return ((z * dims[1] + y) * dims[0] + x).ravel()
 
 
+def volumes_in_reach(volumes, source, dims, cells, block=8):
+    """(cells, volumes) mask of the volumes that can be the nearest to each cell. Per block of block^3 cells: a volume
+    whose bounding box is farther from the block than some volume's farthest point of the block can't be."""
+    z, rem = np.divmod(cells, dims[0] * dims[1])
+    y, x = np.divmod(rem, dims[0])
+    bdims = -(-dims // block)
+    blocks = ((z // block) * bdims[1] + y // block) * bdims[0] + x // block
+    used, which = np.unique(blocks, return_inverse=True)
+    lo = np.full((len(used), 3), np.inf)
+    hi = np.full((len(used), 3), -np.inf)
+    np.minimum.at(lo, which, source[cells])
+    np.maximum.at(hi, which, source[cells])
+    corners = np.stack([np.where([(k >> a) & 1 for a in range(3)], hi, lo) for k in range(8)], 1)
+    upper = np.empty((len(used), len(volumes)))
+    lower = np.empty((len(used), len(volumes)))
+    for i, v in enumerate(volumes):
+        mins, maxs = np.array(v['mins']), np.array(v['maxs'])
+        local = (corners - np.array(v['origin'])) @ np.array(v['rotation'])
+        # distance to a box is convex, so its largest over the block is at a corner
+        upper[:, i] = np.linalg.norm(np.maximum(np.maximum(mins - local, local - maxs), 0), axis=2).max(1)
+        box = np.array(v['origin']) + np.array([[(mins, maxs)[(k >> a) & 1][a] for a in range(3)]
+                                                for k in range(8)]) @ np.array(v['rotation']).T
+        gap = np.maximum(np.maximum(box.min(0) - hi, lo - box.max(0)), 0)
+        lower[:, i] = np.linalg.norm(gap, axis=1)
+    # margin: the nearest search compares against float32 distances
+    reach = lower <= upper.min(1, keepdims=True) * (1 + 1e-5) + 1e-3
+    return reach[which]
+
+
 def index_grid(volumes):
     """The candidate volumes of each grid cell: the ones reaching into it in priority order, up to the first that
     holds all of it, then the nearest if none does. Returns (cells z, y, x, CANDIDATES), origin, cell size."""
@@ -164,12 +206,14 @@ def index_grid(volumes):
     open_cells = np.flatnonzero(~full & (count < CANDIDATES))
     nearest = np.zeros(len(open_cells), np.int32)
     nearest_dist = np.full(len(open_cells), np.inf, np.float32)
+    keep = volumes_in_reach(volumes, source, dims, open_cells)
     for i, v in enumerate(volumes):
-        local = (source[open_cells] - np.array(v['origin'])) @ np.array(v['rotation'])
+        rows = np.flatnonzero(keep[:, i])
+        local = (source[open_cells[rows]] - np.array(v['origin'])) @ np.array(v['rotation'])
         dist = np.linalg.norm(np.maximum(np.maximum(np.array(v['mins']) - local, local - np.array(v['maxs'])), 0),
                               axis=1)
-        closer = dist < nearest_dist
-        nearest[closer], nearest_dist[closer] = i, dist[closer]
+        closer = dist < nearest_dist[rows]
+        nearest[rows[closer]], nearest_dist[rows[closer]] = i, dist[closer]
     add = ~np.any(cand[open_cells] == nearest[:, None], axis=1)
     rows = open_cells[add]
     cand[rows, count[rows]] = nearest[add]

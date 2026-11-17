@@ -1653,24 +1653,27 @@ def read_rgb_blender(f):
 def trilinear(atlas, x, y, z):
     """Samples the atlas at texel-centre coordinates (texel i's centre is i)."""
     d, h, w = atlas.shape[:3]
+    flat = atlas.reshape(-1, 3)
     out = np.zeros((len(x), 3), np.float32)
     x0, y0, z0 = np.floor(x), np.floor(y), np.floor(z)
     fx, fy, fz = (x - x0)[:, None], (y - y0)[:, None], (z - z0)[:, None]
     x0, y0, z0 = x0.astype(np.int64), y0.astype(np.int64), z0.astype(np.int64)
+    xs = [np.clip(x0 + dx, 0, w - 1) for dx in (0, 1)]
     for dz in (0, 1):
         wz = fz if dz else 1 - fz
-        zi = np.clip(z0 + dz, 0, d - 1)
+        zi = np.clip(z0 + dz, 0, d - 1) * h
         for dy in (0, 1):
             wy = fy if dy else 1 - fy
-            yi = np.clip(y0 + dy, 0, h - 1)
+            row = (zi + np.clip(y0 + dy, 0, h - 1)) * w
             for dx in (0, 1):
                 wx = fx if dx else 1 - fx
-                xi = np.clip(x0 + dx, 0, w - 1)
-                out += atlas[zi, yi, xi].astype(np.float32) * (wx * wy * wz)
+                out += flat[row + xs[dx]].astype(np.float32) * (wx * wy * wz)
     return out
 
 
-PROBE_CHUNK = 1 << 18
+# Morton-ordered chunks this small reach a few volumes each (Midtown, 8 threads: 2^14 2.0 s, 2^16 2.4 s)
+PROBE_CHUNK = 1 << 14
+PROBE_THREADS = min(8, os.cpu_count() or 4)
 
 
 def volume_bounds(v):
@@ -1681,73 +1684,101 @@ def volume_bounds(v):
     return world.min(0), world.max(0)
 
 
+class ProbeVolumes:
+    """The volumes' numbers as arrays, one row per volume."""
+
+    def __init__(self, volumes):
+        def rows(key, shape=(3,)):
+            return np.array([v[key] for v in volumes], float).reshape(len(volumes), *shape)
+        self.origin, self.rotation = rows('origin'), rows('rotation', (3, 3))
+        self.mins, self.maxs = rows('mins'), rows('maxs')
+        self.size, self.offset = rows('size'), rows('offset')
+        bounds = [volume_bounds(v) for v in volumes]
+        self.lo = np.array([b[0] for b in bounds])
+        self.hi = np.array([b[1] for b in bounds])
+
+    def local(self, i, points):
+        return (points - self.origin[i]) @ self.rotation[i]
+
+
 def sample_probes(atlas, volumes, points, normals):
     """Probe irradiance at Source-space points for Source-space unit normals (SampleProbeAmbientCube): each point
     takes the first volume, in priority order, that holds it, else the nearest one. Works through the points in
     chunks against the volumes whose boxes reach the chunk's, which is what keeps Midtown's 10M vertices and 169
     volumes to seconds."""
-    bounds = [volume_bounds(v) for v in volumes]
+    vols = ProbeVolumes(volumes)
+    # each point's result doesn't depend on its chunk, so chunks can be any grouping of points
+    order = np.argsort(morton_keys(points), kind='stable')
     out = np.zeros((len(points), 3), np.float32)
-    for start in range(0, len(points), PROBE_CHUNK):
-        end = min(start + PROBE_CHUNK, len(points))
-        pts = points[start:end]
+
+    def chunk(start):
+        rows = order[start:start + PROBE_CHUNK]
+        pts = points[rows]
         lo, hi = pts.min(0), pts.max(0)
-        near = [i for i, (a, b) in enumerate(bounds) if np.all(a <= hi) and np.all(b >= lo)]
-        out[start:end] = sample_chunk(atlas, volumes, pts, normals[start:end], near)
+        near = np.flatnonzero(np.all(vols.lo <= hi, axis=1) & np.all(vols.hi >= lo, axis=1))
+        out[rows] = sample_chunk(atlas, vols, pts, normals[rows], near)
+    # numpy lets go of the GIL inside each operation
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(PROBE_THREADS) as pool:
+        list(pool.map(chunk, range(0, len(points), PROBE_CHUNK)))
     return out
 
 
-def volume_local(v, points):
-    return (points - np.array(v['origin'])) @ np.array(v['rotation'])
+def morton_keys(points):
+    """Z-order curve keys of points quantized to a 1024^3 grid over their bounds."""
+    lo, hi = points.min(0), points.max(0)
+    q = ((points - lo) / np.maximum(hi - lo, 1e-9) * 1023).astype(np.int64)
+    keys = np.zeros(len(points), np.int64)
+    for axis in range(3):
+        # spread 10 bits two apart
+        b = q[:, axis]
+        b = (b | b << 16) & 0x30000FF
+        b = (b | b << 8) & 0x300F00F
+        b = (b | b << 4) & 0x30C30C3
+        b = (b | b << 2) & 0x9249249
+        keys |= b << axis
+    return keys
 
 
-def sample_chunk(atlas, volumes, points, normals, near):
+def sample_chunk(atlas, vols, points, normals, near):
     n = len(points)
     choice = np.full(n, -1, np.int64)
     locals_ = np.zeros((n, 3))
+    todo = np.arange(n)
     for i in near:
-        todo = np.flatnonzero(choice < 0)
-        if not len(todo):
-            break
-        v = volumes[i]
-        mins, maxs = np.array(v['mins']), np.array(v['maxs'])
-        norm = (volume_local(v, points[todo]) - mins) / (maxs - mins)
+        norm = (vols.local(i, points[todo]) - vols.mins[i]) / (vols.maxs[i] - vols.mins[i])
         inside = np.all((norm >= 0) & (norm <= 1), axis=1)
         choice[todo[inside]] = i
         locals_[todo[inside]] = norm[inside]
-    rest = np.flatnonzero(choice < 0)
-    if len(rest):
-        nearest = np.full(len(rest), np.inf)
-        nearest_vol = np.zeros(len(rest), np.int64)
-        for i, v in enumerate(volumes):
-            local = volume_local(v, points[rest])
-            dist = np.linalg.norm(np.maximum(np.array(v['mins']) - local, 0) +
-                                  np.maximum(local - np.array(v['maxs']), 0), axis=1)
+        todo = todo[~inside]
+        if not len(todo):
+            break
+    if len(todo):
+        nearest = np.full(len(todo), np.inf)
+        nearest_vol = np.zeros(len(todo), np.int64)
+        for i in range(len(vols.origin)):
+            local = vols.local(i, points[todo])
+            dist = np.linalg.norm(np.maximum(vols.mins[i] - local, 0) + np.maximum(local - vols.maxs[i], 0), axis=1)
             closer = dist < nearest
             nearest[closer] = dist[closer]
             nearest_vol[closer] = i
         for i in np.unique(nearest_vol):
-            sel = rest[nearest_vol == i]
-            v = volumes[i]
-            locals_[sel] = np.clip((volume_local(v, points[sel]) - np.array(v['mins'])) /
-                                   (np.array(v['maxs']) - np.array(v['mins'])), 0, 1)
+            sel = todo[nearest_vol == i]
+            locals_[sel] = np.clip((vols.local(i, points[sel]) - vols.mins[i]) / (vols.maxs[i] - vols.mins[i]), 0, 1)
             choice[sel] = i
+    size, offset = vols.size[choice], vols.offset[choice]
+    # half a probe in from the edges, as the game's borders keep it, so filtering stays in this volume
+    local = np.clip(locals_, 0.5 / size, (size - 0.5) / size)
+    texel = local * size + offset - 0.5
+    rot = vols.rotation[choice]
+    nl = normals[:, 0:1] * rot[:, 0] + normals[:, 1:2] * rot[:, 1] + normals[:, 2:3] * rot[:, 2]
+    weights = nl * nl
     face_depth = atlas.shape[0] // 6
     out = np.zeros((n, 3), np.float32)
-    for i in np.unique(choice):
-        sel = choice == i
-        v = volumes[i]
-        size, offset = np.array(v['size'], float), np.array(v['offset'], float)
-        # half a probe in from the edges, as the game's borders keep it, so filtering stays in this volume
-        local = np.clip(locals_[sel], 0.5 / size, (size - 0.5) / size)
-        texel = local * size + offset - 0.5
-        rot = np.array(v['rotation'])
-        nl = normals[sel] @ rot
-        weights = nl * nl
-        for axis in range(3):
-            face = np.where(nl[:, axis] > 0, axis, axis + 3)
-            sample = trilinear(atlas, texel[:, 0], texel[:, 1], texel[:, 2] + face * face_depth)
-            out[sel] += sample * weights[:, axis:axis + 1]
+    for axis in range(3):
+        face = np.where(nl[:, axis] > 0, axis, axis + 3)
+        sample = trilinear(atlas, texel[:, 0], texel[:, 1], texel[:, 2] + face * face_depth)
+        out += sample * weights[:, axis:axis + 1]
     return out
 
 
