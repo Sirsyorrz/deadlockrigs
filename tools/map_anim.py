@@ -346,23 +346,36 @@ def import_props(props_file, coll):
     props_coll = bpy.data.collections.new(coll.name + ' animated props')
     coll.children.link(props_coll)
     new = []
-    for prop in data['props']:
-        before = set(bpy.data.objects)
-        actions = set(bpy.data.actions)
-        bpy.ops.import_scene.gltf(filepath=os.path.join(folder, prop['gltf']), import_pack_images=False,
-                                  disable_bone_shape=True, import_scene_as_collection=False)
-        objects = [ob for ob in bpy.data.objects if ob not in before]
-        place = prop_matrix(prop['transform'])
-        for ob in objects:
-            for c in ob.users_collection:
-                c.objects.unlink(ob)
-            props_coll.objects.link(ob)
-            if ob.parent is None:
-                ob.matrix_world = place @ ob.matrix_world
-                ob['dlr_model'] = prop['model']
-        for action in set(bpy.data.actions) - actions:
-            action.use_fake_user = False
-            for fc in fcurves(action):
-                fc.modifiers.new('CYCLES')
-        new += objects
+    # imported into an empty scene: the importer's edit-mode switches per armature and the per-operator scene
+    # update cost ~1 s per prop next to Midtown's ~7,000 objects (49 -> 4 s for 41 props)
+    window = bpy.context.window
+    scene = window.scene
+    staging = bpy.data.scenes.new('dlr props import')
+    window.scene = staging
+    try:
+        for prop in data['props']:
+            new += _import_prop(prop, folder, staging, props_coll)
+    finally:
+        window.scene = scene
+        bpy.data.scenes.remove(staging)
     return new
+
+
+def _import_prop(prop, folder, staging, props_coll):
+    actions = set(bpy.data.actions)
+    bpy.ops.import_scene.gltf(filepath=os.path.join(folder, prop['gltf']), import_pack_images=False,
+                              disable_bone_shape=True, import_scene_as_collection=False)
+    objects = list(staging.collection.all_objects)
+    place = prop_matrix(prop['transform'])
+    for ob in objects:
+        for c in ob.users_collection:
+            c.objects.unlink(ob)
+        props_coll.objects.link(ob)
+        if ob.parent is None:
+            ob.matrix_world = place @ ob.matrix_world
+            ob['dlr_model'] = prop['model']
+    for action in set(bpy.data.actions) - actions:
+        action.use_fake_user = False
+        for fc in fcurves(action):
+            fc.modifiers.new('CYCLES')
+    return objects
