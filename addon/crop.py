@@ -64,21 +64,55 @@ def original_mesh(ob):
     return bpy.data.meshes.get(ob.get(ORIGINAL, '')) or ob.data
 
 
+# per crop: mesh arrays read more than once (a Midtown crop read each mesh 2-4 times, 18 s of foreach_get)
+_cache = None
+
+
+def cached(mesh, key, make):
+    if _cache is None:
+        return make()
+    k = (mesh.as_pointer(), key)
+    if k not in _cache:
+        _cache[k] = make()
+    return _cache[k]
+
+
+def local_vertices(mesh):
+    def make():
+        co = np.empty(len(mesh.vertices) * 3, np.float32)
+        mesh.vertices.foreach_get('co', co)
+        return co.reshape(-1, 3)
+    return cached(mesh, 'co', make)
+
+
 def world_vertices(ob, mesh):
-    co = np.empty(len(mesh.vertices) * 3, np.float32)
-    mesh.vertices.foreach_get('co', co)
     m = np.array(ob.matrix_world, np.float32)
-    return co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
+    return local_vertices(mesh) @ m[:3, :3].T + m[:3, 3]
+
+
+def face_totals(mesh):
+    def make():
+        totals = np.empty(len(mesh.polygons), np.int32)
+        mesh.polygons.foreach_get('loop_total', totals)
+        return totals
+    return cached(mesh, 'totals', make)
 
 
 def face_vertices(mesh):
     starts = np.empty(len(mesh.polygons), np.int32)
     mesh.polygons.foreach_get('loop_start', starts)
-    totals = np.empty(len(mesh.polygons), np.int32)
-    mesh.polygons.foreach_get('loop_total', totals)
     loops = np.empty(len(mesh.loops), np.int32)
     mesh.loops.foreach_get('vertex_index', loops)
-    return starts, totals, loops
+    return starts, face_totals(mesh), loops
+
+
+def faces_by_owner(owner, face, picked, count):
+    """Per owner index below count, the faces of the picked triangles it owns (one sort, not a pass per owner)."""
+    idx = np.flatnonzero(picked)
+    order = np.argsort(owner[idx], kind='stable')
+    owners, faces = owner[idx][order], face[idx][order]
+    bounds = np.searchsorted(owners, np.arange(count + 1))
+    return [faces[bounds[i]:bounds[i + 1]] for i in range(count)]
 
 
 def outcodes_box(points, box, margin):
@@ -169,7 +203,9 @@ def set_hidden(ob, hidden):
 
 
 def restore(ob):
-    whole = bpy.data.meshes.get(ob.get(ORIGINAL, ''))
+    # only when cropped: the lookup walks every mesh, 2 s over Midtown's uncropped objects
+    name = ob.get(ORIGINAL)
+    whole = bpy.data.meshes.get(name) if name else None
     if whole is not None:
         piece = ob.data
         ob.data = whole
@@ -309,15 +345,14 @@ def unseen_dropped(keeps, views, rays, aspect, fov_margin, never):
             cast(tree, clear, hit, Vector(start), direction, distance)
     if not hit.any():
         return [(ob, mesh, np.zeros_like(keep)) for ob, mesh, keep in keeps]
-    shown = near_hit(cells, hit)
+    shown = faces_by_owner(owner, face, near_hit(cells, hit), len(keeps))
     out = []
     for i, (ob, mesh, keep) in enumerate(keeps):
         if ob in never or not keep.any():
             out.append((ob, mesh, keep))
             continue
-        mine = owner == i
         narrowed = np.zeros_like(keep)
-        narrowed[face[mine & shown]] = True
+        narrowed[shown[i]] = True
         out.append((ob, mesh, keep & narrowed))
     return out
 
@@ -399,9 +434,8 @@ def sun_casters_kept(keeps, suns):
         del tree
         if not hit.any():
             continue
-        shading = near_hit(cells, hit)
-        for i in np.unique(owner[shading]):
-            added[i][face[shading & (owner == i)]] = True
+        for i, faces_i in enumerate(faces_by_owner(owner, face, near_hit(cells, hit), len(keeps))):
+            added[i][faces_i] = True
     return [(ob, mesh, keep | more) for (ob, mesh, keep), more in zip(keeps, added)]
 
 
@@ -473,7 +507,7 @@ def crop_linked(scene, coll, keeps, effects):
                 view.objects.link(ob)
             continue
         keep = keeps[ob]
-        totals = face_vertices(ob.data)[1]
+        totals = face_totals(ob.data)
         total += int((totals - 2).sum())
         if not keep.any():
             continue
@@ -502,6 +536,15 @@ def crop(scene, region_codes, whole_objects, keep, occlusion=None):
     """region_codes(points) -> list of outcode arrays, one per region; a face stays if it is inside any.
     occlusion: (views, rays across, aspect, fov margin) to also drop what the camera can't see past the map (unseen_dropped).
     Returns (triangles kept, triangles before)."""
+    global _cache
+    _cache = {}
+    try:
+        return _crop(scene, region_codes, whole_objects, keep, occlusion)
+    finally:
+        _cache = None
+
+
+def _crop(scene, region_codes, whole_objects, keep, occlusion):
     keep_re = keep_pattern(keep)
     appended = list(map_meshes(scene))
     for ob in appended:
@@ -530,7 +573,7 @@ def crop(scene, region_codes, whole_objects, keep, occlusion=None):
             set_hidden(ob, not effects[ob])
             continue
         keep = keeps[ob]
-        totals = face_vertices(ob.data)[1]
+        totals = face_totals(ob.data)
         total += int((totals - 2).sum())
         if not keep.any():
             set_hidden(ob, True)
