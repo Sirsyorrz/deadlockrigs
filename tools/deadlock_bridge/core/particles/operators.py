@@ -297,13 +297,15 @@ class SetFloat(Operator):
     def operate(self, sim, v, dt, strength):
         if F.is_vector(self.field) or F.name(self.field) is None:
             return
-        value = column(self.value(sim, v), v.n)
+        value = self.value(sim, v)
+        if not (isinstance(value, np.ndarray) and value.shape == (v.n,) and value.dtype == np.float64):
+            value = column(value, v.n)
         if self.field in F.ANGLES and self.method not in (SET_SCALE_INITIAL, SET_SCALE_CURRENT):
             value = np.radians(value)
         target = set_by_method(v, self.field, value, self.method, dt)
         current = v.field(self.field)
         low, high = _float_range(self.field)
-        blended = np.clip(lerp(current, target, saturate(self.lerp(sim, v))), low, high)
+        blended = np.minimum(np.maximum(lerp(current, target, saturate(self.lerp(sim, v))), low), high)
         base = v.initial_field(self.field) if self.method in (SET_SCALE_INITIAL, SET_ADD_INITIAL) else current
         v.set_field(self.field, lerp(base, blended, strength))
 

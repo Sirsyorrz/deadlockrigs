@@ -1,6 +1,7 @@
 """Reading a particle definition's KeyValues3 blocks as the game's parser does: typed values with defaults, enums by
 name or by number, and the curves and remaps float inputs apply. Shared maths (bias curves, remaps) lives here too.
 """
+import bisect
 import math
 
 import numpy as np
@@ -140,7 +141,10 @@ BIAS_STANDARD, BIAS_GAIN, BIAS_EXPONENTIAL = 0, 1, 2
 # Maths -------------------------------------------------------------------------------------------------------------
 
 def saturate(x):
-    return np.clip(x, 0.0, 1.0)
+    # np.clip costs ~5 us on a scalar and ~3 us on a short array; min/max give the same values (bar zero's sign).
+    if isinstance(x, float):
+        return min(max(x, 0.0), 1.0)
+    return np.minimum(np.maximum(x, 0.0), 1.0)
 
 
 def remap(x, a, b):
@@ -233,27 +237,60 @@ class Curve:
                 slope_in[1:] = np.where(linear_in[1:], chord, slope_in[1:])
         self.slope_in = slope_in
         self.slope_out = slope_out
+        if count >= 2:
+            # Per segment x0, y0, y1, width, outgoing and incoming slope: one gather per call. Called ~260k times
+            # per Midtown import on a few dozen particles, so numpy's per-call overhead is most of the cost.
+            self._inner = self.x[1:-1]
+            self._segments = np.stack([self.x[:-1], self.y[:-1], self.y[1:], np.maximum(np.diff(self.x), 1e-9),
+                                       slope_out[:-1], slope_in[1:]], axis=1)
+            self._columns = np.ascontiguousarray(self._segments.T)
+            self._rows = self._segments.tolist()
+            self._inner_list = self._inner.tolist()
+            self._ends = (float(self.x[0]), float(self.x[-1]), float(self.y[0]), float(self.y[-1]))
 
     def __call__(self, value):
-        x = np.asarray(value, np.float64)
         if self.x.size < 2:
-            result = np.zeros_like(x)
+            result = np.zeros_like(np.asarray(value, np.float64))
             return result if result.ndim else float(result)
-        if self.looped and self.x_max > self.x_min:
+        looped = self.looped and self.x_max > self.x_min
+        if not looped and isinstance(value, (float, int)):
+            return self._scalar(float(value))
+        x = np.asarray(value, np.float64)
+        if not looped and x.ndim < 2 and x.size <= 32:
+            # Below ~32 values a Python loop beats numpy's ~25 small array operations.
+            return self._scalar(float(x)) if not x.ndim else np.array([self._scalar(v) for v in x.tolist()], np.float64)
+        if looped:
             x = self.x_min + fract((x - self.x_min) / (self.x_max - self.x_min)) * (self.x_max - self.x_min)
         else:
             x = np.minimum(np.maximum(x, self.x_min), self.x_max)
-        segment = np.clip(np.searchsorted(self.x, x, side="right") - 1, 0, self.x.size - 2)
-        x0, x1 = self.x[segment], self.x[segment + 1]
-        y0, y1 = self.y[segment], self.y[segment + 1]
-        h = np.maximum(x1 - x0, 1e-9)
-        t = np.clip((x - x0) / h, 0.0, 1.0)
-        t2, t3 = t * t, t * t * t
-        y = ((2 * t3 - 3 * t2 + 1) * y0 + (t3 - 2 * t2 + t) * h * self.slope_out[segment]
-             + (-2 * t3 + 3 * t2) * y1 + (t3 - t2) * h * self.slope_in[segment + 1])
-        y = np.where(x <= self.x[0], self.y[0], np.where(x >= self.x[-1], self.y[-1], y))
+        # Counting the inner keys at or below x is searchsorted(keys) - 1 held to the segments.
+        x0, y0, y1, h, slope_out, slope_in = self._columns[:, np.searchsorted(self._inner, x, side="right")]
+        t = np.minimum(np.maximum((x - x0) / h, 0.0), 1.0)
+        t2 = t * t
+        t3 = t2 * t
+        y = ((2 * t3 - 3 * t2 + 1) * y0 + (t3 - 2 * t2 + t) * h * slope_out
+             + (-2 * t3 + 3 * t2) * y1 + (t3 - t2) * h * slope_in)
+        first, last, y_first, y_last = self._ends
+        y = np.where(x <= first, y_first, np.where(x >= last, y_last, y))
         y = np.minimum(np.maximum(y, self.y_min), self.y_max)
         return y if y.ndim else float(y)
+
+    def _scalar(self, x: float) -> float:
+        """The array path's maths in Python floats (the same IEEE operations, so the same result); not looped."""
+        x = min(max(x, self.x_min), self.x_max)
+        first, last, y_first, y_last = self._ends
+        if x <= first:
+            y = y_first
+        elif x >= last:
+            y = y_last
+        else:
+            x0, y0, y1, h, slope_out, slope_in = self._rows[bisect.bisect_right(self._inner_list, x)]
+            t = min(max((x - x0) / h, 0.0), 1.0)
+            t2 = t * t
+            t3 = t2 * t
+            y = ((2 * t3 - 3 * t2 + 1) * y0 + (t3 - 2 * t2 + t) * h * slope_out
+                 + (-2 * t3 + 3 * t2) * y1 + (t3 - t2) * h * slope_in)
+        return min(max(y, self.y_min), self.y_max)
 
 
 def degrees(value):
