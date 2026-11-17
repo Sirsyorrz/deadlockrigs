@@ -159,6 +159,56 @@ def overlay_factor_group():
                       [('Factor', 'Vector')], build)
 
 
+def select_group():
+    return node_group('Deadlock select', [('Condition', 'Float'), ('A', 'Float'), ('B', 'Float')],
+                      [('Value', 'Float')], lambda g, cond, a, b: [select(g, cond, a, b)])
+
+
+def float_mix_group():
+    def build(g, a, b, t):
+        return [g.math('ADD', a, g.math('MULTIPLY', g.math('SUBTRACT', b, a), t))]
+    return node_group('Deadlock float mix', [('A', 'Float'), ('B', 'Float'), ('Factor', 'Float')],
+                      [('Value', 'Float')], build)
+
+
+def border_roughness_group():
+    def build(g, rough, amount, target, strength):
+        return [g.math('ADD', rough, g.math('MULTIPLY', g.math('SUBTRACT', target, rough),
+                                            g.math('MULTIPLY', amount, strength)))]
+    return node_group('Deadlock border roughness', [('Roughness', 'Float'), ('Amount', 'Float'),
+                                                    ('Target', 'Float'), ('Strength', 'Float')],
+                      [('Roughness', 'Float')], build)
+
+
+def border_tint_group(replace):
+    """Border blend mode 2 replaces the albedo with the tint, the others multiply it by white..tint."""
+    def build(g, albedo, amount, alpha, tint):
+        weight = g.math('MULTIPLY', amount, alpha)
+        if replace:
+            return [g.mix('MIX', albedo, tint, weight)]
+        return [g.mix('MULTIPLY', albedo, g.mix('MIX', (1.0, 1.0, 1.0, 1.0), tint, weight))]
+    return node_group('Deadlock border tint replace' if replace else 'Deadlock border tint',
+                      [('Albedo', 'Color'), ('Amount', 'Float'), ('Alpha', 'Float'), ('Tint', 'Color')],
+                      [('Albedo', 'Color')], build)
+
+
+def overlay_layer_group(masked):
+    """An overlay factor multiplied into the albedo by amount, or with masked by (mask * scale + offset) * strength."""
+    def build(g, albedo, factor, *amount):
+        if masked:
+            mask, scale, offset, strength = amount
+            amount = g.math('MULTIPLY_ADD', mask, scale)
+            g.put(amount.node.inputs[2], offset)
+            amount = g.math('MULTIPLY', amount, strength)
+        else:
+            amount = amount[0]
+        return [g.mix('MIX', albedo, g.mix('MULTIPLY', albedo, factor), amount)]
+    amounts = [('Mask', 'Float'), ('Scale', 'Float'), ('Offset', 'Float'), ('Strength', 'Float')] if masked \
+        else [('Amount', 'Float')]
+    return node_group('Deadlock overlay layer masked' if masked else 'Deadlock overlay layer',
+                      [('Albedo', 'Color'), ('Factor', 'Color')] + amounts, [('Albedo', 'Color')], build)
+
+
 class Blend:
     def __init__(self, mat, ints, floats, vectors, textures):
         self.mat, self.ints, self.floats, self.vectors = mat, ints, floats, vectors
@@ -322,28 +372,20 @@ class Blend:
         g = self.g
         tint = self.v(f'g_vBorderTint{n}', (0.5, 0.5, 0.5, 1.0))
         mode = self.i(f'g_nBorderBlendMode{n}')
-        weight = g.math('MULTIPLY', amount, tint[3])
         color = tuple(tint[:3]) if mode == 1 else tuple(srgb_to_linear(np.asarray(tint[:3], float)))
-        if mode == 2:
-            return g.mix('MIX', albedo, color + (1.0,), weight)
         scale = 1.9921569 if mode == 1 else 1.0
-        factor = g.mix('MIX', (1.0, 1.0, 1.0, 1.0), tuple(c * scale for c in color) + (1.0,), weight)
-        return g.mix('MULTIPLY', albedo, factor)
+        return g.call(border_tint_group(mode == 2), albedo, amount, tint[3],
+                      tuple(c * scale for c in color) + (1.0,))[0]
 
     def overlay_factor(self, overlay, dark, bright):
         return self.g.call(overlay_factor_group(), overlay, dark, bright)[0]
 
     def overlay_layer(self, albedo, mask, factor, mode, strength):
-        g = self.g
         # mode 0: everywhere, 1: by the tint mask, 2: by its inverse
         scale, offset = {0: (0.0, 1.0), 2: (-1.0, 1.0)}.get(mode, (1.0, 0.0))
         if isinstance(mask, float):
-            amount = (mask * scale + offset) * strength
-        else:
-            amount = g.math('MULTIPLY_ADD', mask, scale)
-            g.put(amount.node.inputs[2], offset)
-            amount = g.math('MULTIPLY', amount, strength)
-        return g.mix('MIX', albedo, g.mix('MULTIPLY', albedo, factor), amount)
+            return self.g.call(overlay_layer_group(False), albedo, factor, (mask * scale + offset) * strength)[0]
+        return self.g.call(overlay_layer_group(True), albedo, factor, mask, scale, offset, strength)[0]
 
     def world_overlays(self):
         """(factor, per-layer strengths) for each world overlay."""
@@ -375,11 +417,8 @@ class Blend:
                               self.v('g_vOverlayScaleRotationTranslation', NO_TRANSFORM))
 
     def border_roughness(self, rough, amount, n):
-        strength = self.f(f'g_flBorderRoughnessStrength{n}', 0.0)
-        g = self.g
-        target = self.f(f'g_flBorderRoughness{n}', 1.0)
-        return g.math('ADD', rough, g.math('MULTIPLY', g.math('SUBTRACT', target, rough),
-                                           g.math('MULTIPLY', amount, strength)))
+        return self.g.call(border_roughness_group(), rough, amount, self.f(f'g_flBorderRoughness{n}', 1.0),
+                           self.f(f'g_flBorderRoughnessStrength{n}', 0.0))[0]
 
     def build(self, layer1, mask1, rough1, metal1):
         """The composited albedo, roughness and metalness, from layer 1's (albedo already corrected, tinted and
@@ -388,10 +427,11 @@ class Blend:
         three = bool(self.i('F_LAYER_COUNT'))
         blend = g.split(g.attribute('_BLEND'))
         blend2, blend3 = blend[0], (blend[1] if three else 0.0)
+        pick = lambda cond, a, b: g.call(select_group(), cond, a, b)[0]
         if three:
-            blend2 = select(g, g.math('LESS_THAN', blend3, 1.0), blend2, 0.0)
-            blend3 = select(g, g.math('GREATER_THAN', blend3, 1e-5), blend3, 0.0)
-        blend2 = select(g, g.math('GREATER_THAN', blend2, 1e-5), blend2, 0.0)
+            blend2 = pick(g.math('LESS_THAN', blend3, 1.0), blend2, 0.0)
+            blend3 = pick(g.math('GREATER_THAN', blend3, 1e-5), blend3, 0.0)
+        blend2 = pick(g.math('GREATER_THAN', blend2, 1e-5), blend2, 0.0)
         if self.i('F_UV_OVERLAY'):
             img = self.image('g_tRevealOverlay', False)
             if img is not None:
@@ -457,7 +497,7 @@ class Blend:
 def fmix(g, a, b, t):
     if a is b:
         return a
-    return g.math('ADD', a, g.math('MULTIPLY', g.math('SUBTRACT', b, a), t))
+    return g.call(float_mix_group(), a, b, t)[0]
 
 
 def layer1_coords(blend, mat):
