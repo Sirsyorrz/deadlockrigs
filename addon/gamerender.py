@@ -37,6 +37,8 @@ import numpy as np
 from gpu_extras.batch import batch_for_shader
 from mathutils import Euler, Matrix, Quaternion, Vector
 
+from . import gamelaunch
+
 UNIT = 0.0254
 GAME_FROM_BLENDER = Matrix.Diagonal((1 / UNIT, 1 / UNIT, 1 / UNIT, 1)) @ Matrix.Rotation(math.pi / 2, 4, 'Z')
 BLENDER_FROM_GAME = GAME_FROM_BLENDER.inverted()
@@ -820,6 +822,8 @@ class Link:
     view wins; views posted while a shot is in flight are skipped). F12 renders call capture() directly; the shot
     lock keeps them from interleaving with the viewport."""
 
+    error = gamelaunch.LoggedText()
+
     def __init__(self, port=PORT, setup=(), launched=False):
         self.port = port
         self.launch_setup = tuple(setup)  # console commands for a session started from here (map)
@@ -840,7 +844,6 @@ class Link:
         self.stream = None
         self.bridge = None
         self.start_camera = None
-        self.pinged = 0.0
         self.history = deque(maxlen=120)  # (time sent, View), for pairing stream frames with views
         self.poses = None
         self.puppets = {}  # armature name -> Puppet
@@ -848,7 +851,7 @@ class Link:
         self.render_frame = None  # last frame rendered while the game clock is frozen
         self.stream_restarted = 0.0
         self.time_step = 0
-        self.frames_error = ''
+        self.frames_error = ''  # why the bridge's frame capture didn't start
         self.pawn_at = None
         self.pawn_moved = 0.0
 
@@ -994,8 +997,28 @@ class Link:
                     keep_window_below(wid)
             except (OSError, subprocess.SubprocessError) as error:
                 self.error = f'screenshot mode: {error}'
+        if self.stream is None and self.frames_error:
+            # The panel shows the bridge's reason; the window stream is only a Linux fallback (on Windows there never
+            # is an X display, so its message would hide the real cause).
+            self.error = ''
+        self._log_connect()
         self.running = True
         threading.Thread(target=self._run, daemon=True).start()
+        threading.Thread(target=self._keepalive, daemon=True).start()
+
+    def _log_connect(self):
+        frames = type(self.stream).__name__ if self.stream else 'screenshots'
+        status = ''
+        if self.bridge:
+            try:
+                status = self.bridge.status()['message']
+            except OSError as error:
+                status = f'no status ({error})'
+        gamelaunch.log(f'connected: {sys.platform}, Blender {bpy.app.version_string}, bridge '
+                       f'{"yes: " + status if self.bridge else "no"}, frames {frames}'
+                       + (f' (bridge frames failed: {self.frames_error})' if self.frames_error else ''))
+        if self.frames_error and game_dir():
+            gamelaunch.log('bridge log:\n' + gamelaunch.bridge_log(game_dir()).strip())
 
     def stop(self):
         self.running = False
@@ -1268,13 +1291,16 @@ class Link:
             self._run_shots()
 
     def _keepalive(self):
-        # The bridge gives the camera back to the game after 3 s without packets (Blender closed or crashed).
-        if self.bridge and time.time() - self.pinged > 1.0:
-            self.pinged = time.time()
-            try:
-                self.bridge.status()
-            except OSError:
-                pass
+        """The bridge gives the camera back to the game after 3 s without packets (Blender closed or crashed). Its
+        own thread: a slow capture (a screenshot can take seconds) must not let the camera snap back meanwhile."""
+        while self.running:
+            bridge = self.bridge
+            if bridge:
+                try:
+                    bridge.status()
+                except OSError:
+                    pass
+            time.sleep(1.0)
 
     def _restart_stream(self):
         """ffmpeg ends when the window is unmapped or resized (minimised, fullscreen toggle): grab it again."""
@@ -1307,7 +1333,6 @@ class Link:
         while self.running:
             self.event.wait(0.5)
             self.event.clear()
-            self._keepalive()
             if self.stream and not self.stream.alive:
                 self._restart_stream()
             with self.lock:
@@ -1335,7 +1360,6 @@ class Link:
         while self.running:
             self.event.wait(0.5)
             self.event.clear()
-            self._keepalive()
             with self.lock:
                 view = self.wanted
             if view is None or view.close_to(self.sent):
@@ -1961,7 +1985,6 @@ class DLR_OT_game_connect(bpy.types.Operator):
 
 def connect(context, port=PORT, setup=(), launched=False):
     global _link
-    from . import gamelaunch
     # Poses, camera and frames are written into the game's memory: never into a VAC-secured game.
     if gamelaunch.game_insecure() is False:
         raise ConnectionRefusedError('Deadlock is running without -insecure: quit it and use Start Deadlock')
@@ -2042,7 +2065,6 @@ class DLR_OT_game_start(bpy.types.Operator):
 
     def execute(self, context):
         global _session
-        from . import gamelaunch
         game = game_dir()
         if not game or not os.path.isdir(game):
             self.report({'ERROR'}, 'Deadlock not found (set its folder in the add-on preferences)')
@@ -2165,6 +2187,8 @@ class DLR_PT_game_render(bpy.types.Panel):
                 col.label(text=f'Streaming the game window ({w}x{h})')
             elif lk.frame:
                 col.label(text=f'Screenshot mode: frame {lk.frame[2]}, {lk.timing * 1000:.0f} ms')
+            if not lk.stream and lk.frames_error:
+                col.label(text=f'No game frames: {lk.frames_error}', icon='ERROR')
             if lk.outside:
                 col.label(text='View is outside the play area', icon='ERROR')
             col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
@@ -2191,6 +2215,8 @@ class DLR_PT_game_render(bpy.types.Panel):
             col.label(text=_session.error, icon='ERROR')
         if lk and lk.error:
             col.label(text=lk.error, icon='ERROR')
+        if (lk and (lk.error or (not lk.stream and lk.frames_error))) or (_session and _session.error):
+            col.label(text=f'Log: {gamelaunch.log_path()}')
 
 
 def _view_menu(self, context):

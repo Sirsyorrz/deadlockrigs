@@ -36,6 +36,35 @@ def state_dir():
     return os.path.join(base, 'dlr-game', 'session')
 
 
+def log_path():
+    return os.path.join(os.path.dirname(state_dir()), 'game.log')
+
+
+def log(text):
+    """One line in the session log users can send with a bug report (errors only show briefly in the panel)."""
+    try:
+        os.makedirs(os.path.dirname(log_path()), exist_ok=True)
+        with open(log_path(), 'a', encoding='utf-8') as f:
+            f.write(time.strftime('%Y-%m-%d %H:%M:%S ') + text + '\n')
+    except OSError:
+        pass
+
+
+class LoggedText:
+    """A text attribute (an error) that also goes to the session log whenever it changes to something new."""
+
+    def __set_name__(self, owner, name):
+        self.name = '_' + name
+
+    def __get__(self, obj, owner=None):
+        return self if obj is None else obj.__dict__.get(self.name, '')
+
+    def __set__(self, obj, text):
+        if text and text != obj.__dict__.get(self.name):
+            log(f'{type(obj).__name__}: {text}')
+        obj.__dict__[self.name] = text
+
+
 def bridge_dll():
     return next((p for p in BRIDGE_DLLS if os.path.exists(p)), None)
 
@@ -58,10 +87,13 @@ def steam_root():
 def _game_commandlines():
     """Command lines (lists of arguments) of running deadlock.exe processes; None where they can't be read."""
     if os.name == 'nt':
-        out = subprocess.run(
-            ['powershell', '-NoProfile', '-Command',
-             "Get-CimInstance Win32_Process -Filter \"Name='deadlock.exe'\" | ForEach-Object { $_.CommandLine }"],
-            capture_output=True, text=True, errors='replace', creationflags=0x08000000)
+        try:
+            out = subprocess.run(
+                ['powershell', '-NoProfile', '-Command',
+                 "Get-CimInstance Win32_Process -Filter \"Name='deadlock.exe'\" | ForEach-Object { $_.CommandLine }"],
+                capture_output=True, text=True, errors='replace', creationflags=0x08000000)
+        except OSError:
+            return None
         if out.returncode or out.stdout is None:
             return None
         return [line.split() for line in out.stdout.splitlines() if line.strip()]
@@ -108,6 +140,8 @@ def game_insecure():
 class Session:
     """One launch. start() returns at once; a thread runs the launch and reports through .status / .error / .ready.
     Everything it changed is undone by stop() or, after a crash, by recover() (run before every start)."""
+
+    error = LoggedText()
 
     def __init__(self, game, port, size=(1920, 1080), mods=False, extra=(), map_name='dl_hideout', borderless=False,
                  precache=()):
@@ -241,7 +275,7 @@ class Session:
             self.remove_bridge()
 
     def bridge_path(self):
-        return os.path.join(self.game, *OVERLAY.split('/'), 'bin', 'win64', 'server.dll')
+        return bridge_path(self.game)
 
     def precache_path(self):
         return os.path.join(os.path.dirname(self.bridge_path()), 'precache.txt')
@@ -356,6 +390,20 @@ class Session:
         if not game_running(self.game):
             self.restore_cfgs()
             self.remove_bridge()
+
+
+def bridge_path(game):
+    return os.path.join(game, *OVERLAY.split('/'), 'bin', 'win64', 'server.dll')
+
+
+def bridge_log(game):
+    """The bridge's own log of its last session (hooks, capture setup), or ''."""
+    try:
+        with open(os.path.join(os.path.dirname(bridge_path(game)), 'dlr_bridge.log'), encoding='utf-8',
+                  errors='replace') as f:
+            return f.read()
+    except OSError:
+        return ''
 
 
 def _bridge_views():
