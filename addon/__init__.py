@@ -451,6 +451,9 @@ def append_map(path, slug, link=False):
         # maps built before ff6bfd3 were saved with every object selected, which slows every redraw
         for ob in c.all_objects:
             ob.select_set(False)
+            # maps built before the barn masks drew as bounds: Solid shading showed them over the map
+            if 'dlr_barn_mask' in ob and ob.library is None:
+                ob.display_type = 'BOUNDS'
     if dst.worlds:
         scene.world = dst.worlds[0]
     look.enable(scene)

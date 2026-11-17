@@ -1375,6 +1375,8 @@ def add_barn_masks(coll, light_obs, specs, title):
         mask.visible_transmission = mask.visible_volume_scatter = False
         mask.hide_probe_volume = mask.hide_probe_sphere = mask.hide_probe_plane = True
         mask.hide_select = True
+        # Solid shading would draw these 100-300 m shadow rings over the map; bounds don't change renders or shadows
+        mask.display_type = 'BOUNDS'
         mask[MASK] = ob.name
         masks_coll.objects.link(mask)
         masks[ob] = mask
