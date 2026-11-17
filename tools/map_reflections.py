@@ -21,7 +21,7 @@ import struct
 
 import bpy
 import numpy as np
-from map_lighting import UNIT, Graph
+from map_lighting import UNIT, Graph, read_rgb
 from map_probes import SOURCE_FROM_BLENDER, cells_near, save_image, tile_slices
 
 GROUP = 'Deadlock reflections'
@@ -44,14 +44,9 @@ def slice_files(cube_dir):
     return files
 
 
-def load_pixels(path):
-    img = bpy.data.images.load(path)
-    img.colorspace_settings.name = 'Non-Color'
-    w, h = img.size
-    px = np.empty(w * h * 4, np.float32)
-    img.pixels.foreach_get(px)
-    bpy.data.images.remove(img)
-    return px.reshape(h, w, 4)[..., :3]
+def load_pixels(paths):
+    """RGB of the EXRs, rows bottom up like Blender's pixels."""
+    return [rgb[::-1] for rgb in read_rgb(paths)]
 
 
 def equirect_directions(h, w):
@@ -298,7 +293,7 @@ def brdf_image(lut_dir, light_dir):
     files = sorted(glob.glob(os.path.join(lut_dir, '**', '*_z001.exr'), recursive=True))
     if not files:
         return None
-    rgb = load_pixels(files[0])
+    rgb, = load_pixels(files[:1])
     return save_half('brdf_lut', np.concatenate([rgb, np.ones(rgb.shape[:2] + (1,), np.float32)], -1),
                      os.path.join(light_dir, 'brdf_lut.exr'))
 
@@ -458,11 +453,8 @@ def add_reflections(coll, title, maps, cube_dir, lut_dir, light_dir):
     os.makedirs(light_dir, exist_ok=True)
     order = sorted({m['index'] for m in maps})
     tile_of = {s: k for k, s in enumerate(order)}
-    slices, harmonics = [], []
-    for s in order:
-        rgb = load_pixels(files[s])
-        slices.append(rgb)
-        harmonics.append(luma_harmonic(rgb))
+    slices = load_pixels([files[s] for s in order])
+    harmonics = [luma_harmonic(rgb) for rgb in slices]
     widths = level_widths(len(slices))
     cols = max(1, math.ceil(math.sqrt(len(slices) / 2)))
     vtex = glob.glob(os.path.join(cube_dir, '**', '*.vtex_c'), recursive=True)

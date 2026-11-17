@@ -1579,33 +1579,41 @@ def load_probe_atlas(folder):
     if not files:
         return None
     files.sort(key=lambda f: int(f.rsplit('_z', 1)[1].split('.')[0]))
+    return np.stack(read_rgb(files, np.float16))
+
+
+def read_rgb(files, dtype=np.float32):
+    """The RGB of float image files as (height, width, 3) arrays, row 0 the file's first (top) row."""
     try:
         import OpenImageIO as oiio
     except ImportError:
-        oiio = None
-    if oiio is None:
-        return np.stack([read_slice_blender(f) for f in files])
+        return [read_rgb_blender(f).astype(dtype) for f in files]
+    fmt = 'half' if dtype == np.float16 else 'float'
 
     def read(f):
         image = oiio.ImageInput.open(f)
+        if image is None:
+            raise OSError(f'cannot read {f}: {oiio.geterror()}')
         try:
-            return image.read_image(0, 0, 0, 3, 'half')
+            return image.read_image(0, 0, 0, 3, fmt)
         finally:
             image.close()
-    # Midtown has ~1,400 slices: through bpy.data.images that took most of a minute
+    # bpy.data.images.load + remove grow with the file: ~60 ms an image in Midtown (Midtown's ~1,400 probe slices
+    # took most of a minute), and OpenImageIO decodes side by side without the GIL
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(min(16, os.cpu_count() or 4)) as pool:
-        return np.stack(list(pool.map(read, files)))
+        return list(pool.map(read, files))
 
 
-def read_slice_blender(f):
+def read_rgb_blender(f):
     img = bpy.data.images.load(f)
+    img.colorspace_settings.name = 'Non-Color'
     w, h = img.size
     px = np.empty(w * h * 4, np.float32)
     img.pixels.foreach_get(px)
     bpy.data.images.remove(img)
     # Blender's rows go bottom up
-    return px.reshape(h, w, 4)[::-1, :, :3].astype(np.float16)
+    return px.reshape(h, w, 4)[::-1, :, :3]
 
 
 def trilinear(atlas, x, y, z):

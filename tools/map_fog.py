@@ -12,7 +12,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix
 
-from map_lighting import Graph, UNIT
+from map_lighting import Graph, UNIT, read_rgb
 
 # VolumetricFog.ScatteringScale is 0.0022 (the controller's fog strength to extinction per inch); that leaves the
 # Hideout far foggier than the game, this matches it in screenshots
@@ -31,19 +31,10 @@ def load_irradiance(folder, dims):
     files = sorted(glob.glob(os.path.join(folder, '**', '*_z[0-9][0-9][0-9].exr'), recursive=True))
     if len(files) != dims[2]:
         return None
-    out = np.empty((dims[0], dims[1], dims[2], 3), np.float32)
-    for z, f in enumerate(files):
-        img = bpy.data.images.load(f)
-        w, h = img.size
-        if (w, h) != (dims[0], dims[1]):
-            bpy.data.images.remove(img)
-            return None
-        px = np.empty(w * h * 4, np.float32)
-        img.pixels.foreach_get(px)
-        bpy.data.images.remove(img)
-        # Blender's pixels start at the bottom row
-        out[:, :, z] = px.reshape(h, w, 4)[::-1, :, :3].transpose(1, 0, 2)
-    return out
+    slices = read_rgb(files)
+    if any(rgb.shape[:2] != (dims[1], dims[0]) for rgb in slices):
+        return None
+    return np.ascontiguousarray(np.stack(slices, 2).transpose(1, 0, 2, 3))
 
 
 def bake(fog, irradiance):
