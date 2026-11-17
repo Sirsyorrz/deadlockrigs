@@ -106,7 +106,8 @@ def lightmap_files():
 settings = load_settings() if lighting_dir else {}
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=gltf, import_pack_images=False)
+with map_anim.batched_gltf_cleanup():
+    bpy.ops.import_scene.gltf(filepath=gltf, import_pack_images=False)
 print(f'glTF import: {time.time() - _mark[0]:.1f} s')
 _mark[0] = time.time()
 

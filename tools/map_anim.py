@@ -8,6 +8,8 @@ value a driver sets from the frame and the active scene's frame rate (a context 
 on to its own scene when it is linked or appended). Jittering materials get a geometry nodes modifier
 (MOTION_GROUP) on their meshes; only those, as Blender redraws a mesh with one every frame.
 """
+import contextlib
+import importlib
 import json
 import math
 import os
@@ -34,6 +36,46 @@ SCROLLED = (('g_vAlbedoScrollSpeed1', 'g_flAlbedoScrollQuantize1', ('BASE COLOR'
              ('NORMAL MAP', 'METALLIC ROUGHNESS'), None),
             ('g_vSelfIllumScrollSpeed1', 'g_flSelfIllumScrollQuantize1', ('EMISSIVE',),
              'g_bUseSecondaryUvForSelfIllum1'))
+@contextlib.contextmanager
+def batched_gltf_cleanup():
+    """The glTF importer makes and removes a temporary object per mesh, and each removal scans the whole file
+    (~10 ms per mesh at Midtown's size, ~60 s in all). Hold them and remove them in one batch_remove at the end."""
+    try:
+        gltf_mesh = importlib.import_module('io_scene_gltf2.blender.imp.mesh')
+    except ImportError:
+        gltf_mesh = None
+    if getattr(gltf_mesh, 'bpy', None) is not bpy:
+        yield
+        return
+    held = []
+
+    class Objects:
+        def __getattr__(self, name):
+            return getattr(bpy.data.objects, name)
+
+        def remove(self, ob, **_):
+            held.append(ob)
+
+    class Data:
+        objects = Objects()
+
+        def __getattr__(self, name):
+            return getattr(bpy.data, name)
+
+    class Bpy:
+        data = Data()
+
+        def __getattr__(self, name):
+            return getattr(bpy, name)
+
+    gltf_mesh.bpy = Bpy()
+    try:
+        yield
+    finally:
+        gltf_mesh.bpy = bpy
+        bpy.data.batch_remove(held)
+
+
 JITTER_VECTORS = ('g_vJitterAmplitudesXA1', 'g_vJitterAmplitudesYA1', 'g_vJitterAmplitudesZA1',
                   'g_vJitterAmplitudesXB1', 'g_vJitterAmplitudesYB1', 'g_vJitterAmplitudesZB1')
 
@@ -353,8 +395,9 @@ def import_props(props_file, coll):
     staging = bpy.data.scenes.new('dlr props import')
     window.scene = staging
     try:
-        for prop in data['props']:
-            new += _import_prop(prop, folder, staging, props_coll)
+        with batched_gltf_cleanup():
+            for prop in data['props']:
+                new += _import_prop(prop, folder, staging, props_coll)
     finally:
         window.scene = scene
         bpy.data.scenes.remove(staging)
