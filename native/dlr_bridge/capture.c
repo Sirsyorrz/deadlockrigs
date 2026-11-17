@@ -173,10 +173,13 @@ static struct {
         void *commands;
         u64 fence, semaphore, buffer, memory;
         u8 *mapped;
-        volatile u32 state;  // 0 free, 1 submitted, 2 publishing
+        u32 pitch;           // bytes per row in `mapped`, 0 = width x bytes per pixel
+        void *staging;       // D3D11 readback texture
+        volatile u32 state;  // Vulkan: 0 free, 1 submitted, 2 publishing. D3D11: see capture_dx11.c
         u64 present;
         u32 width, height, format, applied_seq, step_done, views;
     } ring[RING];
+    u32 backend;  // 0 none, 1 Vulkan, 2 D3D11
     volatile u32 wanted;  // Blender asked for frames (and is still talking)
     WCHAR path[300];
     volatile u32 path_set;
@@ -200,9 +203,21 @@ static struct {
 
 static void cap_fail(const char *text) {
     u64 i = 0;
-    for (; text[i] && i < sizeof(gCap.message) - 1; i++)
+    int changed = 0;
+    for (; text[i] && i < sizeof(gCap.message) - 1; i++) {
+        changed |= gCap.message[i] != text[i];
         gCap.message[i] = text[i];
+    }
+    changed |= gCap.message[i] != 0;
     gCap.message[i] = 0;
+    if (changed) {
+        char line[96] = "capture: ";
+        u64 n = 9;
+        for (u64 j = 0; text[j] && n < sizeof(line) - 1; j++)
+            line[n++] = text[j];
+        line[n] = 0;
+        log_line(line);
+    }
 }
 
 static int bytes_per_pixel(u32 format) {
@@ -707,7 +722,7 @@ static struct {
     u32 applied_seq, step_done, views;
 } gTagHistory[3];
 
-static i32 present_hook(void *queue, const struct VkPresentInfo *info) {
+static void count_present(void) {
     gCap.presents++;
     gTagHistory[gCap.presents % 3].applied_seq = gStatus.applied_seq;
     gTagHistory[gCap.presents % 3].step_done = gTime.step_done;
@@ -716,6 +731,18 @@ static i32 present_hook(void *queue, const struct VkPresentInfo *info) {
     QueryPerformanceCounter(&now);
     if (now - gLastPacket > RELEASE_AFTER * gFrequency)
         gCap.wanted = 0;
+}
+
+static void tag_slot(int slot) {
+    u32 earlier = (u32)((gCap.presents + 1) % 3);  // two presents ago
+    gCap.ring[slot].present = gCap.presents;
+    gCap.ring[slot].applied_seq = gTagHistory[earlier].applied_seq;
+    gCap.ring[slot].step_done = gTagHistory[earlier].step_done;
+    gCap.ring[slot].views = gTagHistory[earlier].views;
+}
+
+static i32 present_hook(void *queue, const struct VkPresentInfo *info) {
+    count_present();
     if (gCap.device && (gDepth.state == 1 || gDepth.state == 2 || gDepth.request != gDepth.done))
         depth_present(queue);
     if (!gCap.wanted || info->swapchain_count != 1 || info->wait_count > 8 || !gCap.path_set)
@@ -774,14 +801,10 @@ static i32 present_hook(void *queue, const struct VkPresentInfo *info) {
     struct VkSubmitInfo submit = {4, 0, info->wait_count, info->waits, stages, 1, &cmd, 1, &gCap.ring[slot].semaphore};
     if (vk.submit(queue, 1, &submit, gCap.ring[slot].fence))
         return vk.present(queue, info);
-    gCap.ring[slot].present = gCap.presents;
+    tag_slot(slot);
     gCap.ring[slot].width = gCap.width;
     gCap.ring[slot].height = gCap.height;
     gCap.ring[slot].format = gCap.format;
-    u32 earlier = (u32)((gCap.presents + 1) % 3);  // two presents ago
-    gCap.ring[slot].applied_seq = gTagHistory[earlier].applied_seq;
-    gCap.ring[slot].step_done = gTagHistory[earlier].step_done;
-    gCap.ring[slot].views = gTagHistory[earlier].views;
     __atomic_store_n(&gCap.ring[slot].state, 1, __ATOMIC_RELEASE);
     if (!gCap.copied++)
         gCap.message[0] = 0;  // drop "waiting for a new swapchain"
@@ -844,7 +867,12 @@ static void publish(int slot) {
     u32 target = latest == 0 ? 1 : 0;
     struct FrameHeader *h = (struct FrameHeader *)(gCap.view + 64 + FRAME_HEADER * target);
     __atomic_fetch_add(&h->seq, 1, __ATOMIC_ACQ_REL);
-    fast_copy(gCap.view + h->data_offset, gCap.ring[slot].mapped, bytes);
+    u32 row = gCap.ring[slot].width * bpp, pitch = gCap.ring[slot].pitch;
+    if (!pitch || pitch == row)
+        fast_copy(gCap.view + h->data_offset, gCap.ring[slot].mapped, bytes);
+    else
+        for (u32 y = 0; y < gCap.ring[slot].height; y++)
+            fast_copy(gCap.view + h->data_offset + (u64)y * row, gCap.ring[slot].mapped + (u64)y * pitch, row);
     h->width = gCap.ring[slot].width;
     h->height = gCap.ring[slot].height;
     h->format = gCap.ring[slot].format;
@@ -897,13 +925,20 @@ static int swap_slot(uptr data, u64 size, uptr value, void *hook, void **origina
     return 1;
 }
 
+static void install_dx11(void);
+
 // Called from the worker once the renderer is loaded.
 static void install_capture(void) {
     HANDLE loader = GetModuleHandleW(L"vulkan-1.dll");
     uptr renderer = (uptr)GetModuleHandleW(L"rendersystemvulkan.dll"), data;
     u64 size;
+    // The Vulkan game has rendersystemdx11.dll loaded too; the D3D11 one has no Vulkan renderer.
+    if (!renderer && GetModuleHandleW(L"rendersystemdx11.dll")) {
+        install_dx11();
+        return;
+    }
     if (!loader || !renderer || !section_range(renderer, ".data", &data, &size)) {
-        cap_fail("not the Vulkan renderer");
+        cap_fail("no known renderer (rendersystemvulkan/dx11 not loaded)");
         return;
     }
     vk.get_device_proc = (VkGetDeviceProcAddr)GetProcAddress(loader, "vkGetDeviceProcAddr");
@@ -916,7 +951,7 @@ static void install_capture(void) {
     vk.submit = (VkQueueSubmit)submit;
     if (!vk.get_device_proc || !create || !present || !submit ||
         !swap_slot(data, size, create, (void *)create_swapchain_hook, (void **)&vk.create_swapchain)) {
-        cap_fail("renderer's swapchain slot not found");
+        cap_fail("Vulkan swapchain slot not found (on Windows start without -vulkan)");
         return;
     }
     uptr create_image = (uptr)GetProcAddress(loader, "vkCreateImage");
@@ -932,13 +967,19 @@ static void install_capture(void) {
         cap_fail("renderer's present slot not found");
         return;
     }
+    gCap.backend = 1;
     CloseHandle(CreateThread(0, 0, reader_thread, 0, 0, 0));
     cap_fail("waiting for a new swapchain (window resize)");
 }
 
+#include "capture_dx11.c"
+
 static void capture_status(void) {
     int known = gCap.swapchain != 0;
-    gCapStatus.state = !vk.present ? 3 : gCap.device_ready < 0 ? 3 : gCap.published ? 1 : known ? 1 : 2;
+    if (gCap.backend == 2)
+        gCapStatus.state = gCap.published ? 1 : gDx.failed ? 3 : 2;
+    else
+        gCapStatus.state = !vk.present ? 3 : gCap.device_ready < 0 ? 3 : gCap.published ? 1 : known ? 1 : 2;
     gCapStatus.width = gCap.width;
     gCapStatus.height = gCap.height;
     gCapStatus.format = gCap.format;

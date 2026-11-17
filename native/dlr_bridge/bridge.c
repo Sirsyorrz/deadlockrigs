@@ -49,6 +49,7 @@ IMPORT BOOL WINAPI ReadFile(HANDLE, void *, DWORD, DWORD *, void *);
 IMPORT BOOL WINAPI QueryPerformanceCounter(i64 *);
 IMPORT BOOL WINAPI QueryPerformanceFrequency(i64 *);
 IMPORT BOOL WINAPI ReadProcessMemory(HANDLE, const void *, void *, u64, u64 *);
+IMPORT int WINAPI MultiByteToWideChar(u32, DWORD, const char *, int, WCHAR *, int);
 
 typedef u64 SOCKET;
 struct sockaddr_in {
@@ -978,13 +979,14 @@ static DWORD WINAPI net_thread(void *arg) {
             continue;
         }
         if (n == 264 && bytes_equal(packet, (const u8 *)"DLRF", 4)) {
-            // want u32, shared file path (Windows path, ASCII)[256] -> capture status
+            // want u32, shared file path (Windows path, UTF-8)[256] -> capture status
             if (!gCap.path_set && packet[8]) {
-                u32 i = 0;
-                for (; i < 255 && packet[8 + i]; i++)
-                    gCap.path[i] = packet[8 + i];
-                gCap.path[i] = 0;
-                gCap.path_set = 1;
+                packet[263] = 0;
+                // CP_UTF8: a user folder in the temp path may be non-ASCII
+                if (MultiByteToWideChar(65001, 0, (const char *)packet + 8, -1, gCap.path, 290) > 0)
+                    gCap.path_set = 1;
+                else
+                    cap_fail("the shared frame file path is not valid UTF-8");
             }
             gCap.wanted = *(const u32 *)(packet + 4);
             capture_status();
@@ -998,6 +1000,8 @@ static DWORD WINAPI net_thread(void *arg) {
                 if (gDepth.state == 3)
                     gDepth.state = 0;
                 gDepth.request = request;
+                if (gCap.backend == 2)
+                    depth_fail("no game depth with the D3D11 renderer yet");
             }
             depth_status();
             sendto(s, (const char *)&gDepthStatus, sizeof(gDepthStatus), 0, &from, from_len);
