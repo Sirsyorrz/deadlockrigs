@@ -2115,6 +2115,20 @@ def connect(context, port=PORT, setup=(), launched=False):
     cam = _link.start_camera
     if cam and context.screen:
         jump_viewports(context, *cam)
+    show_game_in_viewports(context)
+
+
+def show_game_in_viewports(context):
+    """Rendered shading (the game frame) without the floor grid and axes, which would draw over it."""
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            space = area.spaces.active
+            space.shading.type = 'RENDERED'
+            overlay = space.overlay
+            overlay.show_floor = overlay.show_axis_x = overlay.show_axis_y = overlay.show_axis_z = False
+            area.tag_redraw()
 
 
 _session = None  # the gamelaunch.Session this Blender started
@@ -2265,20 +2279,6 @@ class DLR_OT_game_unpose_rig(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class DLR_OT_game_standard_view(bpy.types.Operator):
-    bl_idname = 'dlr.game_standard_view'
-    bl_label = 'Use Standard View Transform'
-    bl_description = ('Show renders as the game shows them: the game frame is already tonemapped, so any other '
-                      'view transform (AgX, Filmic) changes its look')
-
-    def execute(self, context):
-        context.scene.view_settings.view_transform = 'Standard'
-        context.scene.view_settings.look = 'None'
-        context.scene.view_settings.exposure = 0.0
-        context.scene.view_settings.gamma = 1.0
-        return {'FINISHED'}
-
-
 class DLR_PT_game_render(bpy.types.Panel):
     bl_label = 'Deadlock Game'
     bl_space_type = 'PROPERTIES'
@@ -2305,7 +2305,6 @@ class DLR_PT_game_render(bpy.types.Panel):
             if lk.outside:
                 col.label(text='View is outside the play area', icon='ERROR')
             col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
-            _draw_final(col.box(), context.scene)
             if lk.poses:
                 col.label(text='Visible Deadlock rigs are posed in the game (Rendered shading or F12)')
                 arm = puppet_armature(context.active_object)
@@ -2329,22 +2328,6 @@ class DLR_PT_game_render(bpy.types.Panel):
             col.label(text=_session.error, icon='ERROR')
         if lk and lk.error:
             col.label(text=lk.error, icon='ERROR')
-        vs = context.scene.view_settings
-        if vs.view_transform != 'Standard' or vs.look != 'None' or vs.exposure != 0 or vs.gamma != 1:
-            box = col.box()
-            box.label(text=f'F12 renders get the {vs.view_transform} look on top of the game\'s', icon='INFO')
-            box.operator(DLR_OT_game_standard_view.bl_idname)
-
-
-def _draw_final(box, scene):
-    box.label(text='Final Render (the game stays the preview)', icon='RENDER_STILL')
-    box.prop(scene, 'dlr_final_engine', text='Engine')
-    box.prop(scene, 'dlr_final_background', text='Background')
-    if scene.dlr_final_background == 'MAP':
-        box.label(text='Import a map in Deadlock Rigs > Maps (Crop it to the camera)', icon='INFO')
-    row = box.row()
-    row.operator(DLR_OT_game_final_render.bl_idname, text='Image', icon='RENDER_STILL').animation = False
-    row.operator(DLR_OT_game_final_render.bl_idname, text='Animation', icon='RENDER_ANIMATION').animation = True
 
 
 def _view_menu(self, context):
@@ -2356,7 +2339,7 @@ def _view_menu(self, context):
 
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
            DLR_OT_game_jump,
-           DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_OT_game_standard_view, DLR_PT_game_render,
+           DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_PT_game_render,
            DLR_OT_game_plate, DLR_OT_game_final_render)
 
 
