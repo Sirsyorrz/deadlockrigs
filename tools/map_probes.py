@@ -237,8 +237,67 @@ def tile_slices(grid):
     return out, cols
 
 
+def to_bytes(pixels):
+    """Blender's float to byte pixel conversion (unit_float_to_uchar_clamp)."""
+    out = np.empty(pixels.shape, np.uint8)
+    # in row blocks: float temporaries of the whole Midtown atlas would be ~0.8 GB each
+    for i in range(0, len(pixels), 256):
+        v = np.asarray(pixels[i:i + 256], np.float32)
+        rows = out[i:i + 256]
+        rows[...] = v * np.float32(255) + np.float32(0.5)
+        rows[v <= 0] = 0
+        rows[v > np.float32(1 - 0.5 / 255)] = 255
+    return out
+
+
+def write_image(pixels, path):
+    """save_image's file through OpenImageIO, which needs no bpy and can run on another thread; False without it.
+    Pixels come out as Blender's save wrote them."""
+    try:
+        import OpenImageIO as oiio
+    except ImportError:
+        return False
+    h, w, channels = pixels.shape
+    png = path.endswith('.png')
+    data = to_bytes(pixels[::-1]) if png else np.ascontiguousarray(pixels[::-1], np.float32)
+    spec = oiio.ImageSpec(w, h, channels, 'uint8' if png else 'float')
+    if png:
+        # straight alpha as given (OIIO would unpremultiply) and Blender's default compression (15% -> zlib 1)
+        spec.attribute('oiio:UnassociatedAlpha', 1)
+        spec.attribute('png:compressionLevel', 1)
+    else:
+        spec.attribute('compression', 'zip')
+    out = oiio.ImageOutput.create(path)
+    if out is None or not out.open(path, spec):
+        raise OSError(f'cannot write {path}: {oiio.geterror()}')
+    try:
+        if not out.write_image(data):
+            raise OSError(f'cannot write {path}: {out.geterror()}')
+    finally:
+        out.close()
+    return True
+
+
 def save_image(name, pixels, path):
-    """Rows of `pixels` go bottom up, as Blender's do. 8 bit PNG for .png paths, else 32 bit float EXR."""
+    """Rows of `pixels` (RGBA) go bottom up, as Blender's do. 8 bit PNG for .png paths, else 32 bit float EXR."""
+    if not write_image(pixels, path):
+        save_image_blender(name, pixels, path)
+    return load_image(name, path, pixels.shape)
+
+
+def load_image(name, path, shape):
+    img = bpy.data.images.load(path)
+    img.name = name
+    img.colorspace_settings.name = 'Non-Color'
+    # the alpha channel holds data; straight alpha would divide the colour by it
+    img.alpha_mode = 'CHANNEL_PACKED'
+    img.use_half_precision = False
+    # Texels needs the size: asking the image for it decodes the file
+    img['dlr_size'] = shape[1], shape[0]
+    return img
+
+
+def save_image_blender(name, pixels, path):
     h, w = pixels.shape[:2]
     exr = not path.endswith('.png')
     img = bpy.data.images.new(name, w, h, alpha=True, float_buffer=exr)
@@ -258,13 +317,6 @@ def save_image(name, pixels, path):
         img.file_format = 'PNG'
         img.save()
     bpy.data.images.remove(img)
-    img = bpy.data.images.load(path)
-    img.name = name
-    img.colorspace_settings.name = 'Non-Color'
-    # the alpha channel holds data; straight alpha would divide the colour by it
-    img.alpha_mode = 'CHANNEL_PACKED'
-    img.use_half_precision = False
-    return img
 
 
 class Texels:
@@ -272,7 +324,7 @@ class Texels:
 
     def __init__(self, g, img):
         self.g, self.img = g, img
-        self.w, self.h = img.size
+        self.w, self.h = img.get('dlr_size') or img.size
 
     def fetch(self, x, y):
         g = self.g
@@ -432,16 +484,24 @@ def add_probe_light(coll, title, atlas, volumes, light_dir):
         return None
     blocks, size = layout(volumes)
     os.makedirs(light_dir, exist_ok=True)
-    atlas_img = save_image('probe_atlas', encode(pack_atlas(atlas, volumes, blocks, size)),
-                           os.path.join(light_dir, 'probe_atlas.png'))
-    params_img = save_image('probe_volumes', volume_params(volumes, blocks),
-                            os.path.join(light_dir, 'probe_volumes.exr'))
-    grid, origin, cell = index_grid(volumes)
-    # 8 bit while the volume numbers fit
-    index_scale = 255 if len(volumes) <= 256 else 1
-    tiled, cols = tile_slices(grid.astype(np.float32) / index_scale)
-    index_img = save_image('probe_index', tiled, os.path.join(light_dir, 'probe_index' +
-                                                              ('.png' if index_scale != 1 else '.exr')))
+    packed = encode(pack_atlas(atlas, volumes, blocks, size))
+    atlas_path = os.path.join(light_dir, 'probe_atlas.png')
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(1) as pool:
+        # deflating Midtown's 52 Mpixel atlas takes ~2.7 s: write it while the index is worked out
+        atlas_written = pool.submit(write_image, packed, atlas_path)
+        params_img = save_image('probe_volumes', volume_params(volumes, blocks),
+                                os.path.join(light_dir, 'probe_volumes.exr'))
+        grid, origin, cell = index_grid(volumes)
+        # 8 bit while the volume numbers fit
+        index_scale = 255 if len(volumes) <= 256 else 1
+        tiled, cols = tile_slices(grid.astype(np.float32) / index_scale)
+        index_img = save_image('probe_index', tiled, os.path.join(light_dir, 'probe_index' +
+                                                                  ('.png' if index_scale != 1 else '.exr')))
+        if not atlas_written.result():
+            save_image_blender('probe_atlas', packed, atlas_path)
+    atlas_img = load_image('probe_atlas', atlas_path, packed.shape)
+    del packed
     anchor = bpy.data.objects.new(f'{title} origin', None)
     anchor.empty_display_type = 'PLAIN_AXES'
     coll.objects.link(anchor)

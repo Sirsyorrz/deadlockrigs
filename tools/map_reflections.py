@@ -13,6 +13,7 @@ Blender has no cube arrays or mips, so images stand in:
                             unused slots point at an empty row. Outside the grid the map-wide cubemaps apply
   brdf_lut.exr              the game's textures/dev/brdf_lut.vtex, GGX layer
 """
+import functools
 import glob
 import math
 import os
@@ -49,14 +50,17 @@ def load_pixels(paths):
     return [rgb[::-1] for rgb in read_rgb(paths)]
 
 
+@functools.lru_cache
 def equirect_directions(h, w):
     """Source2Viewer's equirect in the cubemap's (Source) axes, as the GPU addresses the cube: +X at the left edge,
-    turning toward -Y, rows bottom up as Blender reads them. Directions and texel solid angles."""
+    turning toward -Y, rows bottom up as Blender reads them. Directions and texel solid angles (shared, read-only)."""
     lat = ((np.arange(h) + 0.5) / h - 0.5) * math.pi
     lon = (np.arange(w) + 0.5) / w * 2 * math.pi
     lat, lon = np.meshgrid(lat, lon, indexing='ij')
     d = np.stack([np.cos(lat) * np.cos(lon), -np.cos(lat) * np.sin(lon), np.sin(lat)], -1)
-    return d, np.cos(lat) * (2 * math.pi / w) * (math.pi / h)
+    area = np.cos(lat) * (2 * math.pi / w) * (math.pi / h)
+    d.flags.writeable = area.flags.writeable = False
+    return d, area
 
 
 def luma_harmonic(rgb):
@@ -454,7 +458,9 @@ def add_reflections(coll, title, maps, cube_dir, lut_dir, light_dir):
     order = sorted({m['index'] for m in maps})
     tile_of = {s: k for k, s in enumerate(order)}
     slices = load_pixels([files[s] for s in order])
-    harmonics = [luma_harmonic(rgb) for rgb in slices]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(min(8, os.cpu_count() or 4)) as pool:
+        harmonics = list(pool.map(luma_harmonic, slices))
     widths = level_widths(len(slices))
     cols = max(1, math.ceil(math.sqrt(len(slices) / 2)))
     vtex = glob.glob(os.path.join(cube_dir, '**', '*.vtex_c'), recursive=True)
