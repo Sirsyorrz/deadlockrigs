@@ -11,6 +11,7 @@ Once (an effect placed to play from a frame): every step from the effect's start
 Both take ``moving``: control points that move while the effect plays (a rig's bones), a function of the seconds
 since the start giving {number: (position, rotation or None[, model])}, set before each step.
 """
+import copy
 from contextlib import contextmanager
 
 import numpy as np
@@ -68,6 +69,16 @@ def _new(definition, control_points, seed, unset_value, ground):
     return simulation
 
 
+def _fork(simulation):
+    """A copy of a running simulation that plays on the same, sharing the definitions (read only)."""
+    library = simulation.definition.library
+    memo = {id(library): library}
+    for definition in library._definitions.values():
+        if definition is not None:
+            memo[id(definition)] = definition
+    return copy.deepcopy(simulation, memo)
+
+
 def _step(simulation, step, moving):
     if moving is not None:
         for index, (position, rotation, *model) in moving(simulation.age).items():
@@ -95,28 +106,22 @@ def loop(definition, control_points, seed, start, length=None, rate=30.0, ambien
     step = 1.0 / rate
     warm = int(round(start * rate))
 
-    # The particles born before the stretch still alive at its end, found on a run of its own (the same seed plays
-    # the same).
-    probe = _new(definition, control_points, seed, unset_value, ground)
-    for _ in range(warm):
-        _step(probe, step, moving)
-    if length is None:
-        length = loop_length(probe)
-    steps = max(1, int(round(length * rate)))
-    begun = {i: s.age for i, s in enumerate(probe.walk())}
-    early = {}
-    for i, s in enumerate(probe.walk()):
-        early[i] = set(_ids(s)[s.particles.array("creation_time") < begun[i]].tolist())
-    for _ in range(steps):
-        _step(probe, step, moving)
-    lasting = {i: early[i] & set(_ids(s).tolist()) for i, s in enumerate(probe.walk())}
-
     simulation = _new(definition, control_points, seed, unset_value, ground)
     for _ in range(warm):
         _step(simulation, step, moving)
+    if length is None:
+        length = loop_length(simulation)
+    steps = max(1, int(round(length * rate)))
     systems = list(simulation.walk())
     window = {id(s): (s.age, s.age + steps * step) for s in systems}
-    persistent = {id(s): lasting[i] for i, s in enumerate(systems)}
+
+    # The particles born before the stretch still alive at its end, found by playing a copy on through it.
+    early = [set(_ids(s)[s.particles.array("creation_time") < s.age].tolist()) for s in systems]
+    probe = _fork(simulation)
+    for _ in range(steps):
+        _step(probe, step, moving)
+    persistent = {id(s): early[i] & set(_ids(p).tolist()) for i, (s, p) in enumerate(zip(systems, probe.walk()))}
+    del probe
 
     frames = [[] for _ in range(steps)]
     k = 0
