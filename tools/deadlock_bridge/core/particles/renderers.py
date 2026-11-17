@@ -732,20 +732,21 @@ class Models:
         self.alpha = np.ones(n)
 
 
-def _normal_basis(normal, orient_z: bool) -> np.ndarray:
-    """The frame a normal turns a model into (columns: the model's x, y, z): the normal becomes its forward axis, or
-    its up axis when oriented on Z (ValveResourceFormat's RenderModels)."""
-    length = np.linalg.norm(normal)
-    if length == 0 or not np.isfinite(length):
-        return np.eye(3)
-    d = normal / length
-    perpendicular = np.array([(1.0 - d[2]) * d[1] * d[1] + d[2], 0.0, -d[0]])
-    perpendicular /= max(np.linalg.norm(perpendicular), 1e-12)
-    perpendicular -= d * (perpendicular @ d)
-    perpendicular /= max(np.linalg.norm(perpendicular), 1e-12)
+def _normal_bases(normals, orient_z: bool) -> np.ndarray:
+    """Per normal (n, 3) the frame it turns a model into (n, 3, 3; columns: the model's x, y, z): the normal becomes
+    its forward axis, or its up axis when oriented on Z (ValveResourceFormat's RenderModels). Zero or non-finite
+    normals leave the model as it is."""
+    normals = np.asarray(normals, np.float64).reshape(-1, 3)
+    length = np.linalg.norm(normals, axis=1)
+    usable = (length != 0) & np.isfinite(length)
+    d = np.where(usable[:, None], normals / np.where(usable, length, 1.0)[:, None], (0.0, 0.0, 1.0))
+    perpendicular = np.stack([(1.0 - d[:, 2]) * d[:, 1] * d[:, 1] + d[:, 2], np.zeros(len(d)), -d[:, 0]], 1)
+    perpendicular /= np.maximum(np.linalg.norm(perpendicular, axis=1), 1e-12)[:, None]
+    perpendicular -= d * np.einsum("ij,ij->i", perpendicular, d)[:, None]
+    perpendicular /= np.maximum(np.linalg.norm(perpendicular, axis=1), 1e-12)[:, None]
     third = np.cross(d, perpendicular)
     x, y, z = (third, -perpendicular, d) if orient_z else (d, perpendicular, third)
-    return np.stack([x, y, z], 1)
+    return np.where(usable[:, None, None], np.stack([x, y, z], 2), np.eye(3))
 
 
 def _angle_matrices(pitch, yaw, roll) -> np.ndarray:
@@ -827,12 +828,11 @@ class RenderModels(Renderer):
         normals = v.field(F.NORMAL)
         offset = _rows3(self.local_offset(sim, v), n)
         position = v.get("position")
-        for i in range(n):
-            basis = np.eye(3) if self.ignore_normal else _normal_basis(normals[i], self.orient_z)
-            s = np.diag(np.maximum(scale[i], 1e-6))
-            linear = basis @ (turn[i] @ s if self.local_scale else s @ turn[i])
-            out.matrix[i, :3, :3] = linear
-            out.matrix[i, :3, 3] = position[i] + linear @ offset[i]
+        size = np.maximum(scale, 1e-6)
+        scaled = turn * size[:, None, :] if self.local_scale else size[:, :, None] * turn
+        linear = scaled if self.ignore_normal else _normal_bases(normals, self.orient_z) @ scaled
+        out.matrix[:, :3, :3] = linear
+        out.matrix[:, :3, 3] = position + (linear @ offset[:, :, None])[:, :, 0]
         color = v.get("color") * _rows3(self.color_scale(sim, v), n)
         out.tint = np.ones((n, 3)) if self.suppress_tint else color
         alpha2 = v.field(self.alpha2_field) if F.name(self.alpha2_field) and not F.is_vector(self.alpha2_field) else 1.0
