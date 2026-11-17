@@ -137,6 +137,7 @@ layer_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.g
 print(f'parallax windows: UV maps on {map_parallax.add_uv_maps(meshes)} meshes')
 mats = list(mats)
 map_lighting.detach_outputs(mats)
+map_lighting.prefetch_average_colors(map_lighting.colour_texture_files(mats, layer_textures))
 kinds = [map_lighting.apply_vmat(m, glass_masks, layer_textures) for m in tracked(mats, 'props', 'materials')]
 print(f'unlit meshes without shadows: {map_lighting.unlit_cast_no_shadows(meshes, dict(zip(mats, kinds)))}')
 print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '

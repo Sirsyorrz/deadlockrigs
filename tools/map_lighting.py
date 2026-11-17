@@ -534,6 +534,86 @@ def color_tint_matrix(rgb, mode):
 
 
 _average_colors = {}
+_file_means = {}
+
+
+def _file_key(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return os.path.abspath(path), st.st_mtime_ns, st.st_size
+
+
+def _file_mean(path):
+    """Per-channel mean (RGB, 0-1, as stored) of an 8-bit image file, or None for anything else. Exact integer sums,
+    and OpenImageIO releases the GIL while it decodes, so a thread pool reads them side by side."""
+    try:
+        import OpenImageIO as oiio
+        config = oiio.ImageSpec()
+        # Blender's byte pixels are straight alpha: without this OIIO premultiplies PNGs
+        config.attribute('oiio:UnassociatedAlpha', 1)
+        inp = oiio.ImageInput.open(path, config)
+        if inp is None:
+            return None
+        try:
+            spec = inp.spec()
+            if spec.format != oiio.UINT8 or spec.depth > 1 or not spec.width * spec.height:
+                return None
+            channels = min(spec.nchannels, 3)
+            px = inp.read_image(0, 0, 0, channels, 'uint8')
+        finally:
+            inp.close()
+    except Exception:
+        return None
+    if px is None:
+        return None
+    texels = px.reshape(-1, channels)
+    sums = texels.sum(0, dtype=np.uint64) / (255.0 * len(texels))
+    return sums[:3] if len(sums) >= 3 else np.repeat(sums[:1], 3)
+
+
+def prefetch_average_colors(paths):
+    """Starts reading the means of the image files average_color will ask for: decoding them one by one in Blender
+    was over a third of Midtown's material stage."""
+    from concurrent.futures import ThreadPoolExecutor
+    pool = ThreadPoolExecutor(min(8, os.cpu_count() or 1))
+    for path in paths:
+        key = _file_key(path)
+        if key and key not in _file_means:
+            _file_means[key] = pool.submit(_file_mean, key[0])
+    pool.shutdown(wait=False)
+
+
+def colour_texture_files(mats, layer_textures):
+    """The files average_color may read for these materials: their sRGB images and the g_tColor* layer textures."""
+    files = set()
+    for mat in mats:
+        if mat.node_tree:
+            files.update(_image_file(n.image) for n in mat.node_tree.nodes if n.type == 'TEX_IMAGE' and n.image
+                         and n.image.colorspace_settings.name == 'sRGB')
+        textures = vmat_dict(mat).get('TextureParams') or {}
+        files.update(layer_textures.get(path) for key, path in dict(textures).items() if key.startswith('g_tColor'))
+    files.discard(None)
+    return sorted(files)
+
+
+def _image_file(img):
+    if img.source != 'FILE' or img.packed_file or img.library:
+        return None
+    return bpy.path.abspath(img.filepath)
+
+
+def _blender_mean(img):
+    px = np.empty(img.size[0] * img.size[1] * img.channels, np.float32)
+    img.pixels.foreach_get(px)
+    # the decoded pixels would otherwise stay in memory for the rest of the import
+    img.buffers_free()
+    texels = px.reshape(-1, img.channels)
+    # einsum sums the columns several times faster than mean(0); a float32 running sum stalls on big textures
+    # (a 2048x2048 one came out 0.82 for a 0.87 mean)
+    sums = np.einsum('ij->j', texels, dtype=np.float64) / len(texels) if len(texels) else np.ones(img.channels)
+    return sums[:3] if img.channels >= 3 else np.repeat(sums[:1], 3)
 
 
 def average_color(img):
@@ -541,16 +621,17 @@ def average_color(img):
     if img is None:
         return np.ones(3)
     if img.name not in _average_colors:
-        px = np.empty(img.size[0] * img.size[1] * img.channels, np.float32)
-        img.pixels.foreach_get(px)
-        # the decoded pixels would otherwise stay in memory for the rest of the import
-        img.buffers_free()
-        texels = px.reshape(-1, img.channels)
-        # einsum sums the columns several times faster than mean(0); a float32 running sum stalls on big textures
-        # (a 2048x2048 one came out 0.82 for a 0.87 mean)
-        sums = np.einsum('ij->j', texels, dtype=np.float64) / len(texels) if len(texels) else np.ones(img.channels)
-        mean = sums[:3] if img.channels >= 3 else np.repeat(sums[:1], 3)
-        if img.colorspace_settings.name == 'sRGB' and not img.is_float:
+        path = _image_file(img)
+        key = _file_key(path) if path else None
+        found = _file_means.get(key) if key else None
+        mean = found.result() if found is not None else _file_mean(path) if key else None
+        if mean is None:
+            mean = _blender_mean(img)
+            float_pixels = img.is_float
+        else:
+            # only 8-bit files get here, which Blender loads as byte images
+            float_pixels = False
+        if img.colorspace_settings.name == 'sRGB' and not float_pixels:
             mean = srgb_to_linear(mean)
         _average_colors[img.name] = mean
     return _average_colors[img.name]
