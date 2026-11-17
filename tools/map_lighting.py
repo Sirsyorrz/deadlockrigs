@@ -1298,19 +1298,18 @@ def faces_only(mesh, keep):
 
 def split_object(ob, move):
     """Moves the faces flagged in `move` to a copy of the object in the same collections, with the same light
-    linking states. Returns the copy."""
+    linking states. Returns the copy. The object's old mesh is left for the caller to remove when unused
+    (meshes.remove scans the whole file, batch_remove once)."""
     whole = ob.data
     piece = ob.copy()
     piece.data = faces_only(whole, move)
     ob.data = faces_only(whole, ~move)
     for c in ob.users_collection:
         c.objects.link(piece)
-        states = {o: item.light_linking.link_state for o, item in zip(c.objects, c.collection_objects)}
-        if states.get(ob, 'INCLUDE') != 'INCLUDE':
-            item = next(i for o, i in zip(c.objects, c.collection_objects) if o == piece)
-            item.light_linking.link_state = states[ob]
-    if whole.users == 0:
-        bpy.data.meshes.remove(whole)
+        # collection_objects has no name lookup; it is in c.objects' order
+        state = c.collection_objects[c.objects.find(ob.name)].light_linking.link_state
+        if state != 'INCLUDE':
+            c.collection_objects[c.objects.find(piece.name)].light_linking.link_state = state
     return piece
 
 
@@ -1321,6 +1320,35 @@ def unlight_before_barns(lights, objects):
     plane are split there by face. Returns the objects, with the pieces split off."""
     objects = list(objects)
     split = 0
+    lo_all, hi_all = [], []
+
+    def bounds(ob):
+        box = np.array([ob.matrix_world @ Vector(c) for c in ob.bound_box])
+        return box.min(0), box.max(0)
+
+    for ob in objects:
+        lo, hi = bounds(ob)
+        lo_all.append(lo)
+        hi_all.append(hi)
+    lo_all, hi_all = np.array(lo_all).reshape(-1, 3), np.array(hi_all).reshape(-1, 3)
+    # mesh arrays read once per object, not once per barn whose box it touches
+    geometry = {}
+    old_meshes = set()
+
+    def mesh_arrays(ob):
+        if ob not in geometry:
+            mesh = ob.data
+            co = np.empty(len(mesh.vertices) * 3, np.float32)
+            mesh.vertices.foreach_get('co', co)
+            starts = np.empty(len(mesh.polygons), np.int32)
+            mesh.polygons.foreach_get('loop_start', starts)
+            loops = np.empty(len(mesh.loops), np.int32)
+            mesh.loops.foreach_get('vertex_index', loops)
+            totals = np.empty(len(mesh.polygons), np.int32)
+            mesh.polygons.foreach_get('loop_total', totals)
+            geometry[ob] = co.reshape(-1, 3), starts, loops, totals, np.array(ob.matrix_world, np.float64)
+        return geometry[ob]
+
     for light in lights:
         near = float(light.get('dlr_near', 0.0))
         if near <= 0 or light.data.type != 'SPOT':
@@ -1333,38 +1361,43 @@ def unlight_before_barns(lights, objects):
         tx, ty = t * scale.x / max(scale.x, scale.y), t * scale.y / max(scale.x, scale.y)
         corners = eye + np.array([[sx * tx * near, sy * ty * near, -near] for sx in (-1, 1) for sy in (-1, 1)]) @ rot.T
         lo, hi = np.minimum(corners.min(0), eye), np.maximum(corners.max(0), eye)
+
+        def outcodes(world, slack=0.0):
+            """Bits for the sides of the frustum (eye to near plane) each point is outside of."""
+            local = (world - eye) @ rot
+            depth = -local[..., 2]
+            code = ((depth > near + slack).astype(np.uint8) | (depth < -slack).astype(np.uint8) << 1
+                    | (local[..., 0] > tx * depth + slack).astype(np.uint8) << 2
+                    | (local[..., 0] < -tx * depth - slack).astype(np.uint8) << 3
+                    | (local[..., 1] > ty * depth + slack).astype(np.uint8) << 4
+                    | (local[..., 1] < -ty * depth - slack).astype(np.uint8) << 5)
+            return code, depth
+
         dark = []
-        for ob in list(objects):
-            box = np.array([ob.matrix_world @ Vector(c) for c in ob.bound_box])
-            if (box.min(0) > hi).any() or (box.max(0) < lo).any():
-                continue
-            mesh = ob.data
-            co = np.empty(len(mesh.vertices) * 3, np.float64)
-            mesh.vertices.foreach_get('co', co)
-            m = np.array(ob.matrix_world, np.float64)
-            local = (co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3] - eye) @ rot
-            depth = -local[:, 2]
-            code = ((depth > near).astype(np.uint8) | (depth < 0).astype(np.uint8) << 1
-                    | (local[:, 0] > tx * depth).astype(np.uint8) << 2
-                    | (local[:, 0] < -tx * depth).astype(np.uint8) << 3
-                    | (local[:, 1] > ty * depth).astype(np.uint8) << 4
-                    | (local[:, 1] < -ty * depth).astype(np.uint8) << 5)
-            starts = np.empty(len(mesh.polygons), np.int32)
-            mesh.polygons.foreach_get('loop_start', starts)
-            loops = np.empty(len(mesh.loops), np.int32)
-            mesh.loops.foreach_get('vertex_index', loops)
+        candidates = np.flatnonzero(~((lo_all > hi).any(1) | (hi_all < lo).any(1)))
+        # a box wholly outside one side of the frustum has every face outside it: skip without reading the mesh
+        box = np.where(np.array([[(k >> a) & 1 for a in range(3)] for k in range(8)], bool)[None],
+                       hi_all[candidates, None], lo_all[candidates, None])
+        candidates = candidates[np.bitwise_and.reduce(outcodes(box, 1e-3)[0], axis=1) == 0]
+        for i in candidates:
+            ob = objects[i]
+            co, starts, loops, totals, m = mesh_arrays(ob)
+            code, depth = outcodes(co.astype(np.float64) @ m[:3, :3].T + m[:3, 3])
             if not len(starts) or not (np.bitwise_and.reduceat(code[loops], starts) == 0).any():
                 continue
-            totals = np.empty(len(mesh.polygons), np.int32)
-            mesh.polygons.foreach_get('loop_total', totals)
             before = np.add.reduceat(depth[loops], starts) / totals < near
             if before.all():
                 dark.append(ob)
             elif before.any():
+                old_meshes.add(ob.data)
                 piece = split_object(ob, before)
+                del geometry[ob]
                 objects.append(piece)
                 dark.append(piece)
                 split += 1
+                lo_all[i], hi_all[i] = bounds(ob)
+                piece_lo, piece_hi = bounds(piece)
+                lo_all, hi_all = np.vstack([lo_all, piece_lo]), np.vstack([hi_all, piece_hi])
         if dark:
             receivers = light.light_linking.receiver_collection
             if receivers is None:
@@ -1375,6 +1408,7 @@ def unlight_before_barns(lights, objects):
                 for ob, item in zip(receivers.objects, receivers.collection_objects):
                     if ob in dark:
                         item.light_linking.link_state = 'EXCLUDE'
+    bpy.data.batch_remove([m for m in old_meshes if m.users == 0])
     return objects, split
 
 
