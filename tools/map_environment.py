@@ -96,6 +96,9 @@ REFERENCE = 100.0
 # Blender watts for a point light as bright as a light2 of linear brightness 1: the game's diffuse is
 # albedo * N.L * colour * brightness * (REFERENCE / d)^2 with d in inches, Blender's albedo / pi * N.L * W / (4 pi d^2)
 WATTS = 4 * math.pi ** 2 * (UNIT * REFERENCE) ** 2
+# an orthographic barn becomes a perspective one with its eye this many ranges back: 1 / d^2 then varies by
+# (30 / 31)^2 = 0.94 over the range, and the shear's eye offset (shear / range * near) keeps the beam's slant
+ORTHO_BACK = 30.0
 
 
 def to_blender(v, scale=UNIT):
@@ -252,9 +255,9 @@ def lights(ents):
         else:
             light['color'] = color(e, 'color')
         if kind == 'light_barn':
-            if size[2] <= 0:
-                continue
-            near = 1 / size[2]
+            # size[2] is 1 / the eye's distance behind the opening, 0 for an orthographic barn (Midtown's 7
+            # stationary moonlight boxes pitched 67 degrees down light the outer streets' floors)
+            near = 1 / size[2] if size[2] > 0 else ORTHO_BACK * max(rng, size[0], size[1])
             shear = [float(v) for v in (e.get('shear') or (0, 0))]
             cx, cy = shear[0] / rng * near, shear[1] / rng * near
             eye = [o - near * f - cx * s - cy * u for o, f, s, u in zip(origin, forward, side, up)]
