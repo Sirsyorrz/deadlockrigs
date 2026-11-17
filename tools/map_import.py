@@ -43,7 +43,8 @@ RIG_SUN_STRENGTH = 3.0
 # meshes up to GLTF_END
 GLTF_END = 0.26
 PROGRESS = {'props': 0.35, 'materials': 0.53, 'paint': 0.55, 'lights': 0.6, 'bake': 0.65, 'probes': 0.73,
-            'baked': 0.74, 'fog': 0.745, 'motion': 0.76, 'volumes': 0.79, 'particles': 0.95, 'textures': 0.99}
+            'baked': 0.74, 'fog': 0.745, 'motion': 0.76, 'volumes': 0.79, 'copies': 0.8, 'particles': 0.95,
+            'textures': 0.99}
 
 
 def progress(frac):
@@ -79,6 +80,25 @@ def load_settings():
         return json.load(open(os.path.join(lighting_dir, 'settings.json'), encoding='utf-8'))
     except (OSError, ValueError):
         return {}
+
+
+def copy_textures(written):
+    """Copies the images' files into tex_dir (`written` holds what's there already) and points the images at them."""
+    for img in bpy.data.images:
+        src = bpy.path.abspath(img.filepath) if img.filepath else ''
+        # the lighting files are already next to the map
+        if img.packed_file or not os.path.isfile(src):
+            continue
+        if os.path.abspath(src).startswith(out_dir + os.sep):
+            written.add(os.path.abspath(src))
+            continue
+        dest = os.path.join(tex_dir, os.path.basename(src))
+        # always overwritten: a texture left by an earlier build can be a mod's (Include Mods) or an older game's
+        if dest not in written:
+            shutil.copyfile(src, dest)
+            written.add(dest)
+        # the filepath setter reloads the image and tags the depsgraph: ~5 ms each in a finished Midtown
+        img.filepath_raw = dest
 
 
 def find(pattern):
@@ -243,6 +263,18 @@ if fog_volume:
         print('volumetric fog: none')
 
 reached('volumes')
+# the copies are shrunk while the particles build (mostly one Python thread); the particles' own textures after
+os.makedirs(tex_dir, exist_ok=True)
+written = set()
+copy_textures(written)
+for name in os.listdir(tex_dir):
+    path = os.path.join(tex_dir, name)
+    if path not in written and os.path.isfile(path):
+        os.remove(path)
+for size in map_textures.SIZES:
+    shutil.rmtree(map_textures.tier_dir(out_dir, size), ignore_errors=True)
+shrinking = map_textures.start_tiers(out_dir, jobs=max(2, (os.cpu_count() or 8) // 4))
+reached('copies')
 if install:
     import map_particles
     try:
@@ -256,29 +288,8 @@ if install:
         traceback.print_exc()
         print(f'WARNING: particle effects failed: {e}')
 reached('particles')
-os.makedirs(tex_dir, exist_ok=True)
-written = set()
-for img in tracked(bpy.data.images, 'volumes', 'textures'):
-    src = bpy.path.abspath(img.filepath) if img.filepath else ''
-    # the lighting files are already next to the map
-    if img.packed_file or not os.path.isfile(src):
-        continue
-    if os.path.abspath(src).startswith(out_dir + os.sep):
-        written.add(os.path.abspath(src))
-        continue
-    dest = os.path.join(tex_dir, os.path.basename(src))
-    # always overwritten: a texture left by an earlier build can be a mod's (Include Mods) or an older game's
-    if dest not in written:
-        shutil.copyfile(src, dest)
-        written.add(dest)
-    img.filepath = dest
-for name in os.listdir(tex_dir):
-    path = os.path.join(tex_dir, name)
-    if path not in written and os.path.isfile(path):
-        os.remove(path)
-for size in map_textures.SIZES:
-    shutil.rmtree(map_textures.tier_dir(out_dir, size), ignore_errors=True)
-print(f'smaller textures: {map_textures.make_tiers(out_dir)}')
+copy_textures(written)
+print(f'smaller textures: {map_textures.finish_tiers(shrinking) + map_textures.make_tiers(out_dir)}')
 
 reached('textures')
 # the glTF importer leaves everything selected: selection outlines over thousands of objects slow every redraw

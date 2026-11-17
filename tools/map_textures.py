@@ -58,11 +58,11 @@ def shrink(map_dir, names):
         bpy.data.images.remove(img)
 
 
-def make_tiers(map_dir, jobs=None, blender=None):
-    """Runs shrink over `jobs` Blender processes. Returns how many textures it shrank."""
+def start_tiers(map_dir, jobs=None, blender=None):
+    """Starts shrink over `jobs` Blender processes without waiting: pass the result to finish_tiers."""
     names = wanted(map_dir)
     if not names:
-        return 0
+        return None
     jobs = max(1, min(jobs or os.cpu_count() or 4, len(names), 16))
     blender = blender or __import__('bpy').app.binary_path
     lists, procs = [], []
@@ -75,12 +75,25 @@ def make_tiers(map_dir, jobs=None, blender=None):
         procs.append(subprocess.Popen([blender, '-b', '--factory-startup', '--python-exit-code', '1', '-P',
                                        os.path.abspath(__file__), '--', map_dir, '--list', lst],
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    return names, lists, procs
+
+
+def finish_tiers(started):
+    """Waits for start_tiers' processes. Returns how many textures they shrank."""
+    if started is None:
+        return 0
+    names, lists, procs = started
     failed = [p.wait() for p in procs]
     for lst in lists:
         os.remove(lst)
     if any(failed):
         raise RuntimeError('shrinking the map textures failed')
     return len(names)
+
+
+def make_tiers(map_dir, jobs=None, blender=None):
+    """Runs shrink over `jobs` Blender processes. Returns how many textures it shrank."""
+    return finish_tiers(start_tiers(map_dir, jobs, blender))
 
 
 def main():
