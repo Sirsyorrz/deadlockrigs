@@ -546,8 +546,9 @@ def average_color(img):
         # the decoded pixels would otherwise stay in memory for the rest of the import
         img.buffers_free()
         texels = px.reshape(-1, img.channels)
-        # einsum sums the columns several times faster than mean(0)
-        sums = np.einsum('ij->j', texels) / len(texels) if len(texels) else np.ones(img.channels)
+        # einsum sums the columns several times faster than mean(0); a float32 running sum stalls on big textures
+        # (a 2048x2048 one came out 0.82 for a 0.87 mean)
+        sums = np.einsum('ij->j', texels, dtype=np.float64) / len(texels) if len(texels) else np.ones(img.channels)
         mean = sums[:3] if img.channels >= 3 else np.repeat(sums[:1], 3)
         if img.colorspace_settings.name == 'sRGB' and not img.is_float:
             mean = srgb_to_linear(mean)
