@@ -41,9 +41,9 @@ light_dir = os.path.join(out_dir, 'lightmaps')
 RIG_SUN_STRENGTH = 3.0
 # where each part of the import ends, as a share of a Midtown import's time; mapbuild.py counts the glTF import's
 # meshes up to GLTF_END
-GLTF_END = 0.22
-PROGRESS = {'props': 0.23, 'materials': 0.47, 'paint': 0.48, 'lights': 0.485, 'bake': 0.69, 'probes': 0.905,
-            'baked': 0.96, 'fog': 0.97, 'motion': 0.97, 'volumes': 0.98, 'particles': 0.985, 'textures': 0.99}
+GLTF_END = 0.26
+PROGRESS = {'props': 0.35, 'materials': 0.53, 'paint': 0.55, 'lights': 0.6, 'bake': 0.65, 'probes': 0.73,
+            'baked': 0.74, 'fog': 0.745, 'motion': 0.76, 'volumes': 0.79, 'particles': 0.95, 'textures': 0.99}
 
 
 def progress(frac):
@@ -136,6 +136,7 @@ glass_masks = {path: found[0] for path, name in (settings.get('glass_masks') or 
 layer_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.get('layer_textures') or {}).items()}
 print(f'parallax windows: UV maps on {map_parallax.add_uv_maps(meshes)} meshes')
 mats = list(mats)
+map_lighting.detach_outputs(mats)
 kinds = [map_lighting.apply_vmat(m, glass_masks, layer_textures) for m in tracked(mats, 'props', 'materials')]
 print(f'unlit meshes without shadows: {map_lighting.unlit_cast_no_shadows(meshes, dict(zip(mats, kinds)))}')
 print(f'materials: {kinds.count("unlit")} unlit, {kinds.count("glass")} glass, '
@@ -225,6 +226,7 @@ print(f'additive: {sum(map_lighting.make_additive(m) for m in mats)} lit materia
 anim_textures = {path: os.path.join(lighting_dir, f) for path, f in (settings.get('anim_textures') or {}).items()}
 moving, moved = map_anim.animate(meshes, anim_textures)
 print(f'motion: {moving} scrolling or jittering materials, {moved} jittering meshes')
+map_lighting.attach_outputs(mats)
 reached('motion')
 
 fog_volume = settings.get('volumetric_fog')

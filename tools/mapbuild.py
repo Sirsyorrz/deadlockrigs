@@ -38,7 +38,7 @@ NEEDED_GB = 12
 EXPORT_MESHES = {'dl_midtown': 32000, 'dl_hideout': 1060}
 # each step's share of a Midtown build's time, for the progress bar
 # map_import.py's GLTF_END; it can't report progress during Blender's glTF import, so its log lines are counted
-GLTF_IMPORT_END = 0.22
+GLTF_IMPORT_END = 0.26
 STEP_WEIGHTS = {'export': 0.25, 'props': 0.005, 'rebatch': 0.015, 'lighting': 0.08, 'import': 0.65}
 
 

@@ -284,10 +284,57 @@ def source_of(socket):
     return socket.links[0].from_socket if socket.is_linked else None
 
 
+OUTPUT_STAND_IN = 'Deadlock output stand-in'
+
+
 def material_output(mat):
+    """The active Material Output, or its stand-in while detach_outputs has it."""
     if not mat or not mat.use_nodes:
         return None
-    return next((n for n in mat.node_tree.nodes if n.type == 'OUTPUT_MATERIAL' and n.is_active_output), None)
+    nodes = mat.node_tree.nodes
+    return nodes.get(OUTPUT_STAND_IN) or next((n for n in nodes if n.type == 'OUTPUT_MATERIAL' and n.is_active_output),
+                                              None)
+
+
+# Any edit to a material whose Material Output has something linked into it makes Blender rescan every node of every
+# node tree in the file (its group users lookup), ~1 ms per edit on Midtown; a group node in its place is no output, so
+# edits upstream of it don't. Measured in Blender 5.3: link 420 us -> 14 us with 2000 materials of 60 nodes.
+def detach_outputs(mats):
+    """Moves the links into each material's output onto a stand-in group node with the same inputs, which
+    material_output returns until attach_outputs puts them back."""
+    def build(g, *inputs):
+        return []
+    group = node_group(OUTPUT_STAND_IN, [('Surface', 'Shader'), ('Volume', 'Shader'), ('Displacement', 'Vector'),
+                                         ('Thickness', 'Float')], [], build)
+    for mat in mats:
+        output = material_output(mat)
+        if output is None or output.name == OUTPUT_STAND_IN:
+            continue
+        links = mat.node_tree.links
+        stand_in = mat.node_tree.nodes.new('ShaderNodeGroup')
+        stand_in.node_tree = group
+        stand_in.name = OUTPUT_STAND_IN
+        stand_in['dlr_output'] = output.name
+        stand_in.location = output.location
+        sources = [(socket.name, source_of(socket)) for socket in output.inputs if socket.is_linked]
+        for socket in output.inputs:
+            for link in list(socket.links):
+                links.remove(link)
+        for name, source in sources:
+            links.new(source, stand_in.inputs[name])
+
+
+def attach_outputs(mats):
+    for mat in mats:
+        nodes = mat.node_tree.nodes if mat and mat.use_nodes else {}
+        stand_in = nodes.get(OUTPUT_STAND_IN)
+        if stand_in is None:
+            continue
+        output = nodes[stand_in['dlr_output']]
+        for socket in stand_in.inputs:
+            if socket.is_linked:
+                mat.node_tree.links.new(source_of(socket), output.inputs[socket.name])
+        nodes.remove(stand_in)
 
 
 def surface_bsdf(mat):
@@ -820,7 +867,8 @@ def apply_veil(mat, output, vectors, textures):
     paths = dict((vmat_dict(mat).get('TextureParams') or {}))
     lo, hi = (list(vectors.get('g_vRefractBrightnessAmountsVeiled') or ()) + [1.0, 0.2])[:2]
     g = Graph(mat.node_tree)
-    for n in [n for n in g.nodes if n != output]:
+    # detach_outputs' output stays too
+    for n in [n for n in g.nodes if n != output and n.type != 'OUTPUT_MATERIAL']:
         g.nodes.remove(n)
     smoke_path = textures.get(paths.get('g_tMasks'))
     if smoke_path:
