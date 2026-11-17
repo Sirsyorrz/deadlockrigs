@@ -37,16 +37,40 @@ SCROLLED = (('g_vAlbedoScrollSpeed1', 'g_flAlbedoScrollQuantize1', ('BASE COLOR'
             ('g_vSelfIllumScrollSpeed1', 'g_flSelfIllumScrollQuantize1', ('EMISSIVE',),
              'g_bUseSecondaryUvForSelfIllum1'))
 @contextlib.contextmanager
-def batched_gltf_cleanup():
-    """The glTF importer makes and removes a temporary object per mesh, and each removal scans the whole file
-    (~10 ms per mesh at Midtown's size, ~60 s in all). Hold them and remove them in one batch_remove at the end."""
+def quick_gltf_import():
+    """Two glTF importer costs that grow with the file, ~10 ms per mesh and ~4 ms per data texture at Midtown's
+    size. It makes and removes a temporary object per mesh, and each removal scans the whole file: hold them and
+    remove them in one batch_remove at the end. It sets is_data on an image for every texture node that uses it,
+    and the setter rescans even when the value doesn't change: set it once per image."""
     try:
         gltf_mesh = importlib.import_module('io_scene_gltf2.blender.imp.mesh')
+        gltf_texture = importlib.import_module('io_scene_gltf2.blender.imp.texture')
     except ImportError:
-        gltf_mesh = None
-    if getattr(gltf_mesh, 'bpy', None) is not bpy:
+        gltf_mesh = gltf_texture = None
+    if getattr(gltf_mesh, 'bpy', None) is not bpy or not hasattr(gltf_texture, 'get_source'):
         yield
         return
+    texture = gltf_texture.texture
+
+    def data_once(mh, tex_info, *args, **kwargs):
+        if kwargs.get('is_data') and kwargs.get('forced_image') is None:
+            source, _ = gltf_texture.get_source(mh, mh.gltf.data.textures[tex_info.index])
+            name = source is not None and mh.gltf.data.images[source].blender_image_name
+            image = bpy.data.images.get(name) if name else None
+            if image is not None and image.colorspace_settings.is_data:
+                kwargs['is_data'] = False
+        return texture(mh, tex_info, *args, **kwargs)
+
+    users = []
+    for name in ('pbrMetallicRoughness', 'material_utils', 'KHR_materials_anisotropy',
+                 'KHR_materials_iridescence', 'KHR_materials_pbrSpecularGlossiness'):
+        try:
+            module = importlib.import_module(f'io_scene_gltf2.blender.imp.{name}')
+        except ImportError:
+            continue
+        if getattr(module, 'texture', None) is texture:
+            module.texture = data_once
+            users.append(module)
     held = []
 
     class Objects:
@@ -73,6 +97,8 @@ def batched_gltf_cleanup():
         yield
     finally:
         gltf_mesh.bpy = bpy
+        for module in users:
+            module.texture = texture
         bpy.data.batch_remove(held)
 
 
@@ -395,7 +421,7 @@ def import_props(props_file, coll):
     staging = bpy.data.scenes.new('dlr props import')
     window.scene = staging
     try:
-        with batched_gltf_cleanup():
+        with quick_gltf_import():
             for prop in data['props']:
                 new += _import_prop(prop, folder, staging, props_coll)
     finally:
