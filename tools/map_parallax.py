@@ -15,10 +15,10 @@ import numpy as np
 
 if __package__:
     from .map_lighting import (Graph, average_color, cached_image, color_correct_matrix, is_identity, node_group,
-                               source_of, srgb_to_linear, transform_color, BLOOM_AOV, LUMINANCE_WEIGHTS)
+                               bloom_input, source_of, srgb_to_linear, transform_color, LUMINANCE_WEIGHTS)
 else:
     from map_lighting import (Graph, average_color, cached_image, color_correct_matrix, is_identity, node_group,
-                              source_of, srgb_to_linear, transform_color, BLOOM_AOV, LUMINANCE_WEIGHTS)
+                              bloom_input, source_of, srgb_to_linear, transform_color, LUMINANCE_WEIGHTS)
 
 SHADER = 'environment_parallax_layered.vfx'
 # the second UV set as a real UV map, so the Tangent node can give its tangents (map_import makes it)
@@ -120,10 +120,10 @@ def apply_parallax(mat, bsdf, ints, floats, vectors, textures):
                   g.math('MULTIPLY', room_seen, g.math('MINIMUM', glow3, 1.0)))
     amount = g.mix('MIX', g.math('MULTIPLY', through, glow2), glow3, room_seen)
     amount = g.split(amount)[0]
-    bloom = next((n for n in mat.node_tree.nodes if n.type == 'OUTPUT_AOV' and n.aov_name == BLOOM_AOV), None)
+    bloom = bloom_input(mat)
     if bloom is not None:
         override = max(float(floats.get('g_flOverrideBloomAmount1', 0.0)), 0.0)
-        g.links.new(g.math('MULTIPLY', amount, override * 0.05, clamp=True), bloom.inputs['Value'])
+        g.links.new(g.math('MULTIPLY', amount, override * 0.05, clamp=True), bloom)
     g.links.new(color, bsdf.inputs['Base Color'])
     g.links.new(color, bsdf.inputs['Emission Color'])
     g.links.new(amount, bsdf.inputs['Emission Strength'])

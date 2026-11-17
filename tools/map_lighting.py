@@ -829,9 +829,26 @@ def add_bloom_amount(mat, floats):
     (bloom_downsample.vfx, citadel) blooms those pixels by their colour times the amount, past the threshold.
     Written at 0 too (the pass's default), so materials with and without bloom share one EEVEE shader."""
     amount = max(float(floats.get('g_flOverrideBloomAmount1', 0.0)), 0.0)
-    node = mat.node_tree.nodes.new('ShaderNodeOutputAOV')
-    node.aov_name = BLOOM_AOV
-    node.inputs['Value'].default_value = amount
+    Graph(mat.node_tree).call(bloom_group(), amount)
+
+
+BLOOM_GROUP = 'Deadlock bloom'
+
+
+# Edits to an output node in a material (an AOV output too) rescan every node tree in the file like a linked
+# Material Output (detach_outputs): ~0.9 ms each on Midtown. Inside a group they don't, and EEVEE and Cycles still
+# write the AOV from there.
+def bloom_group():
+    def build(g, amount):
+        g.put(g.node('ShaderNodeOutputAOV', aov_name=BLOOM_AOV).inputs['Value'], amount)
+        return []
+    return node_group(BLOOM_GROUP, [('Amount', 'Float')], [], build)
+
+
+def bloom_input(mat):
+    """The BLOOM_AOV amount socket add_bloom_amount gave the material, or None."""
+    return next((n.inputs[0] for n in mat.node_tree.nodes if n.type == 'GROUP' and n.node_tree
+                 and n.node_tree.name == BLOOM_GROUP), None)
 
 
 def apply_alpha_test(mat, bsdf, floats):
