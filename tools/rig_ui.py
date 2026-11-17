@@ -2146,7 +2146,7 @@ def register():
     S.dlrig_in_place = P.BoolProperty(name='Stay in Place', default=False,
                                        description='Load clips without their forward/sideways travel (runs, dashes): '
                                                    'the body still bobs, jumps still rise')
-    S.dlrig_phys_auto = P.BoolProperty(name='Re-bake when playback starts', default=True,
+    S.dlrig_phys_auto = P.BoolProperty(name='Re-bake when playback starts', default=False,
                                         description='Bake physics automatically every time you press play')
     for c in classes:
         try:
