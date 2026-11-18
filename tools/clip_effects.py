@@ -32,6 +32,10 @@ OWN_SLOTS = ('ESlot_Signature_', 'ESlot_Weapon_')
 ATTACHED = ('PATTACH_POINT', 'PATTACH_POINT_FOLLOW')
 # game units in the metres ability values are given in
 METRE = 1 / 0.0254
+# Control points the weapon's code sets on its passive effect, as literals for the weapon at rest. Rem's candle:
+# CP2.y 1 = snuffed (no flame, no light), CP2.x the flame's size; left unset, rigs read 1 for both and the flame
+# never shows. In the game (info_particle_system, cpoint2) (1, 0, 0) draws a thin lit flame, (1, 1, 0) nothing.
+PASSIVE_STATE = {'particles/abilities/familiar/familiar_ambient_candle.vpcf': {2: (1.0, 0.0, 0.0)}}
 # where a cast's flash goes when the effect itself doesn't say (its preview sits at the world origin)
 CAST_DRIVER = {'cp': 0, 'type': 'PATTACH_POINT_FOLLOW', 'attachment': 'ability_cast', 'offset': (0.0, 0.0, 0.0),
                'angles': (0.0, 0.0, 0.0), 'entity': 'self'}
@@ -531,8 +535,12 @@ class ClipEffects:
                 continue
             path = (abilities.get(name) or {}).get('m_PassiveWeaponParticle')
             if path and self.effect(path) is not None and all(e['path'] != path for e in out):
+                drivers = _drivers(_config(self.effect(path), 'preview')) + [
+                    {'cp': cp, 'type': 'PATTACH_WORLDORIGIN', 'attachment': '', 'offset': value,
+                     'angles': (0.0, 0.0, 0.0), 'entity': 'self'}
+                    for cp, value in PASSIVE_STATE.get(path, {}).items()]
                 out.append({'path': path, 'source': 'passive', 'ability': name, 'key': 'm_PassiveWeaponParticle',
-                            'start': 0.0, 'loop': True, 'drivers': _drivers(_config(self.effect(path), 'preview'))})
+                            'start': 0.0, 'loop': True, 'drivers': drivers})
         return out
 
     def ability_duration(self, name):
