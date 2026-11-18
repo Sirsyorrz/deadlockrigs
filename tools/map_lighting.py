@@ -919,31 +919,7 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
         apply_overlay(mat, bsdf, floats, dict(vmat_dict(mat).get('VectorParams') or {}))
         return 'overlay'
     if ints.get('F_UNLIT'):
-        emission = nodes.new('ShaderNodeEmission')
-        color = source_of(bsdf.inputs['Base Color'])
-        if color:
-            links.new(color, emission.inputs['Color'])
-        else:
-            emission.inputs['Color'].default_value = bsdf.inputs['Base Color'].default_value
-        transparent = nodes.new('ShaderNodeBsdfTransparent')
-        alpha = source_of(bsdf.inputs['Alpha'])
-        if ints.get('F_ADDITIVE_BLEND'):
-            if alpha:
-                links.new(alpha, emission.inputs['Strength'])
-            mix = nodes.new('ShaderNodeAddShader')
-            links.new(transparent.outputs[0], mix.inputs[0])
-            links.new(emission.outputs[0], mix.inputs[1])
-        else:
-            mix = nodes.new('ShaderNodeMixShader')
-            if alpha:
-                links.new(alpha, mix.inputs[0])
-            else:
-                mix.inputs[0].default_value = bsdf.inputs['Alpha'].default_value
-            links.new(transparent.outputs[0], mix.inputs[1])
-            links.new(emission.outputs[0], mix.inputs[2])
-        links.new(mix.outputs[0], output.inputs['Surface'])
-        emission.location = bsdf.location.x + 300, bsdf.location.y + 300
-        mix.location = output.location.x, output.location.y + 200
+        apply_unlit(mat, bsdf, output, ints)
         return 'unlit'
     if ints.get('F_GLASS'):
         mask = glass_mask(mat, glass_masks or {})
@@ -954,6 +930,60 @@ def apply_vmat(mat, glass_masks=None, layer_textures=None):
         apply_self_illum(mat, bsdf, floats, dict(vmat_dict(mat).get('VectorParams') or {}))
         return 'self_illum'
     return None
+
+
+def apply_translucent_fade(mat, bsdf, floats):
+    """F_TRANSLUCENT's opacity as pbr.vfx has it: alpha x g_flOpacityScale, faded by
+    pow(|dot(camera forward, N)|, g_flAlphaAnglePower) (1 - |dot| for a negative power): Hidden King's core bubble
+    (power 8) shows only where it faces the camera, behind the core's glow. map_anim's alt translucency still
+    finds the colour alpha it combines."""
+    power = param(floats, 'g_flAlphaAnglePower', 0.0)
+    scale = param(floats, 'g_flOpacityScale', 1.0)
+    alpha = source_of(bsdf.inputs['Alpha'])
+    if alpha is None or (not power and scale == 1.0):
+        return False
+    g = Graph(mat.node_tree)
+    opacity = g.math('MULTIPLY', alpha, scale) if scale != 1.0 else alpha
+    if power:
+        forward = g.node('ShaderNodeVectorTransform', vector_type='VECTOR', convert_from='CAMERA', convert_to='WORLD')
+        forward.inputs['Vector'].default_value = (0.0, 0.0, -1.0)
+        facing = g.math('ABSOLUTE', g.vec('DOT_PRODUCT', forward.outputs[0],
+                                           g.node('ShaderNodeNewGeometry').outputs['Normal']))
+        if power < 0:
+            facing = g.math('SUBTRACT', 1.0, facing)
+        opacity = g.math('MULTIPLY', opacity, g.math('POWER', g.math('MAXIMUM', facing, 0.001), abs(power)))
+    g.links.new(opacity, bsdf.inputs['Alpha'])
+    return True
+
+
+def apply_unlit(mat, bsdf, output, ints):
+    """F_UNLIT: the base colour shown as it is, over the background by the alpha (added by it when additive)."""
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    emission = nodes.new('ShaderNodeEmission')
+    color = source_of(bsdf.inputs['Base Color'])
+    if color:
+        links.new(color, emission.inputs['Color'])
+    else:
+        emission.inputs['Color'].default_value = bsdf.inputs['Base Color'].default_value
+    transparent = nodes.new('ShaderNodeBsdfTransparent')
+    alpha = source_of(bsdf.inputs['Alpha'])
+    if ints.get('F_ADDITIVE_BLEND'):
+        if alpha:
+            links.new(alpha, emission.inputs['Strength'])
+        mix = nodes.new('ShaderNodeAddShader')
+        links.new(transparent.outputs[0], mix.inputs[0])
+        links.new(emission.outputs[0], mix.inputs[1])
+    else:
+        mix = nodes.new('ShaderNodeMixShader')
+        if alpha:
+            links.new(alpha, mix.inputs[0])
+        else:
+            mix.inputs[0].default_value = bsdf.inputs['Alpha'].default_value
+        links.new(transparent.outputs[0], mix.inputs[1])
+        links.new(emission.outputs[0], mix.inputs[2])
+    links.new(mix.outputs[0], output.inputs['Surface'])
+    emission.location = bsdf.location.x + 300, bsdf.location.y + 300
+    mix.location = output.location.x, output.location.y + 200
 
 
 def apply_veil(mat, output, vectors, textures):

@@ -2467,7 +2467,8 @@ for key, cfg in EXTRA.items():
 
 # extra models with "vmat_shading" (the patrons' effigies: the burning wood, the Archmother's flame cone; their
 # Weakened cores, whose glow shells have no mask image and whose rock glows in its cyan tint, not the albedo) shade as
-# map props do: self-illum by its tint and scale, alpha test at the material's reference, faded by the view angle
+# map props do: self-illum by its tint and scale, alpha test at the material's reference, faded by the view angle,
+# unlit (Hidden King's core bubble)
 VMAT_SHADED = {key for key, cfg in EXTRA.items() if cfg.get('vmat_shading')}
 if VMAT_SHADED:
     import map_lighting
@@ -2479,8 +2480,12 @@ if VMAT_SHADED:
             continue
         if ints.get('F_ALPHA_TEST'):
             map_lighting.apply_alpha_test(m, bsdf, floats)
+        if ints.get('F_TRANSLUCENT'):
+            map_lighting.apply_translucent_fade(m, bsdf, floats)
         if ints.get('F_SELF_ILLUM'):
             map_lighting.apply_self_illum(m, bsdf, floats, dict(map_lighting.vmat_dict(m).get('VectorParams') or {}))
+        if ints.get('F_UNLIT') and map_lighting.material_output(m):
+            map_lighting.apply_unlit(m, bsdf, map_lighting.material_output(m), ints)
 
 # glow: the game lights a material by its self-illum mask in the albedo's colour (Bebop's green eyes); the import
 # plugs the bare mask into Emission Color at strength 0. Masked albedo instead, its strength on the rig's glow
