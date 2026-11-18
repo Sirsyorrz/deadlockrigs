@@ -15,6 +15,7 @@ import math
 import os
 
 import bpy
+import numpy as np
 from mathutils import Matrix, Quaternion
 
 if __package__:
@@ -42,7 +43,9 @@ def quick_gltf_import():
     It makes and removes a temporary object per mesh, and each removal scans the whole file: hold them and remove
     them in one batch_remove at the end. It sets is_data on an image for every texture node that uses it, and the
     setter rescans even when the value doesn't change: set it once per image. It links the Material Output first,
-    after which every node edit in that material rescans the file: link it last."""
+    after which every node edit in that material rescans the file: link it last. Unskinned meshes without shape
+    keys get the glTF normals as free custom normals (a 'custom_normal' vertex attribute): the tangent-space ones
+    cost ~370 ns per corner to encode (Midtown 34 s), and free normals are the file's values unquantized."""
     try:
         gltf_mesh = importlib.import_module('io_scene_gltf2.blender.imp.mesh')
         gltf_texture = importlib.import_module('io_scene_gltf2.blender.imp.texture')
@@ -123,11 +126,38 @@ def quick_gltf_import():
         def __getattr__(self, name):
             return getattr(bpy, name)
 
+    do_primitives = getattr(gltf_mesh, 'do_primitives', None)
+
+    class FreeNormals:
+        """Stands in for the mesh inside do_primitives."""
+        def __init__(self, mesh):
+            object.__setattr__(self, 'mesh', mesh)
+
+        def __getattr__(self, name):
+            return getattr(self.mesh, name)
+
+        def __setattr__(self, name, value):
+            setattr(self.mesh, name, value)
+
+        def normals_split_custom_set_from_vertices(self, normals):
+            attr = self.mesh.attributes.new('custom_normal', 'FLOAT_VECTOR', 'POINT')
+            attr.data.foreach_set('vector', np.ascontiguousarray(normals, np.float32).reshape(-1))
+
+    def free_normals(gltf, mesh_idx, skin_idx, mesh, ob):
+        pymesh = gltf.data.meshes[mesh_idx]
+        if skin_idx is None and not any(prim.targets for prim in pymesh.primitives):
+            mesh = FreeNormals(mesh)
+        return do_primitives(gltf, mesh_idx, skin_idx, mesh, ob)
+
     gltf_mesh.bpy = Bpy()
+    if do_primitives is not None:
+        gltf_mesh.do_primitives = free_normals
     try:
         yield
     finally:
         gltf_mesh.bpy = bpy
+        if do_primitives is not None:
+            gltf_mesh.do_primitives = do_primitives
         for module in users:
             module.texture = texture
         for name, build in builders.items():
