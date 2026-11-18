@@ -482,6 +482,11 @@ if 'weapon' in B and 'weaponPivot' in B and not any(p['bone'] in descendants('we
                     print(f'weapon hold: hand on the grip {off_gun(hand_at):.3f} m, socket on it {off_gun(alt):.3f} m')
                     if off_gun(alt) < off_gun(hand_at):
                         hand_at = alt
+                # a clip whose hand already sits on the grip has the game's IK result: weaponHand_R is the hand
+                # turned 180 deg about the forearm, so taking the grip's frame flipped the palm (Graves' hand
+                # wrapped the zombie arm's stump from the wrong side)
+                if hand in idle and (idle[hand].translation - idle[grip].translation).length < 0.005 * giant:
+                    hand_at = idle[hand]
                 WEAPON_HOLD = (hand, hand_at, idle['weapon'])
                 WEAPON_IDLE = idle
                 siblings_held(hand, hand_at)
