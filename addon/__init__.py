@@ -437,6 +437,12 @@ def load_rig(path, slug):
     return dst.collections
 
 
+def is_particle_card(ob):
+    """A particle sprite or rope object: camera facing cards that Solid shading draws over the map."""
+    return 'dlr_particles' in ob and any(m.type == 'NODES' and m.name.startswith('Camera facing')
+                                         for m in ob.modifiers)
+
+
 def append_map(path, slug, link=False):
     """Appends or links the map's collection, makes its sky the scene's world and turns on the game's tonemapping."""
     title = tools_module('mapbuild').MAPS[slug]
@@ -451,8 +457,8 @@ def append_map(path, slug, link=False):
         # maps built before ff6bfd3 were saved with every object selected, which slows every redraw
         for ob in c.all_objects:
             ob.select_set(False)
-            # maps built before the barn masks drew as bounds: Solid shading showed them over the map
-            if 'dlr_barn_mask' in ob and ob.library is None:
+            # maps built before barn masks and particle cards drew as bounds: Solid shading showed them over the map
+            if ob.library is None and ('dlr_barn_mask' in ob or is_particle_card(ob)):
                 ob.display_type = 'BOUNDS'
     if dst.worlds:
         scene.world = dst.worlds[0]

@@ -54,6 +54,9 @@ _LUMA_601 = (0.299, 0.587, 0.114)
 _GROUP_VERSION = 4
 # tan(half the vertical field of view) of the game's default camera: 90 degrees across a 4:3 frame
 _GAME_TAN_HALF_FOV = 0.75
+# Cards and strips face the scene camera, so Solid shading draws them as opaque grey sheets across other views;
+# bounds still render (F12 and Rendered shading)
+CARD_DISPLAY = "BOUNDS"
 
 
 def _srgb(c: float) -> float:
@@ -823,6 +826,7 @@ class _ObjectBuilder:
         self._shading_attributes(mesh, batch)
         mesh.update()
         obj = bpy.data.objects.new(name, mesh)
+        obj.display_type = CARD_DISPLAY
         if timed:
             self._time_modifier(obj)
         modifier = obj.modifiers.new("Camera facing cards", "NODES")
@@ -853,6 +857,7 @@ class _ObjectBuilder:
         mesh.update(calc_edges=True)
         mesh.materials.append(material)
         obj = bpy.data.objects.new(name, mesh)
+        obj.display_type = CARD_DISPLAY
         if timed:
             self._time_modifier(obj)
         modifier = obj.modifiers.new("Camera facing strips", "NODES")
