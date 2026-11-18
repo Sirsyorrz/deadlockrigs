@@ -2,7 +2,8 @@
 
 python tools/release.py addon [patch|minor|major|X.Y.Z]
                                 dist/deadlock_rigs-<version>-<platform>.zip, one per platform (scipy wheels differ);
-                                bumps the version in addon/blender_manifest.toml first if given one
+                                bumps the version in addon/blender_manifest.toml first if given one;
+                                dist/release/ holds what to upload to the GitHub release (see repo())
 
 Needs Blender ($BLENDER or found like pipeline.py does)."""
 import os
@@ -33,6 +34,10 @@ WHEEL_PLATFORMS = {
     'macos-x64': ['macosx_10_14_x86_64'],
 }
 
+
+# Blender's extension repository: users add this once (or drag a README link in) and get updates in Blender.
+# Asset names carry no version so the latest/download links in the README keep working across releases.
+REPO_URL = 'https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/'
 
 MANIFEST = os.path.join(ROOT, 'addon', 'blender_manifest.toml')
 VERSION_LINE = re.compile(r'^version = "([^"]+)"', re.M)
@@ -114,6 +119,23 @@ def addon():
     for f in sorted(os.listdir(DIST)):
         if f.endswith('.zip') and version() in f:
             print('wrote', os.path.join(DIST, f))
+    repo(blender)
+
+
+def repo(blender):
+    """dist/release/: the unversioned zips plus index.json. archive_url stays relative (./name.zip), which Blender
+    resolves against REPO_URL, so a drop link only matches when it is exactly REPO_URL + the zip name."""
+    out = os.path.join(DIST, 'release')
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out)
+    v = re.escape(version())
+    for f in os.listdir(DIST):
+        m = re.fullmatch(rf'deadlock_rigs-{v}-(\w+)\.zip', f)
+        if m:
+            shutil.copy(os.path.join(DIST, f), os.path.join(out, f'deadlock_rigs-{m[1]}.zip'))
+    subprocess.run([blender, '--factory-startup', '--command', 'extension', 'server-generate', '--repo-dir', out],
+                   check=True)
+    print('upload everything in', out, f'(gh release create v{version()} {out}/*)')
 
 
 if __name__ == '__main__':

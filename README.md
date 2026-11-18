@@ -25,8 +25,16 @@ A Blender add-on that builds animation rigs of Deadlock heroes, NPCs and maps fr
 
 Needs Blender 5.1 or newer and Deadlock installed through Steam. Works on Windows, Linux and macOS.
 
-1. Download the zip for your platform from [Releases](https://github.com/Sirsyorrz/deadlockrigs/releases).
-2. In Blender: Edit > Preferences > Get Extensions > the menu at the top right > Install from Disk, then pick the zip.
+1. Drag the link for your platform from this page into an open Blender window:
+   [Windows](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-windows_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=windows-x64),
+   [Linux](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-linux_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=linux-x64),
+   [macOS (Apple Silicon)](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-macos_arm64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=macos-arm64),
+   [macOS (Intel)](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-macos_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=macos-x64).
+   The first time, Blender asks to add the Deadlock Rigs repository: press Add Repository, tick Check for Updates
+   on Startup, then drag the link in again and press Install. From then on Blender offers updates in Edit >
+   Preferences > Get Extensions.
+2. Already installed from a zip? Uninstall it in Get Extensions first, then drag the link in. Zips installed from
+   disk don't get updates.
 3. Open the sidebar in the 3D View (N) > Deadlock Rigs, pick a hero and press Build Rig.
 
 ![The Deadlock Rigs panel](docs/addon_panel.png)
