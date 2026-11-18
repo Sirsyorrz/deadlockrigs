@@ -21,6 +21,8 @@ Point attributes the meshes carry, read by the node groups and materials:
                             and alpha
     dl_rect<L>, _next       a sheet animated layer's frame on its texture (min u, min v, max u, max v, V down), and
                             the next frame's, blended by dl_frame_blend
+    dl_alpha_ref            the alpha test's threshold and window (x, y), for renderers with a per particle alpha
+                            reference
     dl_offset<L>            a layer's per particle texture offset, for layers that randomize theirs
     dl_card                 where on the card a vertex is (u across, v down/along), written by the node groups for
                             sprites
@@ -886,6 +888,9 @@ class _ObjectBuilder:
         _attribute(mesh, "dl_color", "FLOAT_COLOR", batch.color)
         if np.any(batch.frame_blend):
             _attribute(mesh, "dl_frame_blend", "FLOAT", batch.frame_blend)
+        if batch.alpha_reference is not None:
+            references = batch.alpha_reference
+            _attribute(mesh, "dl_alpha_ref", "FLOAT_VECTOR", np.hstack([references, np.zeros((len(references), 1))]))
         for layer, (rect, following) in enumerate(zip(batch.rects, batch.next_rects)):
             if rect is not None:
                 _attribute(mesh, f"dl_rect{layer}", "FLOAT_COLOR", rect)
@@ -953,6 +958,11 @@ def _stack(batches, name):
     return np.concatenate([getattr(batch, name) for batch in batches])
 
 
+def _merge_alpha_references(out, batches):
+    if all(batch.alpha_reference is not None for batch in batches):
+        out.alpha_reference = _stack(batches, "alpha_reference")
+
+
 def _merge_layers(out, batches):
     for field in ("rects", "next_rects", "offsets"):
         for layer in range(len(getattr(out, field))):
@@ -969,6 +979,7 @@ def _merge_sprites(renderer, batches):
     out.size_bounds = batches[0].size_bounds
     for name in ("position", "half_width", "roll", "yaw", "right", "up", "card", "color", "frame_blend"):
         setattr(out, name, _stack(batches, name))
+    _merge_alpha_references(out, batches)
     _merge_layers(out, batches)
     return out, counts
 
@@ -979,6 +990,7 @@ def _merge_ribbons(renderer, batches):
     out = R.Ribbons(renderer)
     for name in ("position", "axis", "width", "card", "color", "frame_blend"):
         setattr(out, name, _stack(batches, name))
+    _merge_alpha_references(out, batches)
     if all(batch.facing is not None for batch in batches):
         out.facing = _stack(batches, "facing")
     starts = np.cumsum([0] + counts[:-1])
@@ -1448,14 +1460,18 @@ class _SpritecardShader:
         b.frame("Colour and alpha")
         color = vertex.outputs["Color"] if accum_rgb is None else b.vmul(vertex.outputs["Color"], accum_rgb)
         alpha = 1.0 if accum_a is None else accum_a
+        reference = self.shading.get("alpha_reference")
         remap = self.shading["alpha_remap"]
-        if remap is not None:
+        if remap is not None and reference is None:
             alpha = b.smoothstep(remap[0], remap[1], alpha)
         desaturation = self.shading["desaturation"]
         if desaturation:
             gray = b.dot(color, _LUMA)
             color = b.vlerp(color, b.combine(gray, gray, gray), self._num(desaturation))
-        alpha = b.mul(alpha, vertex.outputs["Alpha"])
+        if reference is None:
+            alpha = b.mul(alpha, vertex.outputs["Alpha"])
+        else:
+            alpha = self._alpha_reference(alpha, vertex.outputs["Alpha"], reference)
         if self.shading.get("feather"):
             alpha = b.mul(alpha, self._feathering(*self.shading["feather"]))
         b.frame(None)
@@ -1505,6 +1521,25 @@ class _SpritecardShader:
         output = b.node("ShaderNodeOutputMaterial")
         output.hide = False
         b.set(output.inputs["Surface"], shader)
+
+    def _alpha_reference(self, texture_alpha, vertex_alpha, reference):
+        """The per particle alpha test (spritecard.vfx): the texture alpha passes above the particle's threshold and
+        below threshold + window, each edge soft over its softness; texture and vertex alpha turn opaque where the
+        renderer's reference type says so."""
+        b = self.b
+        opaque_texture, opaque_vertex, upper, lower = reference
+        texture_alpha = b.saturate(texture_alpha)
+        threshold, window, _ = b.separate(b.attribute("dl_alpha_ref").outputs["Vector"])
+
+        def ramp(distance, width):
+            if width > 0.0:
+                return b.saturate(b.div(distance, width))
+            return b.math("GREATER_THAN", distance, 0.0)
+
+        band = b.math("MINIMUM", ramp(b.sub(texture_alpha, threshold), lower),
+                      ramp(b.sub(b.add(threshold, window), texture_alpha), upper))
+        alpha = b.mul(b.math("MAXIMUM", texture_alpha, opaque_texture), band)
+        return b.mul(alpha, b.math("MAXIMUM", vertex_alpha, opaque_vertex))
 
     def _feathering(self, near: float, far: float):
         """Soft particles: the game fades a card as it nears the depth behind it, from ``far`` to ``near`` game units.

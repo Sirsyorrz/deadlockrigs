@@ -65,6 +65,21 @@ LAYER_BLENDS = enum_names("SPRITECARD_TEXTURE_BLEND_MULTIPLY", "SPRITECARD_TEXTU
 
 MAX_LAYERS = 5
 
+PER_PARTICLE_SCALES = enum_names(
+    "SPRITECARD_TEXTURE_PP_SCALE_NONE", "SPRITECARD_TEXTURE_PP_SCALE_PARTICLE_AGE",
+    "SPRITECARD_TEXTURE_PP_SCALE_ANIMATION_FRAME", "SPRITECARD_TEXTURE_PP_SCALE_SHADER_EXTRA_DATA1",
+    "SPRITECARD_TEXTURE_PP_SCALE_SHADER_EXTRA_DATA2", "SPRITECARD_TEXTURE_PP_SCALE_PARTICLE_ALPHA",
+    "SPRITECARD_TEXTURE_PP_SCALE_SHADER_RADIUS", "SPRITECARD_TEXTURE_PP_SCALE_ROLL", "SPRITECARD_TEXTURE_PP_SCALE_YAW",
+    "SPRITECARD_TEXTURE_PP_SCALE_PITCH", "SPRITECARD_TEXTURE_PP_SCALE_RANDOM", "SPRITECARD_TEXTURE_PP_SCALE_NEG_RANDOM",
+    "SPRITECARD_TEXTURE_PP_SCALE_RANDOM_TIME", "SPRITECARD_TEXTURE_PP_SCALE_NEG_RANDOM_TIME")
+PP_NONE, PP_EXTRA1, PP_EXTRA2, PP_ALPHA, PP_RADIUS, PP_RANDOM, PP_NEG_RANDOM = 0, 3, 4, 5, 6, 10, 11
+PP_ANGLES = {7: "roll", 8: "yaw", 9: "pitch"}
+# The age modes read the sheet's play time, which the bridge doesn't keep per particle.
+PP_SUPPORTED = {PP_NONE, PP_EXTRA1, PP_EXTRA2, PP_ALPHA, PP_RADIUS, PP_RANDOM, PP_NEG_RANDOM, *PP_ANGLES}
+
+ALPHA_REFERENCE_TYPES = enum_names("PARTICLE_ALPHA_REFERENCE_ALPHA_ALPHA", "PARTICLE_ALPHA_REFERENCE_OPAQUE_ALPHA",
+                                   "PARTICLE_ALPHA_REFERENCE_ALPHA_OPAQUE", "PARTICLE_ALPHA_REFERENCE_OPAQUE_OPAQUE")
+
 
 def srgb_to_linear(c):
     c = np.asarray(c, np.float64)
@@ -230,6 +245,13 @@ class Renderer:
         self.feathering = p.enum("m_nFeatheringMode", FEATHERING, FEATHER_OFF) != FEATHER_OFF
         self.feather_bounds = (p.number("m_flFeatheringMinDist", 0.0), p.number("m_flFeatheringMaxDist", 15.0))
         self.opaque = False
+        self.alpha_reference = p.enum("m_nPerParticleAlphaReference", PER_PARTICLE_SCALES, PP_NONE)
+        self.alpha_ref_window = p.enum("m_nPerParticleAlphaRefWindow", PER_PARTICLE_SCALES, PP_NONE)
+        self.alpha_ref_type = p.enum("m_nAlphaReferenceType", ALPHA_REFERENCE_TYPES, 0)
+        self.alpha_ref_softness = p.number("m_flAlphaReferenceSoftness", 0.0)
+        for mode in (self.alpha_reference, self.alpha_ref_window):
+            if mode not in PP_SUPPORTED:
+                p.note("alpha reference per particle mode")
         # Reverse Z buffered renderers draw only where something is in front (a glow behind walls); Blender can't test
         # depth that way, and drawing them normally would double the renderer they copy.
         if p.bool("m_bOnlyRenderInEffectsWaterPass") or p.bool("m_bOnlyRenderInEffectsBloomPass") or p.bool("m_bReverseZBuffering"):
@@ -249,8 +271,48 @@ class Renderer:
             "max_luminance_blend": self.max_luminance_blend,
             "opaque": self.opaque,
             "feather": tuple(float(f(sim)) for f in self.feather_bounds) if self.feathering else None,
+            "alpha_reference": self._alpha_reference_shading(sim),
             "layers": [layer.settings(sim) for layer in self.layers],
         }
+
+    def _alpha_reference_shading(self, sim):
+        """The per particle alpha test (spritecard.vfx, VRF's AlphaReference): whether texture alpha and vertex alpha
+        turn opaque where the test passes, and the softness of the band's upper (window) and lower edges."""
+        if self.alpha_reference == PP_NONE:
+            return None
+        kind = self.alpha_ref_type
+        softness = float(self.alpha_ref_softness(sim))
+        if self.alpha_ref_window != PP_NONE:
+            upper = lower = softness * 0.5
+        else:
+            upper, lower = 0.0, softness
+        return (float(kind in (1, 3)), float(kind in (2, 3)), upper, lower)
+
+    def _per_particle(self, sim, v, mode, key, alpha, radius):
+        """The value a SpriteCardPerParticleScale_t mode reads for each particle of the view."""
+        if mode == PP_EXTRA1:
+            return v.get("extra1")
+        if mode == PP_EXTRA2:
+            return v.get("extra2")
+        if mode == PP_ALPHA:
+            return alpha
+        if mode == PP_RADIUS:
+            return radius
+        if mode in PP_ANGLES:
+            return v.get(PP_ANGLES[mode])
+        if mode in (PP_RANDOM, PP_NEG_RANDOM):
+            random = sim.random.for_particle(v.get("particle_id"), key)
+            return random if mode == PP_RANDOM else (random - 0.5) * 2.0
+        return np.ones(len(alpha))
+
+    def _alpha_references(self, sim, v, alpha, radius):
+        """Per particle (threshold, window) for the alpha test, or None: the texture alpha passes above
+        1 - reference and below that plus the window."""
+        if self.alpha_reference == PP_NONE:
+            return None
+        reference = self._per_particle(sim, v, self.alpha_reference, 71, alpha, radius)
+        window = self._per_particle(sim, v, self.alpha_ref_window, 72, alpha, radius)
+        return np.stack([1.0 - np.asarray(reference, np.float64), np.asarray(window, np.float64)], axis=1)
 
     def _lit_colors(self, sim, color, alpha, ambient):
         """Linear vertex colours lit as the game lights particles (self illumination plus diffuse times the light
@@ -312,6 +374,8 @@ class Sprites:
         self.card = np.tile([0.0, 0.0, 1.0, 1.0], (n, 1))
         self.color = np.ones((n, 4))
         self.frame_blend = np.zeros(n)
+        # per particle (threshold, window) of the alpha test, when the renderer has one
+        self.alpha_reference = None
         self.size_bounds = (0.0, 1e8, 2e8, 5000.0)
         self.rects = [None] * len(renderer.layers)
         self.next_rects = [None] * len(renderer.layers)
@@ -335,6 +399,7 @@ class Ribbons:
         self.color = np.zeros((0, 4))
         self.quads = np.zeros((0, 4), np.int64)
         self.frame_blend = np.zeros(0)
+        self.alpha_reference = None
         self.rects = [None] * len(renderer.layers)
         self.next_rects = [None] * len(renderer.layers)
         self.offsets = [None] * len(renderer.layers)
@@ -395,6 +460,9 @@ class RenderSprites(Renderer):
         out.roll = v.get("roll")[rows]
         out.yaw = v.get("yaw")[rows]
         out.color = self._lit_colors(sim, v.get("color")[rows], alpha[rows], ambient)
+        references = self._alpha_references(sim, v, alpha, radius)
+        if references is not None:
+            out.alpha_reference = references[rows]
 
         orientation = self.orientation
         if orientation == SCREEN_ALIGNED:
@@ -517,12 +585,15 @@ class RenderRopes(Renderer):
         segment = v.field(self.split_field)[order] if splits else np.zeros(n)
         normal = v.field(self.orientation_field)[order] if F.is_vector(self.orientation_field) else np.tile([0, 0, 1.0], (n, 1))
         scalar = (v.field(self.scalar_field)[order] * self.scalar_scale) if self.use_scalar and not F.is_vector(self.scalar_field) else np.zeros(n)
+        references = self._alpha_references(sim, v, v.get("alpha") * self.alpha_scale(sim, v), v.get("radius") * self.radius_scale(sim, v))
+        reference = references[order] if references is not None else np.zeros((n, 2))
         if self.sort_by_segment and splits:
             _, first = np.unique(segment, return_index=True)
             rank = {value: r for r, value in enumerate(segment[np.sort(first)])}
             keys = np.array([rank[s] for s in segment])
             sort = np.argsort(keys, kind="stable")
-            position, radius, alpha, color, segment, normal, scalar = (a[sort] for a in (position, radius, alpha, color, segment, normal, scalar))
+            position, radius, alpha, color, segment, normal, scalar, reference = (
+                a[sort] for a in (position, radius, alpha, color, segment, normal, scalar, reference))
 
         if self.v_params_cp >= 0:
             params = sim.control_point(self.v_params_cp).position
@@ -539,7 +610,7 @@ class RenderRopes(Renderer):
         subdivisions = self._subdivisions(n)
         segments = n if self.closed else n - 1
         arc = scroll * sim.age
-        out_position, out_tangent, out_radius, out_color, out_v, out_normal = [], [], [], [], [], []
+        out_position, out_tangent, out_radius, out_color, out_v, out_normal, out_reference = [], [], [], [], [], [], []
         quads = []
         samples_so_far = 0
         strip_start = None  # index of the first sample of the strip being built
@@ -573,6 +644,7 @@ class RenderRopes(Renderer):
             coordinate = lerp(v_start, v_end, t)
             out_v.append(coordinate * inverse_size + v_offset)
             out_normal.append(lerp(normal[i1], normal[i2], t[:, None]))
+            out_reference.append(lerp(reference[i1], reference[i2], t[:, None]))
             first = samples_so_far
             samples_so_far += len(t)
             if strip_start is None:
@@ -602,6 +674,8 @@ class RenderRopes(Renderer):
         out.width = np.stack([-radii, radii], axis=1).reshape(-1)
         out.card = np.stack([np.tile([0.0, 1.0], count), np.repeat(vs, 2)], axis=1)
         out.color = np.repeat(self._lit_colors(sim, colors[:, :3], colors[:, 3], ambient), 2, axis=0)
+        if references is not None:
+            out.alpha_reference = np.repeat(np.concatenate(out_reference), 2, axis=0)
         if self.orientation == ALIGN_TO_NORMAL:
             out.facing = np.repeat(normals, 2, axis=0)
         elif self.orientation == WORLD_Z_ALIGNED:
@@ -698,6 +772,9 @@ class RenderTrails(Renderer):
         head_color = self._lit_colors(sim, head_rgb, head_alpha, ambient)
         tail_color = self._lit_colors(sim, tail_rgb, tail_alpha, ambient)
         out.color = np.where(head[:, None], np.repeat(head_color, 4, axis=0), np.repeat(tail_color, 4, axis=0))
+        references = self._alpha_references(sim, v, v.get("alpha") * self.alpha_scale(sim, v), v.get("radius") * self.radius_scale(sim, v))
+        if references is not None:
+            out.alpha_reference = np.repeat(references[rows], 4, axis=0)
         if self.orientation == ALIGN_TO_NORMAL:
             out.facing = np.repeat(v.get("normal")[rows], 4, axis=0)
         elif self.orientation == WORLD_Z_ALIGNED:
