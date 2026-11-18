@@ -38,15 +38,17 @@ SCROLLED = (('g_vAlbedoScrollSpeed1', 'g_flAlbedoScrollQuantize1', ('BASE COLOR'
              'g_bUseSecondaryUvForSelfIllum1'))
 @contextlib.contextmanager
 def quick_gltf_import():
-    """Two glTF importer costs that grow with the file, ~10 ms per mesh and ~4 ms per data texture at Midtown's
-    size. It makes and removes a temporary object per mesh, and each removal scans the whole file: hold them and
-    remove them in one batch_remove at the end. It sets is_data on an image for every texture node that uses it,
-    and the setter rescans even when the value doesn't change: set it once per image."""
+    """glTF importer costs that grow with the file, ~10 ms per mesh and ~4 ms per data texture at Midtown's size.
+    It makes and removes a temporary object per mesh, and each removal scans the whole file: hold them and remove
+    them in one batch_remove at the end. It sets is_data on an image for every texture node that uses it, and the
+    setter rescans even when the value doesn't change: set it once per image. It links the Material Output first,
+    after which every node edit in that material rescans the file: link it last."""
     try:
         gltf_mesh = importlib.import_module('io_scene_gltf2.blender.imp.mesh')
         gltf_texture = importlib.import_module('io_scene_gltf2.blender.imp.texture')
+        gltf_material = importlib.import_module('io_scene_gltf2.blender.imp.material')
     except ImportError:
-        gltf_mesh = gltf_texture = None
+        gltf_mesh = gltf_texture = gltf_material = None
     if getattr(gltf_mesh, 'bpy', None) is not bpy or not hasattr(gltf_texture, 'get_source'):
         yield
         return
@@ -71,6 +73,35 @@ def quick_gltf_import():
         if getattr(module, 'texture', None) is texture:
             module.texture = data_once
             users.append(module)
+    builders = {name: getattr(gltf_material, name) for name in ('pbr_metallic_roughness', 'pbr_specular_glossiness',
+                                                                 'unlit') if hasattr(gltf_material, name)}
+
+    def output_last(build):
+        def wrapped(*args, **kwargs):
+            mh = args[-1]
+            links, later = mh.links, []
+
+            class Links:
+                def __getattr__(self, name):
+                    return getattr(links, name)
+
+                def new(self, a, b, *rest, **kw):
+                    if 'OUTPUT_MATERIAL' in (a.node.type, b.node.type):
+                        later.append((a, b, rest, kw))
+                        return None
+                    return links.new(a, b, *rest, **kw)
+
+            mh.links = Links()
+            try:
+                return build(*args, **kwargs)
+            finally:
+                mh.links = links
+                for a, b, rest, kw in later:
+                    links.new(a, b, *rest, **kw)
+        return wrapped
+
+    for name, build in builders.items():
+        setattr(gltf_material, name, output_last(build))
     held = []
 
     class Objects:
@@ -99,6 +130,8 @@ def quick_gltf_import():
         gltf_mesh.bpy = bpy
         for module in users:
             module.texture = texture
+        for name, build in builders.items():
+            setattr(gltf_material, name, build)
         bpy.data.batch_remove(held)
 
 
