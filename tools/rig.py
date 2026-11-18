@@ -2465,7 +2465,8 @@ for key, cfg in EXTRA.items():
         c.owner_space = c.target_space = 'LOCAL'
         c.mix_mode = 'BEFORE'
 
-# extra models with "vmat_shading" (the patrons' effigies: the burning wood, the Archmother's flame cone) shade as
+# extra models with "vmat_shading" (the patrons' effigies: the burning wood, the Archmother's flame cone; their
+# Weakened cores, whose glow shells have no mask image and whose rock glows in its cyan tint, not the albedo) shade as
 # map props do: self-illum by its tint and scale, alpha test at the material's reference, faded by the view angle
 VMAT_SHADED = {key for key, cfg in EXTRA.items() if cfg.get('vmat_shading')}
 if VMAT_SHADED:

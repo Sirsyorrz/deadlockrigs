@@ -1856,6 +1856,7 @@
   "extra_models": {
    "Weakened": {
     "model": "models/npc/core_amber/core_amber.vmdl",
+    "vmat_shading": true,
     "offset": [
      0,
      0,
@@ -1890,6 +1891,7 @@
   "extra_models": {
    "Weakened": {
     "model": "models/npc/core_sapphire/core_sapphire.vmdl",
+    "vmat_shading": true,
     "offset": [
      0,
      0,
