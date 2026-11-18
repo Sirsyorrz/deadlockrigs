@@ -151,6 +151,25 @@ def _sized(drivers, radius):
     return out
 
 
+def _child_sized(drivers, radius, literals):
+    """Components the game's code sets (Infernus Flame Dash aura: CP2.y = FlameAuraRadius) are 0 in the parent's
+    preview; the child reading them previews a literal. One near the ability's radius is taken for it."""
+    if radius is None:
+        return drivers
+    out = [dict(d) for d in drivers]
+    for (cp, axis), value in sorted(literals.items()):
+        if not radius / 2 <= value <= radius * 2:
+            continue
+        d = next((d for d in out if d['cp'] == cp), None)
+        if d is None:
+            d = {'cp': cp, 'type': 'PATTACH_WORLDORIGIN', 'attachment': '', 'offset': (0.0, 0.0, 0.0),
+                 'angles': (0.0, 0.0, 0.0), 'entity': 'self'}
+            out.append(d)
+        if d['type'] == 'PATTACH_WORLDORIGIN' and d['offset'][axis] == 0:
+            d['offset'] = tuple(radius if i == axis else v for i, v in enumerate(d['offset']))
+    return out
+
+
 def _dicts(value):
     if isinstance(value, dict):
         yield value
@@ -301,6 +320,35 @@ class ClipEffects:
         return any(self.reads_cp1_value(c.get('m_ChildRef'), seen) for c in data.get('m_Children') or []
                    if c.get('m_ChildRef'))
 
+    def child_cp_literals(self, path):
+        """{(cp, axis): value}: CP components a child reads as a radius (an operator's ...Radius... field, used
+        as is) and previews as a nonzero literal. Other reads are fractions (baba brew charge CP5.x, curved) or
+        positions (its arc rope's CP5)."""
+        out, queue, seen = {}, [c.get('m_ChildRef') for c in (self.effect(path) or {}).get('m_Children') or []], set()
+        while queue:
+            child = queue.pop()
+            if not child or child in seen:
+                continue
+            seen.add(child)
+            data = self.effect(child) or {}
+            queue += [c.get('m_ChildRef') for c in data.get('m_Children') or []]
+            literals = {d['cp']: d['offset'] for d in _drivers(_config(data, 'preview'))
+                        if d['type'] == 'PATTACH_WORLDORIGIN'}
+            ops = [o for k in ('m_Initializers', 'm_Operators', 'm_Emitters', 'm_Renderers', 'm_Constraints')
+                   for o in data.get(k) or []]
+            for v in (v for o in ops for key, v in o.items() if 'radius' in key.lower() and isinstance(v, dict)):
+                if (v.get('m_nType') != 'PF_TYPE_CONTROL_POINT_COMPONENT'
+                        or v.get('m_nMapType') not in ('PF_MAP_TYPE_DIRECT', 'PF_MAP_TYPE_MULT')):
+                    continue
+                cp, axis = v.get('m_nControlPoint', 0), v.get('m_nVectorComponent', 0)
+                if cp in literals and literals[cp][axis]:
+                    out.setdefault((cp, axis), literals[cp][axis])
+        return out
+
+    def sized(self, path, drivers, radius):
+        drivers = _sized(drivers, radius if self.reads_cp1_value(path) else None)
+        return _child_sized(drivers, radius, self.child_cp_literals(path))
+
     def hero_abilities(self):
         """{slot: ability name} of the hero whose model this is (heroes.vdata), or {}."""
         heroes = resource_data(self.content, 'scripts/heroes.vdata') or {}
@@ -445,7 +493,7 @@ class ClipEffects:
                 sequence = ((cfg or {}).get('m_previewState') or {}).get('m_sequenceName') or ''
                 # some name the clip file (models\heroes_wip\baba\clips\x.vnmclip) instead of a sequence
                 sequence = sequence.replace('\\', '/').rsplit('/', 1)[-1].split('.', 1)[0]
-                drivers, guessed, extra = _sized(_drivers(cfg), _radius(block) if self.reads_cp1_value(value) else None), False, set()
+                drivers, guessed, extra = self.sized(value, _drivers(cfg), _radius(block)), False, set()
                 if self._specific(sequence, clips):
                     found = set(self.names(sequence))
                     if clips and not found & clips and _cores(found) & _cores(clips):
@@ -507,7 +555,7 @@ class ClipEffects:
                     if self.effect(value) is None:
                         continue
                     cfg = _config(self.effect(value), 'preview')
-                    drivers, kind = _sized(_drivers(cfg), _radius(block) if self.reads_cp1_value(value) else None), 'area'
+                    drivers, kind = self.sized(value, _drivers(cfg), _radius(block)), 'area'
                     if _status(key, value):
                         kind = 'target'
                     elif _on_hero(cfg, attachments):
