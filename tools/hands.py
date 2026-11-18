@@ -73,17 +73,20 @@ class Hand:
         self.k = cfg.get('scale', 1.0)
         self.clear = cfg.get('clear')
         s = side
-        self.bones = [f'finger_{f}_{suffix}_{s}' for f in FINGERS for suffix in ('meta', '0', '1', '2')] + \
+        # Rem's hands have no pinky: the outermost finger there is the ring
+        self.fingers = tuple(f for f in FINGERS if f'finger_{f}_0_{s}' in rest)
+        self.outer = self.fingers[-1]
+        self.bones = [f'finger_{f}_{suffix}_{s}' for f in self.fingers for suffix in ('meta', '0', '1', '2')] + \
                      [f'finger_thumb_{i}_{s}' for i in range(3)]
         self.tips = tips
         P = lambda n: rest[n].translation.copy()  # noqa: E731
         self.P = P
         self.wrist = P(f'hand_{s}')
-        self.r = (P(f'finger_index_0_{s}') - P(f'finger_pinky_0_{s}')).normalized()
+        self.r = (P(f'finger_index_0_{s}') - P(f'finger_{self.outer}_0_{s}')).normalized()
         f = (P(f'finger_middle_0_{s}') - self.wrist).normalized()
         n = self.r.cross(f).normalized()
         bend = Vector()
-        for fg in FINGERS:
+        for fg in self.fingers:
             p0, p1, p2 = (P(f'finger_{fg}_{i}_{s}') for i in range(3))
             bend += (p2 - p1).normalized() - (p1 - p0).normalized()
         if n.dot(bend) < 0:
@@ -148,7 +151,7 @@ class Hand:
         s = self.s
         basis = {}
         palm = (self.P(f'finger_middle_0_{s}') - self.wrist).length
-        for fg in FINGERS:
+        for fg in self.fingers:
             outer = 1.0
             while True:
                 for j, q in self.finger_rots(fg, spec['fingers'][fg], spec['spread'], outer).items():
@@ -161,7 +164,7 @@ class Hand:
                     break
                 outer -= 0.05
         mats = self.fk(basis)
-        fingers = {fg: self.posed_chain(mats, fg) for fg in FINGERS}
+        fingers = {fg: self.posed_chain(mats, fg) for fg in self.fingers}
         basis.update(self.solve_thumb(spec['thumb'], fingers, basis))
         return basis
 
@@ -176,7 +179,8 @@ class Hand:
         if mode == 'over_middle':
             return (mid('middle') * 0.6 + mid('ring') * 0.4) + n * (FINGER_R + THUMB_R) * k, True
         if mode == 'over_ring':
-            return (mid('ring') * 0.6 + mid('pinky') * 0.4) + n * (FINGER_R + THUMB_R) * k, True
+            beside = mid('pinky') if 'pinky' in fingers else mid('ring')
+            return (mid('ring') * 0.6 + beside * 0.4) + n * (FINGER_R + THUMB_R) * k, True
         if mode == 'grip':
             return (mid('index') + fingers['index'][2]) * 0.5 + n * (FINGER_R + THUMB_R + 0.004) * k, True
         if mode == 'up':
@@ -191,11 +195,11 @@ class Hand:
         names = [f'finger_thumb_{i}_{s}' for i in range(3)]
         t = self.chain('thumb')
         target, wrap = self.thumb_target(mode, fingers)
-        palm_aim = (self.P(f'finger_middle_0_{s}') + self.P(f'finger_pinky_0_{s}')) * 0.5
+        palm_aim = (self.P(f'finger_middle_0_{s}') + self.P(f'finger_{self.outer}_0_{s}')) * 0.5
         hinge = (t[2] - t[1]).normalized().cross((palm_aim - t[1]).normalized()).normalized()
         frame = [self.n, self.r, self.f]
         obstacles = []
-        for fg in FINGERS:
+        for fg in self.fingers:
             c = fingers[fg]
             obstacles.append((c[0], c[1], PALM_R * self.k))
             obstacles += [(c[i], c[i + 1], FINGER_R * self.k) for i in range(1, 4)]
@@ -266,6 +270,8 @@ def tip_points(arm, meshes, side, pre=''):
     rest = {b.name: b.matrix_local for b in arm.data.bones}
     tips = {}
     for fg in FINGERS + ('thumb',):
+        if f'{pre}finger_{fg}_2_{side}' not in rest:
+            continue
         last = f'{pre}finger_{fg}_2_{side}'
         prev = f'{pre}finger_{fg}_1_{side}'
         a, b = rest[prev].translation, rest[last].translation
@@ -286,7 +292,7 @@ def tip_points(arm, meshes, side, pre=''):
 
 def has_hand(arm, side, pre=''):
     names = {b.name for b in arm.data.bones}
-    need = [f'{pre}hand_{side}'] + [f'{pre}finger_{f}_{k}_{side}' for f in FINGERS for k in ('meta', '0', '1', '2')] \
+    need = [f'{pre}hand_{side}'] + [f'{pre}finger_{f}_{k}_{side}' for f in FINGERS[:3] for k in ('meta', '0', '1', '2')] \
         + [f'{pre}finger_thumb_{i}_{side}' for i in range(3)]
     return all(n in names for n in need)
 
