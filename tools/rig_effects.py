@@ -179,7 +179,12 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None, e
                 continue
             begin = start_frame + effect['start'] * duration * fps
             stop_at = None
-            if effect['loop']:
+            # seconds simulated (hidden, on the clip's first pose) before it starts: an always-on effect is
+            # already going when the clip begins
+            lead = effect.get('lead', 0.0)
+            if lead:
+                length = duration + lead
+            elif effect['loop']:
                 # an ability's effect: started with the channel and stopped when it ends (its end cap plays out),
                 # not a seamless loop; a loop drops what is born before its window and dies in it (the glow at the
                 # singularity's heart)
@@ -187,13 +192,12 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None, e
                 stop_at = duration
             else:
                 length = min(duration * (1.0 - effect['start']) + TAIL, LONGEST)
-            warm = 0.0
             steps = round(length * RATE)
 
-            def clip_frame(age, begin=begin, end=start_frame + duration * fps):
-                return min(begin + age * fps, end)
+            def clip_frame(age, begin=begin, end=start_frame + duration * fps, lead=lead):
+                return min(max(begin + (age - lead) * fps, begin), end)
             # the clip's frames the bake samples, on its own steps
-            frames = sorted({round(clip_frame(warm + k / RATE), 3) for k in range(steps + 1)})
+            frames = sorted({round(clip_frame(k / RATE), 3) for k in range(steps + 1)})
             rig_points.model_needed = uses_model(definition)
             rig_points.add_bones(snapshot_bones(definition))
             sampled = rig_points.sample(effect, frames)
@@ -204,9 +208,10 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None, e
             points = sampled[frames[0]]
             ambient = bridge._scene_light(context, np.array(arm.matrix_world.translation) / target.scale,
                                           target.scale, target)
-            playback = {'loop': False, 'length': length, 'start': begin / fps, 'rate': RATE, 'stop_at': stop_at}
+            playback = {'loop': False, 'length': length, 'start': begin / fps - lead, 'rate': RATE,
+                        'stop_at': stop_at}
             holder = bridge._build_played(builder, f'{clip} {bridge._stem(effect["path"])}', definition, points,
-                                          warm, seed + n, ambient, playback, local=True, unset_value=1.0,
+                                          0.0, seed + n, ambient, playback, local=True, unset_value=1.0,
                                           moving=moving, ground=0.0)
             if holder is None:
                 continue
@@ -215,7 +220,7 @@ def add(context, arm, clip, start_frame, duration=None, seed=0, progress=None, e
             holder.matrix_basis = FRAME
             holder[TAG] = clip
             holder['dlr_clip_start'] = float(start_frame)
-            show_between(holder, begin, begin + length * fps)
+            show_between(holder, begin, begin + (length - lead) * fps)
             holders.append(holder)
     finally:
         scene.frame_set(frame_was[0], subframe=frame_was[1])

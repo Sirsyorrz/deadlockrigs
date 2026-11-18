@@ -521,6 +521,20 @@ class ClipEffects:
                 self._catalog.append((root, title, list(effects.values())))
         return self._catalog
 
+    def passive_effects(self):
+        """[effect] the hero's weapon plays all the time it's out (m_PassiveWeaponParticle: Graves' zombie hand
+        glow, Rem's candle, Baba's spell circle), placed as previewed."""
+        abilities = resource_data(self.content, 'scripts/abilities.vdata') or {}
+        out = []
+        for slot, name in self.hero_abilities().items():
+            if not slot.startswith('ESlot_Weapon_'):
+                continue
+            path = (abilities.get(name) or {}).get('m_PassiveWeaponParticle')
+            if path and self.effect(path) is not None and all(e['path'] != path for e in out):
+                out.append({'path': path, 'source': 'passive', 'ability': name, 'key': 'm_PassiveWeaponParticle',
+                            'start': 0.0, 'loop': True, 'drivers': _drivers(_config(self.effect(path), 'preview'))})
+        return out
+
     def ability_duration(self, name):
         """Seconds an ability lasts after its cast (Kelvin's dome: 5), 0 for channelled ones (they last their clips)."""
         props = ((resource_data(self.content, 'scripts/abilities.vdata') or {}).get(name) or {}).get(

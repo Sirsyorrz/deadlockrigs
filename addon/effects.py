@@ -13,7 +13,10 @@ TAG = 'dlr_clip_effect'
 PICKED = 'dlr_picked_effect'
 # seconds an ability's end effect is baked for
 END_LENGTH = 2.0
+# seconds the weapon's always-on effect has been going when the action starts
+PASSIVE_LEAD = 2.0
 _found = {}
+_passive = {}
 _catalogs = {}
 _abilities = {}
 
@@ -66,6 +69,23 @@ def effects_of(arm, clip):
             print(f'Clip effects of {clip}: {e}')
             return []
     return _found[key]
+
+
+def passive_of(arm):
+    """The effects the rig's weapon plays all the time (ClipEffects.passive_effects), cached per hero."""
+    from . import tools_module
+    if arm['dlrig'] not in _passive:
+        particles.bridge_particles()
+        rig_effects = tools_module('rig_effects')
+        clip_effects = tools_module('clip_effects')
+        session = tools_module('deadlock_bridge.session')
+        try:
+            found = clip_effects.for_model(session.content(), rig_effects.model_of(arm)).passive_effects()
+        except Exception as e:
+            print(f'Weapon effects of {arm["dlrig"]}: {e}')
+            return []
+        _passive[arm['dlrig']] = [{**e, 'lead': PASSIVE_LEAD} for e in found]
+    return _passive[arm['dlrig']]
 
 
 def catalog_of(arm):
@@ -136,7 +156,8 @@ class DLR_OT_clip_effects(bpy.types.Operator):
     bl_idname = 'dlr.clip_effects'
     bl_label = 'Add Clip Effects'
     bl_description = ("Add the particle effects the game plays with each clip in the rig's action (loaded or "
-                      "inserted Game Animations), over that clip's frames. Replaces the ones added before")
+                      "inserted Game Animations), over that clip's frames, and the weapon's always-on effect "
+                      "(Graves' hand glow, Rem's candle) over the whole action. Replaces the ones added before")
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -147,7 +168,12 @@ class DLR_OT_clip_effects(bpy.types.Operator):
     def execute(self, context):
         from . import tools_module
         arm = rig_of(context.active_object)
-        clips = merged([c for c in clips_of(arm) if effects_of(arm, c[0])], arm)
+        every = clips_of(arm)
+        clips = merged([c for c in every if effects_of(arm, c[0])], arm)
+        timed = {e['path'] for c in clips for e in effects_of(arm, c[0])}
+        passive = [e for e in passive_of(arm) if e['path'] not in timed]
+        if passive:
+            clips.append(('weapon', min(c[1] for c in every), max(c[2] for c in every)))
         if not clips:
             self.report({'WARNING'}, 'The game plays no effects with these clips')
             return {'CANCELLED'}
@@ -163,7 +189,8 @@ class DLR_OT_clip_effects(bpy.types.Operator):
             for i, (clip, first, last) in enumerate(clips):
                 def progress(n, total, i=i):
                     wm.progress_update(100 * (i + n / max(total, 1)) // len(clips))
-                holders += rig_effects.add(context, arm, clip, first, (last - first) / fps, progress=progress)
+                holders += rig_effects.add(context, arm, clip, first, (last - first) / fps, progress=progress,
+                                           effects=passive if clip == 'weapon' else None)
         except Exception as e:
             rig_effects.remove_holders(holders)
             self.report({'ERROR'}, f'Clip effects failed: {e}')
