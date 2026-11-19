@@ -59,7 +59,10 @@ def quick_gltf_import():
 
     def data_once(mh, tex_info, *args, **kwargs):
         if kwargs.get('is_data') and kwargs.get('forced_image') is None:
-            source, _ = gltf_texture.get_source(mh, mh.gltf.data.textures[tex_info.index])
+            source = gltf_texture.get_source(mh, mh.gltf.data.textures[tex_info.index])
+            # Blender 5.3's importer returns (source, use_ktx_loader), 5.2's just the source
+            if isinstance(source, tuple):
+                source = source[0]
             name = source is not None and mh.gltf.data.images[source].blender_image_name
             image = bpy.data.images.get(name) if name else None
             if image is not None and image.colorspace_settings.is_data:
