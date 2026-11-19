@@ -51,8 +51,13 @@ ABILITY_WORDS = {'ability', 'ult'}
 GENERIC_WORDS = {'idle', 'idle1', 'run', 'walk', 'sprint', 'stand', 'crouch', 'bindpose', 'bind', 'pose', 'ref',
                  'tools', 'animsetup', 'animbindpose', 'ui', 'shop', 'flinch', 'reload', 'melee', 'jump', 'slide',
                  'mantle', 'outofcombat', 'incombat', 'combat'}
-# the parts of a state's node path its conditions sit under (the state is the path before them)
-SM_PARTS = ('Entry Overrides', 'Global Transitions', 'Transition Conduit')
+# m_strAG2SourceName is the name the animgraph knows an ability by, which can be another hero's ability's name:
+# not a reference to that ability
+NOT_REFERENCES = {'m_strAG2SourceName'}
+# the source names every weapon, melee and item share
+GENERIC_SOURCES = {None, 'weapon', 'melee', 'item', 'alt_rmb_weapon', 'parry', 'mantle'}
+# animgraph IDs that pick a variant of the same moment (on the ground or in the air), not another action
+VARIANT_IDS = {'in_air', 'sliding', 'running', 'crouching'}
 FILLER_WORDS = {'weapon', 'arm', 'item', 'zoomed', 'open', 'close', 'center', 'centre', 'e', 'n', 's', 'w', 'ne', 'nw',
                 'se', 'sw', 'l', 'r', 'left', 'right', 'fwd', 'back', 'add', 'air', 'additive', 'ability', 'hero'}
 # the moments of an ability an effect's name and its clips' names share
@@ -216,15 +221,40 @@ def _core(clip):
     return {w for w in _words(clip) if w not in GENERIC_WORDS | STAGES | FILLER_WORDS and not w.isdigit()}
 
 
+def _matched_ids(nodes, index):
+    """The IDs a transition condition requires (Matches comparisons under And/Or, not under Not)."""
+    if not 0 <= index < len(nodes):
+        return set()
+    node = nodes[index]
+    if node.get('m_comparisionIDs') and node.get('m_comparison') == 'Matches':
+        return set(node['m_comparisionIDs'])
+    if 'NotNode' in node.get('_class', ''):
+        return set()
+    return set().union(*(_matched_ids(nodes, i) for i in node.get('m_conditionNodeIndices') or []))
+
+
+def _compares_ids(nodes, index):
+    if not 0 <= index < len(nodes):
+        return False
+    node = nodes[index]
+    if node.get('m_comparisionIDs'):
+        return True
+    if 'NotNode' in node.get('_class', ''):
+        return _compares_ids(nodes, node.get('m_nInputValueNodeIdx', -1))
+    return any(_compares_ids(nodes, i) for i in node.get('m_conditionNodeIndices') or [])
+
+
 def _graph_ids(name, block, graph):
-    """The animgraph IDs an ability goes by: its name, its casting actions, and IDs named after an action without its
-    stage (ability_flight_casting: ability_flight_channeling, vindicta_ability_flight)."""
+    """The animgraph IDs an ability goes by: its name or m_strAG2SourceName (Apollo's lunge goes by
+    citadel_ability_power_slash), its casting actions, and IDs named after an action without its stage
+    (ability_flight_casting: ability_flight_channeling, vindicta_ability_flight)."""
     actions = [a for a in (block.get('m_strAG2CastingAction'), block.get('m_strAG2CastCompletedAction')) if a]
-    ids = {i for i in [name, *actions] if i in graph}
+    source = block.get('m_strAG2SourceName')
+    ids = {i for i in [name, *actions, *([source] if source not in GENERIC_SOURCES else [])] if i in graph}
     for action in actions:
         stem = re.sub(r'_(casting|cast|channeling|channel|start)$', '', action)
         if stem != action and (stem.count('_') or len(stem) >= 6):
-            ids |= {i for i in graph if i.startswith(stem + '_') or i.endswith('_' + stem)}
+            ids |= {i for i in graph if i == stem or i.startswith(stem + '_') or i.endswith('_' + stem)}
     return ids
 
 
@@ -373,9 +403,9 @@ class ClipEffects:
         return [name, '_'.join(parts[1:])] if len(parts) > 2 else [name]
 
     def graph_actions(self):
-        """{graph ID: {clip}}: the clips the hero's animgraphs play in a state picked by that ID (an ability's name
-        or its m_strAG2CastingAction). The deepest picking state wins: a top-level selector over every ability says
-        nothing about one."""
+        """{graph ID: {clip}}: the clips the hero's animgraphs play in a state a transition or entry override
+        picks by that ID (an ability's name or its m_strAG2CastingAction). An ID picking a state and again a state
+        inside it keeps the inner one (powerslash_casting: Powerslash, then its Charge)."""
         if self._graph is not None:
             return self._graph
         self._graph = {}
@@ -385,25 +415,66 @@ class ClipEffects:
                 continue
             nodes, paths = data.get('m_nodes') or [], data.get('m_nodePaths') or []
             resources = data.get('m_resources') or []
-            scopes = []
+            picks, follows, entered, gates = {}, {}, set(), {}
             for node in nodes:
-                ids = node.get('m_comparisionIDs')
-                if ids and node.get('m_comparison') == 'Matches':
-                    parts = paths[node['m_nNodeIdx']].split('/')
-                    cut = next((i for i, p in enumerate(parts) if p in SM_PARTS), len(parts) - 1)
-                    scopes.append(('/'.join(parts[:cut]) + '/', ids))
+                states = node.get('m_stateDefinitions') or []
+                plain = {}
+                for state in states:
+                    here = paths[state['m_nStateNodeIdx']] + '/'
+                    conditions = [(state.get('m_nEntryConditionNodeIdx', -1), state['m_nStateNodeIdx'])]
+                    conditions += [(t.get('m_nConditionNodeIdx', -1),
+                                    states[t['m_nTargetStateIdx']]['m_nStateNodeIdx'])
+                                   for t in state.get('m_transitionDefinitions') or []]
+                    for condition, target in conditions[1:]:
+                        if not _matched_ids(nodes, condition) and not nodes[target].get('m_bIsOffState'):
+                            alone = not _compares_ids(nodes, condition)
+                            follows.setdefault(here, set()).add((paths[target] + '/', alone))
+                            if alone:
+                                plain.setdefault(here, set()).add(paths[target] + '/')
+                    for condition, target in conditions:
+                        gates.setdefault(paths[target] + '/', set()).update(_matched_ids(nodes, condition))
+                        for i in _matched_ids(nodes, condition):
+                            picks.setdefault(i, set()).add(paths[target] + '/')
+                if states:
+                    # what the machine plays with no ID asking: its default state and what that moves on to
+                    queue = [paths[states[node.get('m_nDefaultStateIndex', 0)]['m_nStateNodeIdx']] + '/']
+                    while queue:
+                        state = queue.pop()
+                        if state not in entered:
+                            entered.add(state)
+                            queue += plain.get(state, ())
+            entered |= {s for s, ids in gates.items() if ids and all(i.lower() in VARIANT_IDS for i in ids)}
+            machines = [(paths[node['m_nNodeIdx']],
+                         [paths[s['m_nStateNodeIdx']] + '/' for s in node['m_stateDefinitions']])
+                        for node in nodes if node.get('m_stateDefinitions')]
+            all_states = {s for _, states in machines for s in states}
+            outer = {s for where, states in machines
+                     if not any(where.startswith(a) for a in all_states) for s in states}
+            clips = []
             for node in nodes:
                 slot = node.get('m_nDataSlotIdx', -1)
-                if ('ClipNode' not in node.get('_class', '') or not 0 <= slot < len(resources)
-                        or not resources[slot].endswith('.vnmclip')):
-                    continue
-                clip = resources[slot].rsplit('/', 1)[-1][:-len('.vnmclip')]
-                inside = [s for s in scopes if paths[node['m_nNodeIdx']].startswith(s[0])]
-                deepest = max((len(s[0]) for s in inside), default=0)
-                for scope, ids in inside:
-                    if len(scope) == deepest:
-                        for i in ids:
-                            self._graph.setdefault(i, set()).add(clip)
+                if ('ClipNode' in node.get('_class', '') and 0 <= slot < len(resources)
+                        and resources[slot].endswith('.vnmclip')):
+                    where = paths[node['m_nNodeIdx']]
+                    clips.append((where, {s for s in all_states if where.startswith(s)},
+                                  resources[slot].rsplit('/', 1)[-1][:-len('.vnmclip')]))
+            for i, states in picks.items():
+                inner = {s for s in states if not any(o != s and o.startswith(s) for o in states)}
+                # then the states it moves on to by itself (storm cloud start, loop), and on leaving the ID
+                # (DoesntMatch: storm cloud end) inside an ability's state (not back to a top state: Bebop's gun);
+                # in those only what plays by default or in a variant (Bebop's gun opening, not its shooting;
+                # Abrams' charge loop in the air)
+                queue, later = list(inner), set()
+                while queue:
+                    for s, alone in follows.get(queue.pop(), ()):
+                        if s not in inner | later and (alone or s not in outer):
+                            later.add(s)
+                            queue.append(s)
+                found = {clip for where, _, clip in clips if any(where.startswith(s) for s in inner)}
+                found |= {clip for where, above, clip in clips for s in later
+                          if where.startswith(s) and all(a in entered for a in above if len(a) > len(s))}
+                if found:
+                    self._graph.setdefault(i, set()).update(found)
         return self._graph
 
     def ability_clips(self, abilities, own):
@@ -423,15 +494,18 @@ class ClipEffects:
             # (hyperbeam_run_n), not the shared ones (item_run_n)
             own_clips = {c for c in clips if not _words(c) & GENERIC_WORDS}
             out[name] = {c for c in clips if _core(c) & _cores(own_clips)}
-        # a clip in two abilities' sets (an overlay graph, one state for two IDs) goes to the one it's named after;
-        # words in several abilities' names (the hero's codename) tell none apart
+        # a clip in two abilities' sets (an overlay graph, one state for two IDs) goes to the one it's named after,
+        # and one named after another ability is that one's (Kelvin's icebeam_outro in the item idles Ice Grenade's
+        # ID picks; a weapon's name doesn't count: Venator's weapon swap plays crossbow_start); words in several
+        # abilities' names (the hero's codename) tell none apart
         named = {name: _words(name) | _words((abilities.get(name) or {}).get('m_strAG2CastingAction') or '')
                  for name in own}
         common = {w for w in set().union(*named.values()) if sum(w in ws for ws in named.values()) > 1}
         shared = {c for name in out for c in out[name] if sum(c in out[o] for o in out) > 1}
         for name, clips in out.items():
-            out[name] = {c for c in clips if c not in shared or _core(c) & (named[name] - common)
-                         or not any(_core(c) & (named[o] - common) for o in out if c in out[o])}
+            out[name] = {c for c in clips if _core(c) & (named[name] - common) or not any(
+                _core(c) & (named[o] - common) for o in named
+                if o != name and (c in out.get(o, ()) if c in shared else '_weapon_' not in o))}
         return out
 
     def clip_names(self):
@@ -465,8 +539,8 @@ class ClipEffects:
                     continue
                 reached[root, name] = owner
                 block = abilities.get(name) or modifiers.get(name)
-                for _, value in _walk(block if isinstance(block, dict) else {}):
-                    if value in abilities or value in modifiers:
+                for key, value in _walk(block if isinstance(block, dict) else {}):
+                    if (value in abilities or value in modifiers) and key not in NOT_REFERENCES:
                         queue.append((value, value if value in abilities else owner))
         owners = list(dict.fromkeys(reached.values()))
         by_ability = self.ability_clips(abilities, owners)
@@ -495,7 +569,8 @@ class ClipEffects:
                 sequence = sequence.replace('\\', '/').rsplit('/', 1)[-1].split('.', 1)[0]
                 drivers, guessed, extra = self.sized(value, _drivers(cfg), _radius(block)), False, set()
                 if self._specific(sequence, clips):
-                    found = set(self.names(sequence))
+                    # only the names that are clips: crossbow_run_n without its prefix would match every run_n
+                    found = set(self.names(sequence)) & self.clip_names()
                     if clips and not found & clips and _cores(found) & _cores(clips):
                         # previewed on an older clip of the ability the animgraph no longer plays
                         # (bebop_hyperbeam_charge_loop)
@@ -548,7 +623,7 @@ class ClipEffects:
                 named.add(name)
                 block = abilities.get(name) or modifiers.get(name)
                 for key, value in _walk(block if isinstance(block, dict) else {}):
-                    if value in abilities or value in modifiers:
+                    if (value in abilities or value in modifiers) and key not in NOT_REFERENCES:
                         queue.append(value)
                     if not value.endswith('.vpcf') or value in effects or _skipped(key, value.rsplit('/', 1)[-1]):
                         continue
