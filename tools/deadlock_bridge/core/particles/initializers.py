@@ -579,6 +579,64 @@ class RingWave(Initializer):
         v.set("velocity", v.get("velocity") + outward * speed[:, None])
 
 
+@initializer("C_INIT_CreateInEpitrochoid")
+class CreateInEpitrochoid(Initializer):
+    """Places particles on an epitrochoid in the plane of two axes of a transform (dll ctor 0x180179810, init
+    0x1801282c0 = VRF). The curve parameter is density x creation time, or density x a running count."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.component1 = p.int("m_nComponent1", 0)
+        self.component2 = p.int("m_nComponent2", 1)
+        self.transform = p.transform("m_TransformInput", Transform(0))
+        self.density = p.number("m_flParticleDensity", 10.0)
+        self.offset = p.number("m_flOffset", 4.0)
+        self.radius1 = p.number("m_flRadius1", 40.0)
+        self.radius2 = p.number("m_flRadius2", 24.0)
+        self.use_count = p.bool("m_bUseCount")
+        self.local = p.bool("m_bUseLocalCoords")
+        self.offset_existing = p.bool("m_bOffsetExistingPos")
+        self.count = 0
+
+    def reset(self):
+        self.count = 0
+
+    def initialize(self, sim, v):
+        n = v.n
+        if n == 0:
+            return
+        # float32 as the dll: a rolling radius of 0 (+ epsilon) makes the roll angle ~1e8 x t, whose sine is only
+        # reproducible from the same float32 value.
+        f32 = np.float32
+        rolling = column(self.radius2(sim, v), n).astype(f32) + np.finfo(f32).eps
+        outer = column(self.radius1(sim, v), n).astype(f32) + rolling
+        pen = column(self.offset(sim, v), n)
+        density = column(self.density(sim, v), n).astype(f32)
+        if self.use_count:
+            t = (self.count + np.arange(n)).astype(f32) * density
+            self.count += n
+        else:
+            t = density * v.get("creation_time").astype(f32)
+        roll = (t / rolling * outer).astype(np.float64)
+        t = t.astype(np.float64)
+        outer = outer.astype(np.float64)
+        curve = np.zeros((n, 3))
+        # Both terms add (the classical epitrochoid subtracts the second); axis -1 leaves that line out.
+        if 0 <= self.component1 <= 2:
+            curve[:, self.component1] = np.cos(t) * outer + np.cos(roll) * pen
+        if 0 <= self.component2 <= 2:
+            curve[:, self.component2] = np.sin(t) * outer + np.sin(roll) * pen
+        transform = self.transform(sim)
+        if self.local:
+            curve = transform_directions(transform, curve)
+        if self.offset_existing:
+            v.set("position", v.get("position") + curve)
+            v.set("previous", v.get("previous") + curve)
+        else:
+            v.set("position", transform[1] + curve)
+            v.set("previous", transform[1] + curve)
+
+
 @initializer("C_INIT_NormalAlignToCP")
 class NormalAlignToCP(Initializer):
     """Sets the particle normal to one of a transform's axes."""
