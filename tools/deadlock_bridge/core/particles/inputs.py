@@ -301,26 +301,24 @@ class LiteralVector(Vector):
 
 
 class ParticleVector(Vector):
-    """A particle vector attribute, scaled, or a control point's value when one is named."""
+    """A particle vector attribute (current or initial), scaled. The control point fields every vector input
+    serializes don't apply to it (particles.dll); VRF reads them, so its port took CP0 here."""
 
-    def __init__(self, p: Params):
+    def __init__(self, p: Params, initial: bool):
         self.field = p.int("m_nVectorAttribute", F.COLOR)
         self.scale = p.vector("m_vVectorAttributeScale", (1, 1, 1))
-        self.cp = p.int("m_nControlPoint", -1)
-        self.cp_scale = p.vector("m_vCPValueScale", (1, 1, 1))
-        self.cp_offset = p.vector("m_vCPRelativePosition")
-        self.cp_direction = p.vector("m_vCPRelativeDir")
+        self.initial = initial
 
     def __call__(self, sim, p=None):
-        if self.cp >= 0:
-            point = sim.control_point(self.cp)
-            value = point.position * self.cp_scale + self.cp_offset
-            if np.any(self.cp_direction):
-                value = value + (point.forward - self.cp_direction if point.oriented else -self.cp_direction)
-            return value
         if p is None:
             return np.zeros(3)
-        return p.field(self.field) * self.scale
+        # Initializers read the current value: the dll does so, as the initial values are taken after them.
+        read = p.initial_field if self.initial and not sim.initializing else p.field
+        value = read(self.field)
+        if value.ndim == 1:
+            # A scalar or unknown attribute (neutral_book_creature names 32, which the port has no name for).
+            value = np.repeat(value[:, None], 3, axis=1)
+        return value * self.scale
 
 
 class FunctionVector(Vector):
@@ -421,7 +419,7 @@ def read_vector(params: Params, key: str, default) -> Vector:
     if kind == "PVEC_TYPE_LITERAL_COLOR":
         return LiteralVector(p.color("m_LiteralColor", (0, 0, 0)))
     if kind in ("PVEC_TYPE_PARTICLE_VECTOR", "PVEC_TYPE_PARTICLE_INITIAL_VECTOR"):
-        return ParticleVector(p)
+        return ParticleVector(p, kind == "PVEC_TYPE_PARTICLE_INITIAL_VECTOR")
     if kind == "PVEC_TYPE_PARTICLE_VELOCITY":
         return FunctionVector(lambda sim, v: v.get("velocity") if v is not None else np.zeros(3))
     if kind == "PVEC_TYPE_CP_VALUE":

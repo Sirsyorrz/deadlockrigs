@@ -361,6 +361,7 @@ class Simulation:
         self.started = False
         self.delay = 0.0
         self.end_cap_child = False
+        self.initializing = False
         self._control_points: dict[int, ControlPoint] = {}
         # Points a parent's operator set on this system alone (C_OP_SetChildControlPoints): they shadow the
         # root's for this system and its children until something sets that point higher up the tree again.
@@ -637,9 +638,13 @@ class Simulation:
         view.set("creation_time", self.age - np.asarray(ages[:n], np.float64))
         view.set("age", np.asarray(ages[:n], np.float64))
         view.set("velocity", 0.0)
-        for initializer in self.initializers:
-            if initializer.runs_in_phase(self):
-                initializer.initialize(self, view)
+        self.initializing = True
+        try:
+            for initializer in self.initializers:
+                if initializer.runs_in_phase(self):
+                    initializer.initialize(self, view)
+        finally:
+            self.initializing = False
         # The initial velocity becomes the previous position; C_OP_BasicMovement derives motion from the pair.
         view.set("previous", view.get("position") - view.get("velocity") * self.frame_time)
         particles.snapshot_initial(rows)
