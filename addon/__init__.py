@@ -726,7 +726,36 @@ CLASSES = (DLR_Preferences, DLR_OT_build, DLR_OT_cancel, DLR_OT_open, DLR_OT_app
            DLR_OT_open_folder, DLR_PT_main, DLR_PT_map)
 
 
+SUBMODULES = (crop, textures, riglight, particles, effects, npcs, ziplines, gamerender)
+
+
 def register():
+    try:
+        _register()
+    except Exception:
+        # Blender doesn't call unregister after a failed register and keeps the submodules imported, so the next
+        # enable would stop at 'already registered' instead of showing this error again
+        _clean_up_failed_register()
+        raise
+
+
+def _clean_up_failed_register():
+    for step in (*(m.unregister for m in reversed(SUBMODULES)), _unregister_own):
+        try:
+            step()
+        except Exception:
+            pass
+    left = [v for m in (sys.modules[__name__], *SUBMODULES) for v in vars(m).values()
+            if isinstance(v, type) and issubclass(v, bpy.types.bpy_struct) and v.__module__ == m.__name__
+            and getattr(v, 'is_registered', False)]
+    for c in sorted(left, key=lambda c: not getattr(c, 'bl_parent_id', '')):
+        try:
+            bpy.utils.unregister_class(c)
+        except Exception:
+            pass
+
+
+def _register():
     for c in CLASSES:
         bpy.utils.register_class(c)
     bpy.types.Scene.dlr_hero = bpy.props.EnumProperty(name='Hero', items=hero_items)
@@ -741,27 +770,19 @@ def register():
         description="Open or append the hero standing as in the game's idle (the pose its weapon hold comes from) "
                     "instead of the rest pose. The rig panel's Idle Pose button does the same later")
     bpy.app.handlers.load_post.append(on_load)
-    crop.register()
-    textures.register()
-    riglight.register()
-    particles.register()
-    effects.register()
-    npcs.register()
-    ziplines.register()
-    gamerender.register()
+    for m in SUBMODULES:
+        m.register()
 
 
 def unregister():
     if _job:
         _job.cancel()
-    gamerender.unregister()
-    ziplines.unregister()
-    npcs.unregister()
-    effects.unregister()
-    particles.unregister()
-    riglight.unregister()
-    textures.unregister()
-    crop.unregister()
+    for m in reversed(SUBMODULES):
+        m.unregister()
+    _unregister_own()
+
+
+def _unregister_own():
     if on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load)
     del bpy.types.Scene.dlr_hero
