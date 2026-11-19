@@ -64,6 +64,12 @@ FILLER_WORDS = {'weapon', 'arm', 'item', 'zoomed', 'open', 'close', 'center', 'c
 STAGES = {'cast', 'charge', 'fire', 'loop', 'attached', 'channel', 'start', 'end', 'windup', 'land', 'exit', 'intro',
           'throw', 'hold', 'release', 'jump', 'dash', 'activate'}
 END_WORDS = {'end', 'ending', 'finish', 'endcap', 'removal'}
+# stage words of the moments before and at an ability's release, for effects whose stage no clip names: an ability
+# with a casting action (the charge) and a cast completed one (the slash) plays them on that action's clips
+BUILD_STAGES = {'charge', 'windup', 'hold', 'channel'}
+RELEASE_STAGES = {'cast', 'fire', 'release', 'throw', 'dash', 'land', 'activate'}
+# what a weapon's muzzle flash plays on: a shot, not the runs and idles artists preview it with
+SHOT_WORDS = {'shoot', 'fire', 'shot'}
 STAGE_ALIASES = {'precast': 'cast', 'casting': 'cast', 'charging': 'charge', 'channeling': 'channel',
                  'channelling': 'channel', 'landing': 'land', 'activation': 'activate'}
 # effects that show on whoever an ability hits, or away from the caster; generic/ and modifiers/ hold the shared
@@ -271,10 +277,24 @@ def _cores(clips):
     return set().union(*map(_core, clips))
 
 
-def _same_stage(key, path, clips):
-    """The clips sharing a stage word with the effect's key or name (m_ChargeParticle: the charge clips), or all."""
-    stages = _stages(key) | _stages(path.rsplit('/', 1)[-1])
-    return {c for c in clips if _stages(c) & stages} or set(clips)
+def _same_stage(key, path, clips, phases=None):
+    """The clips sharing a stage word with the effect's name, else its key (m_CastParticle
+    yamato_power_slash_charge: the charge clips), else the casting or cast completed action's clips the stage
+    belongs to (yamato_blade_dash: the slash), else all."""
+    name, key_stages = _stages(path.rsplit('/', 1)[-1]), _stages(key)
+    for stages in (name, key_stages):
+        found = {c for c in clips if _stages(c) & stages}
+        if found:
+            return found
+    casting, completed = phases or (set(), set())
+    # Billy's ram has a casting action only: its "charge" is the run, not a windup
+    if not (casting and completed):
+        return set(clips)
+    if (name | key_stages) & RELEASE_STAGES and completed:
+        return set(completed)
+    if (name | key_stages) & BUILD_STAGES and casting:
+        return set(casting)
+    return set(clips)
 
 
 _shared = {}
@@ -544,6 +564,7 @@ class ClipEffects:
                         queue.append((value, value if value in abilities else owner))
         owners = list(dict.fromkeys(reached.values()))
         by_ability = self.ability_clips(abilities, owners)
+        graph = self.graph_actions()
         # effects of the hero's own folders; others reached through shared modifiers (item barriers, another hero's
         # buff reused) show on whoever has them
         folders = {os.path.dirname(v) for root in own for _, v in _walk(abilities.get(root) or {})
@@ -555,9 +576,13 @@ class ClipEffects:
             if not isinstance(block, dict):
                 continue
             if owner in by_ability or owner == root or (abilities.get(owner) or {}).get('m_strAG2CastingAction'):
-                clips = by_ability.get(owner, set())
+                clips_of = owner
             else:
-                clips = by_ability.get(root, set())
+                clips_of = root
+            clips = by_ability.get(clips_of, set())
+            actions = abilities.get(clips_of) or {}
+            phases = tuple(set(graph.get(actions.get(k) or None, ())) & clips
+                           for k in ('m_strAG2CastingAction', 'm_strAG2CastCompletedAction'))
             for key, value in _walk(block):
                 if not value.endswith('.vpcf') or value in seen or _skipped(key, value.rsplit('/', 1)[-1]):
                     continue
@@ -574,19 +599,23 @@ class ClipEffects:
                     if clips and not found & clips and _cores(found) & _cores(clips):
                         # previewed on an older clip of the ability the animgraph no longer plays
                         # (bebop_hyperbeam_charge_loop)
-                        extra = _same_stage(key, value, clips)
+                        extra = _same_stage(key, value, clips, phases)
                 elif not clips or _status(key, value):
                     continue
                 elif _on_hero(cfg, attachments):
-                    found = _same_stage(key, value, clips)
+                    found = _same_stage(key, value, clips, phases)
                 elif (not any(d['type'] != 'PATTACH_WORLDORIGIN' for d in drivers) and 'ability_cast' in attachments
                       and _stages(key) | _stages(value.rsplit('/', 1)[-1])):
                     # placed by the game code alone (preview at the world origin): a cast's flash goes where
                     # the model says casts come from
                     drivers = [CAST_DRIVER] + [d for d in drivers if d['cp'] != 0]
-                    found, guessed = _same_stage(key, value, clips), True
+                    found, guessed = _same_stage(key, value, clips, phases), True
                 else:
                     continue
+                if 'muzzleflash' in key.lower() and '_weapon_' in name:
+                    found = {c for c in found | clips if _words(c) & SHOT_WORDS}
+                    if not found:
+                        continue
                 seen.add(value)
                 self._ability.append({
                     'path': value, 'source': 'ability', 'ability': name, 'key': key, 'start': 0.0, 'loop': True,
