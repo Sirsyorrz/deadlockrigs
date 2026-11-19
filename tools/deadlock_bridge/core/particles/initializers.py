@@ -6,7 +6,7 @@ import numpy as np
 
 from . import fields as F
 from . import models, noise
-from .inputs import Transform, transform_directions, transform_points
+from .inputs import Mapping, Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
                      SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, enum_names, lerp, remap_clamped,
                      saturate)
@@ -122,6 +122,81 @@ def vector_expression(expression: int, a, b, amount, clamp_lerp: bool):
 
 def normalize_with_epsilon(values):
     return values / np.sqrt(np.sum(values * values, axis=1, keepdims=True) + 1.1920929e-7)
+
+
+def float_range(field: int):
+    """The range particles.dll clamps a float attribute to when an expression or set operator writes it."""
+    if field in (F.ALPHA, F.ALPHA_ALTERNATE):
+        return 0.0, 1.0
+    if field in (F.RADIUS, F.TRAIL_LENGTH):
+        return 0.0, np.inf
+    return -np.inf, np.inf
+
+
+SCALAR_EXPRESSIONS = {name: i for i, name in enumerate(
+    ("SCALAR_EXPRESSION_ADD", "SCALAR_EXPRESSION_SUBTRACT", "SCALAR_EXPRESSION_MUL", "SCALAR_EXPRESSION_DIVIDE",
+     "SCALAR_EXPRESSION_INPUT_1", "SCALAR_EXPRESSION_MIN", "SCALAR_EXPRESSION_MAX", "SCALAR_EXPRESSION_MOD",
+     "SCALAR_EXPRESSION_EQUAL", "SCALAR_EXPRESSION_GT", "SCALAR_EXPRESSION_LT"))}
+SCALAR_COMPARISONS = (8, 9, 10)
+
+
+def scalar_expression(expression: int, a, b):
+    """Two (n,) inputs combined per particle as particles.dll does, or None for an unknown expression (the attribute
+    is then left as it is). Dividing by 0 gives 0, a modulo by 0 gives the first input."""
+    if expression == 0:
+        return a + b
+    if expression == 1:
+        return a - b
+    if expression == 2:
+        return a * b
+    if expression == 3:
+        return np.divide(a, b, out=np.zeros_like(a), where=b != 0)
+    if expression == 4:
+        return a.copy()
+    if expression == 5:
+        return np.minimum(a, b)
+    if expression == 6:
+        return np.maximum(a, b)
+    if expression == 7:
+        return np.where(b != 0, np.fmod(a, np.where(b != 0, b, 1.0)), a)
+    if expression == 8:
+        return (a == b).astype(np.float64)
+    if expression == 9:
+        return (a > b).astype(np.float64)
+    if expression == 10:
+        return (a < b).astype(np.float64)
+    return None
+
+
+def output_remap(p: Params):
+    block = p.get("m_flOutputRemap")
+    return Mapping(p.nested(block)) if isinstance(block, dict) else None
+
+
+@initializer("C_INIT_SetAttributeToScalarExpression")
+class SetAttributeToScalarExpression(Initializer):
+    """Sets a float attribute of new particles to an expression of two float inputs, through an output remap (dll
+    ctor 0x1801b8f70, init 0x180168990). No strength and no degrees, unlike InitFloat."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.expression = p.enum("m_nExpression", SCALAR_EXPRESSIONS, 0)
+        self.input1 = p.number("m_flInput1", 0.0)
+        self.input2 = p.number("m_flInput2", 0.0)
+        self.remap = output_remap(p)
+        self.field = p.int("m_nOutputField", F.RADIUS)
+        self.method = p.enum("m_nSetMethod", SET_METHODS, SET_REPLACE)
+
+    def initialize(self, sim, v):
+        if F.is_vector(self.field) or F.name(self.field) is None:
+            return
+        value = scalar_expression(self.expression, column(self.input1(sim, v), v.n), column(self.input2(sim, v), v.n))
+        if value is None:
+            return
+        if self.remap is not None:
+            value = column(self.remap(value), v.n)
+        value = set_at_spawn(value, v.field(self.field), self.method, sim.frame_time)
+        v.set_field(self.field, np.clip(value, *float_range(self.field)))
 
 
 @initializer("C_INIT_SetVectorAttributeToVectorExpression")

@@ -6,9 +6,10 @@ import numpy as np
 
 from . import fields as F
 from . import models, noise
-from .initializers import (TRACE_MISS, TRACE_MISS_END, TRACE_MISS_KILL, TRACE_MISS_NONE, TransformOrientation, column,
-                           VECTOR_EXPRESSIONS, ground_trace, heading_from_cp, models_control_point, normalize_with_epsilon,
-                           path_evaluate, path_points, rows3, vector_expression, _path_parameters)
+from .initializers import (SCALAR_COMPARISONS, SCALAR_EXPRESSIONS, TRACE_MISS, TRACE_MISS_END, TRACE_MISS_KILL,
+                           TRACE_MISS_NONE, TransformOrientation, column, VECTOR_EXPRESSIONS, float_range, ground_trace,
+                           heading_from_cp, models_control_point, normalize_with_epsilon, output_remap, path_evaluate, path_points, rows3, scalar_expression, vector_expression,
+                           _path_parameters)
 from .inputs import Transform, transform_directions, transform_points
 from .params import (SET_ADD_CURRENT, SET_ADD_INITIAL, SET_METHODS, SET_RAMP_CURRENT, SET_REPLACE,
                      SET_SCALE_CURRENT, SET_SCALE_INITIAL, Params, bias, clamp_between, enum_names, lerp, remap,
@@ -49,14 +50,6 @@ def set_by_method(v, field: int, value, method: int, dt: float):
     if method == SET_RAMP_CURRENT:
         return v.field(field) + value * dt
     return value
-
-
-def _float_range(field: int):
-    if field in (F.ALPHA, F.ALPHA_ALTERNATE):
-        return 0.0, 1.0
-    if field in (F.RADIUS, F.TRAIL_LENGTH):
-        return 0.0, np.inf
-    return -np.inf, np.inf
 
 
 # Movement ---------------------------------------------------------------------------------------------------------
@@ -304,10 +297,39 @@ class SetFloat(Operator):
             value = np.radians(value)
         target = set_by_method(v, self.field, value, self.method, dt)
         current = v.field(self.field)
-        low, high = _float_range(self.field)
+        low, high = float_range(self.field)
         blended = np.minimum(np.maximum(lerp(current, target, saturate(self.lerp(sim, v))), low), high)
         base = v.initial_field(self.field) if self.method in (SET_SCALE_INITIAL, SET_ADD_INITIAL) else current
         v.set_field(self.field, lerp(base, blended, strength))
+
+
+@register(OPERATORS, "C_OP_SetAttributeToScalarExpression")
+class SetAttributeToScalarExpression(Operator):
+    """Sets a float attribute every step to an expression of two float inputs, through an output remap (dll ctor
+    0x180261820, operate 0x180207e50; VRF has the same). The strength scales arithmetic results before the remap,
+    not comparisons; no degrees."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.expression = p.enum("m_nExpression", SCALAR_EXPRESSIONS, 0)
+        self.input1 = p.number("m_flInput1", 0.0)
+        self.input2 = p.number("m_flInput2", 0.0)
+        self.remap = output_remap(p)
+        self.field = p.int("m_nOutputField", F.RADIUS)
+        self.method = p.enum("m_nSetMethod", SET_METHODS, SET_REPLACE)
+
+    def operate(self, sim, v, dt, strength):
+        if F.is_vector(self.field) or F.name(self.field) is None:
+            return
+        value = scalar_expression(self.expression, column(self.input1(sim, v), v.n), column(self.input2(sim, v), v.n))
+        if value is None:
+            return
+        if self.expression not in SCALAR_COMPARISONS:
+            value = value * strength
+        if self.remap is not None:
+            value = column(self.remap(value), v.n)
+        value = set_by_method(v, self.field, value, self.method, dt)
+        v.set_field(self.field, np.clip(value, *float_range(self.field)))
 
 
 @register(OPERATORS, "C_OP_SetFloatCollection")
@@ -329,7 +351,7 @@ class SetFloatCollection(Operator):
             return
         value = float(np.asarray(self.value(sim)).ravel()[0]) * strength
         blend = saturate(float(np.asarray(self.lerp(sim)).ravel()[0]) * strength)
-        low, high = _float_range(self.field)
+        low, high = float_range(self.field)
         current = v.field(self.field)
         if self.method == SET_REPLACE:
             lanes = np.clip(lerp(current[:4], value, blend), low, high)
@@ -1285,7 +1307,7 @@ class RampScalarLinear(Operator):
             return
         rate = lerp(self.rate_min, self.rate_max, r.for_particle(ids, 0))
         current = v.field(self.field)
-        low, high = _float_range(self.field)
+        low, high = float_range(self.field)
         v.set_field(self.field, np.where(mask, np.clip(current + rate * dt * strength, low, high), current))
 
 
