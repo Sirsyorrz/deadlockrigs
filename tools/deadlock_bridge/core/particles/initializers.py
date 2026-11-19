@@ -726,6 +726,48 @@ class RemapParticleCountToScalar(Initializer):
         v.set_field(self.field, current)
 
 
+@initializer("C_INIT_CreationNoise")
+class CreationNoise(Initializer):
+    """Sets a float attribute from value noise (noise.game3) at the particle's position plus a time term, mapped
+    into an output range (dll ctor ~0x180194f0a, init 0x1801484d0 = VRF). Roll, yaw and pitch ranges are degrees
+    (roll speed is not converted), alpha fields clamp to 0..1."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.field = p.int("m_nFieldOutput", F.RADIUS)
+        self.absolute = p.bool("m_bAbsVal")
+        self.absolute_invert = p.bool("m_bAbsValInv")
+        self.offset = p.float("m_flOffset")
+        low = p.float("m_flOutputMin")
+        high = p.float("m_flOutputMax", 1.0)
+        if self.field in (F.ROLL, F.YAW, F.PITCH):
+            low, high = math.radians(low), math.radians(high)
+        half = 1.0 if self.absolute else 0.5
+        self.base = low + (1.0 - half) * (high - low)
+        self.span = half * (high - low)
+        self.time_scale = p.float("m_flNoiseScale", 0.1)
+        self.location_scale = p.float("m_flNoiseScaleLoc", 0.001)
+        self.world_time_scale = p.float("m_flWorldTimeScale")
+        self.location_offset = p.vector("m_vecOffsetLoc")
+
+    def initialize(self, sim, v):
+        if F.is_vector(self.field) or F.name(self.field) is None or v.n == 0:
+            return
+        # One time term for the whole batch, from its first particle (the dll's per-call form). Plat_MSTime in the
+        # game: wall clock milliseconds, here the system's own clock (as NoiseEmitter).
+        time_term = ((float(v.get("creation_time")[0]) + self.offset) * self.time_scale
+                     + sim.age * 1000.0 * self.world_time_scale)
+        value = noise.game3((v.get("position") + self.location_offset) * self.location_scale + time_term)
+        if self.absolute:
+            value = np.abs(value)
+        if self.absolute_invert:
+            value = 1.0 - value
+        value = self.base + self.span * value
+        if self.field in (F.ALPHA, F.ALPHA_ALTERNATE):
+            value = np.clip(value, 0.0, 1.0)
+        v.set_field(self.field, value)
+
+
 @initializer("C_INIT_InitialVelocityNoise")
 class InitialVelocityNoise(Initializer):
     """Adds a velocity from value noise over the particle's position and birth time, mapped per component between
