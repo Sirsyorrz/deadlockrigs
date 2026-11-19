@@ -1016,7 +1016,9 @@ class RenderProjected(RenderSprites):
         tint = material.vector("g_vColorTint", (1.0, 1.0, 1.0))[:3]
         data = dict(p.data)
         data["m_vecTexturesInput"] = [{"m_hTexture": texture}]
-        data["m_nOrientationType"] = "PARTICLE_ORIENTATION_WORLD_Z_ALIGNED"
+        self.orient_to_normal = p.bool("m_bOrientToNormal")
+        data["m_nOrientationType"] = ("PARTICLE_ORIENTATION_ALIGN_TO_PARTICLE_NORMAL" if self.orient_to_normal
+                                      else "PARTICLE_ORIENTATION_WORLD_Z_ALIGNED")
         data["m_flSelfIllumAmount"] = material.float("g_flSelfIllumScale", 0.0)
         data["m_vecColorScale"] = list(tint)
         data["m_flAlphaScale"] = material.float("g_flOpacityScale", 1.0) * material.float("g_flAlbedoOpacity", 1.0)
@@ -1024,15 +1026,33 @@ class RenderProjected(RenderSprites):
 
     def build(self, sim, ambient) -> Sprites | None:
         out = super().build(sim, ambient)
-        if out is not None:
-            out.position = out.position + [0.0, 0.0, 1.0]  # a game unit up: the card sits on the floor it projects on
-            # Texture top along -Y, turned clockwise by roll: the convention under which the cone decals'
-            # roll = -90 - CP yaw (C_INIT_RemapInitialTransformDirectionToRotation) points them along the CP's
-            # forward. Inferred from how they are authored, not read from the game's shader.
-            out.up = np.tile([0.0, -1.0, 0.0], (out.count, 1))
-            out.right = np.tile([-1.0, 0.0, 0.0], (out.count, 1))
-            out.roll = -out.roll
+        if out is None:
+            return None
+        # Texture top along -Y, turned clockwise by roll: the convention under which the cone decals'
+        # roll = -90 - CP yaw (C_INIT_RemapInitialTransformDirectionToRotation) points them along the CP's
+        # forward. Inferred from how they are authored, not read from the game's shader.
+        up = np.tile([0.0, -1.0, 0.0], (out.count, 1))
+        right = np.tile([-1.0, 0.0, 0.0], (out.count, 1))
+        normal = np.tile([0.0, 0.0, 1.0], (out.count, 1))
+        if self.orient_to_normal:
+            # Wall decals (bebop's beam end, Abrams' charge impact): the card faces the particle normal, its axes
+            # carried there from the floor convention by the shortest turn so a +Z normal draws as before.
+            normal = _safe_normalize(np.cross(out.right, out.up), [0.0, 0.0, 1.0])  # what ALIGN_TO_NORMAL built on
+            up, right = (_turn_from_z(axis, normal) for axis in (up, right))
+        out.position = out.position + normal  # a game unit off the surface it projects on
+        out.up, out.right = up, right
+        out.roll = -out.roll
         return out
+
+
+def _turn_from_z(vectors, normal):
+    """Rotate each vector by the shortest rotation taking +Z to its normal (Rodrigues); -Z turns about X."""
+    axis = np.cross([0.0, 0.0, 1.0], normal)
+    sin = np.linalg.norm(axis, axis=1, keepdims=True)
+    cos = normal[:, 2:3]
+    axis = np.where(sin > 1e-9, axis / np.maximum(sin, 1e-12), [1.0, 0.0, 0.0])
+    return (vectors * cos + np.cross(axis, vectors) * sin
+            + axis * np.sum(axis * vectors, axis=1, keepdims=True) * (1.0 - cos))
 
 
 class Tubes:
