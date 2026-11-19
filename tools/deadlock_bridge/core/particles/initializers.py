@@ -502,6 +502,21 @@ class RandomSequence(Initializer):
         v.set("sequence", out)
 
 
+@initializer("C_INIT_RandomSecondSequence")
+class RandomSecondSequence(Initializer):
+    """The second sequence (sprite texture layers past the first): random between two, inclusive."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.low = p.int("m_nSequenceMin")
+        self.high = p.int("m_nSequenceMax")
+
+    def initialize(self, sim, v):
+        # The dll draws once per particle even for an empty range and doesn't clamp to the max.
+        draws = sim.random.next(v.n)
+        v.set("sequence1", self.low + np.trunc(draws * (self.high - self.low + 1)))
+
+
 @initializer("C_INIT_VelocityRandom")
 class VelocityRandom(Initializer):
     """Adds a random velocity: one in a control point's frame, plus a per component world space range."""
