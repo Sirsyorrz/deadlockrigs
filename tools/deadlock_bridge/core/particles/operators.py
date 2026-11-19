@@ -2602,6 +2602,52 @@ def unit_rotation(matrices):
     return basis / np.maximum(length, 1e-9)
 
 
+@register(OPERATORS, "C_OP_SetFromCPSnapshot")
+class SetFromCPSnapshot(Operator):
+    """Each step, sets an attribute from a control point's snapshot (particles.dll ctor 0x18025fe17, operate
+    0x180204880): particle i (in the system's order) reads row start + i (back to the start past the end), or
+    start + i x increment wrapping, or a random row; vectors blend in by the interpolation; a position also sets
+    the previous position (m_bPrev, on by default), a previous position read is a velocity."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        from .snapshots import SnapshotRead
+        self.read = SnapshotRead(p)
+        self.start = p.number("m_nSnapShotStartPoint", 0.0)
+        self.interpolation = p.number("m_flInterpolation", 1.0)
+        self.previous = p.bool("m_bPrev", True)
+        if p.bool("m_bSubSample"):
+            p.note("C_OP_SetFromCPSnapshot sub sample")
+
+    def reset(self):
+        self.read.counter = 0
+
+    def operate(self, sim, v, dt, strength):
+        read = self.read
+        values = read.column(sim)
+        if values is None or v.n == 0:
+            return
+        count = len(values)
+        start = math.ceil(min(max(float(np.ravel(self.start(sim, v))[0]), 0.0), count - 1))
+        rows, _ = read.walk(sim, v.n, count, start, read.step(sim, v), wrap=start)
+        value = read.local(sim, values[rows])
+        field = read.write
+        if values.ndim == 1:
+            v.set_field(field, value)
+            return
+        if field == F.PREVIOUS_POSITION:
+            value = v.get("position") - value * (dt if dt > 0 else 1.0 / 30.0)
+        blend = np.broadcast_to(np.asarray(self.interpolation(sim, v), np.float64), (v.n,))[:, None]
+        current = v.field(field)
+        v.set_field(field, current + (value - current) * blend)
+        if field == F.POSITION and self.previous:
+            previous = v.get("previous")
+            v.set("previous", previous + (value - previous) * blend)
+        if field in (F.POSITION, F.PREVIOUS_POSITION):
+            # the bridge's velocity cache follows the step the pair now makes
+            v.set("velocity", (v.get("position") - v.get("previous")) / (dt if dt > 0 else 1.0 / 30.0))
+
+
 @register(OPERATORS, "C_OP_SnapshotRigidSkinToBones")
 class SnapshotRigidSkinToBones(Operator):
     """Re-skins particles C_INIT_InitSkinnedPositionFromCPSnapshot bound to bones: each step the rest point is put

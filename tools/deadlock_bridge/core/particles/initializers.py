@@ -1400,6 +1400,63 @@ class InitSkinnedPositionFromCPSnapshot(Initializer):
         v.set("velocity", velocity)
 
 
+@initializer("C_INIT_InitFromCPSnapshot")
+class InitFromCPSnapshot(Initializer):
+    """Sets an attribute from a control point's snapshot (particles.dll init 0x18015d350): rows walked from where the
+    last spawn stopped by the increment (2 x increment - 1 for vectors, as the dll's loop does), wrapping, drawn at
+    random, or a manual index; a position also sets the previous position (no velocity), a previous position read
+    is a velocity. m_bLocalSpaceAngles turns a roll, yaw or pitch by the local space control point."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        from .snapshots import SnapshotRead
+        self.read = SnapshotRead(p)
+        manual = p.get("m_nManualSnapshotIndex")
+        literal = not isinstance(manual, dict) or manual.get("m_nType", "PF_TYPE_LITERAL") == "PF_TYPE_LITERAL"
+        # a literal -1 (the default) means no manual index
+        unused = literal and p.float("m_nManualSnapshotIndex", -1.0) == -1.0
+        self.manual = None if unused else p.number("m_nManualSnapshotIndex", -1.0)
+        self.local_angles = p.bool("m_bLocalSpaceAngles")
+        self.reset()
+
+    def reset(self):
+        self.index = 0
+        self.read.counter = 0
+
+    def initialize(self, sim, v):
+        read = self.read
+        values = read.column(sim)
+        if values is None or v.n == 0:
+            return
+        count = len(values)
+        if self.manual is not None:
+            rows = np.maximum(column(self.manual(sim, v), v.n).astype(np.int64), 0) % count
+        else:
+            step = read.step(sim, v)
+            if values.ndim == 2:
+                step = 2 * step - 1
+            rows, self.index = read.walk(sim, v.n, count, min(self.index, count - 1), step)
+        value = read.local(sim, values[rows])
+        field = read.write
+        if field == F.PREVIOUS_POSITION:
+            # _spawn makes the previous position from the velocity
+            v.set("velocity", value)
+            return
+        if field in (F.ROLL, F.YAW, F.PITCH) and self.local_angles and read.local_cp >= 0:
+            from ..probes import rotation_matrix
+            rotation = sim.control_point(read.local_cp).rotation
+            component = {F.PITCH: 0, F.YAW: 1, F.ROLL: 2}[field]
+            turned = np.empty(v.n)
+            for i, angle in enumerate(value):
+                angles = [0.0, 0.0, 0.0]
+                angles[component] = math.degrees(angle)
+                turned[i] = math.radians(matrix_angles(rotation @ rotation_matrix(angles))[component])
+            value = turned
+        v.set_field(field, value)
+        if field == F.POSITION:
+            v.set("velocity", 0.0)
+
+
 def models_control_point(p: Params) -> int:
     """The control point a function's model input reads (m_modelInput, else m_nControlPointNumber, else 0)."""
     data = p.get("m_modelInput")
