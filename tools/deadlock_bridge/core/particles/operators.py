@@ -1311,6 +1311,42 @@ class RampScalarLinear(Operator):
         v.set_field(self.field, np.where(mask, np.clip(current + rate * dt * strength, low, high), current))
 
 
+@register(OPERATORS, "C_OP_RampScalarSpline")
+class RampScalarSpline(Operator):
+    """RampScalarLinear with the per second rate scaled by a biased 0..1 ramp across the particle's window (up and
+    back down with ease out). particles.dll operate 0x1801d3620."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.rate_min, self.rate_max = p.float("m_RateMin"), p.float("m_RateMax")
+        self.start_min, self.start_max = p.float("m_flStartTime_min"), p.float("m_flStartTime_max")
+        self.end_min, self.end_max = p.float("m_flEndTime_min", 1.0), p.float("m_flEndTime_max", 1.0)
+        self.proportional = p.bool("m_bProportionalOp", True)
+        self.ease_out = p.bool("m_bEaseOut")
+        self.bias = p.float("m_flBias", 0.5)
+        self.field = p.int("m_nField", F.RADIUS)
+
+    def operate(self, sim, v, dt, strength):
+        if F.name(self.field) is None or F.is_vector(self.field):
+            return
+        ids = v.get("particle_id")
+        r = sim.random
+        window = v.normalized_age if self.proportional else v.get("age")
+        start = lerp(self.start_min, self.start_max, r.for_particle(ids, 11))
+        end = lerp(self.end_min, self.end_max, r.for_particle(ids, 12))
+        mask = (v.get("lifetime") > 0) & (window >= start) & (window < end)
+        if not mask.any():
+            return
+        rate = lerp(self.rate_min, self.rate_max, r.for_particle(ids, 0))
+        ramp = np.clip((window - start) / (end - start + 1.1920929e-07), 0.0, 1.0)
+        if self.ease_out:
+            ramp = np.where(ramp > 0.5, 1.0 - ramp, ramp) * 2.0
+        ramp = bias(ramp, self.bias)
+        current = v.field(self.field)
+        low, high = float_range(self.field)
+        v.set_field(self.field, np.where(mask, np.clip(current + rate * ramp * dt * strength, low, high), current))
+
+
 @register(OPERATORS, "C_OP_OscillateScalar")
 class OscillateScalar(Operator):
     """Adds a sine wave to a float attribute, each particle with its own rate and frequency, over a window of its life."""
