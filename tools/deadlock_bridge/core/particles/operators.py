@@ -2648,6 +2648,100 @@ class SetFromCPSnapshot(Operator):
             v.set("velocity", (v.get("position") - v.get("previous")) / (dt if dt > 0 else 1.0 / 30.0))
 
 
+@register(OPERATORS, "C_OP_MovementSkinnedPositionFromCPSnapshot")
+class MovementSkinnedPositionFromCPSnapshot(Operator):
+    """Each step pulls every particle (and its previous position) toward a point of a skinned snapshot, put through
+    the current bones of the model on another control point (particles.dll ctor 0x180263f40, operate 0x18020b920 =
+    VRF master): rows walked from the start point again every step, drawn at random, or a direct index. Without a
+    model the snapshot's rest points are taken as they are."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.snapshot_point = p.int("m_nSnapshotControlPointNumber", 1)
+        self.model_cp = p.int("m_nControlPointNumber", 0)
+        self.random = p.bool("m_bRandom")
+        self.random_seed = p.int("m_nRandomSeed")
+        self.set_normal = p.bool("m_bSetNormal")
+        self.set_radius = p.bool("m_bSetRadius")
+        self.direct = p.str("m_nIndexType", "SNAPSHOT_INDEX_INCREMENT") == "SNAPSHOT_INDEX_DIRECT"
+        self.read_index = p.number("m_flReadIndex", 0.0)
+        self.increment = p.number("m_flIncrement", 1.0)
+        self.full_loop_increment = p.number("m_nFullLoopIncrement", 0.0)
+        self.start_point = p.number("m_nSnapShotStartPoint", 0.0)
+        self.interpolation = p.number("m_flInterpolation", 1.0)
+        self.reset()
+
+    def reset(self):
+        self.counter = 0
+
+    def _draw(self, sim, count: int) -> int:
+        if self.random_seed:
+            sample = sim.random.sample(sim.random.seed + self.random_seed + self.counter)
+            self.counter += 1
+        else:
+            sample = sim.random.next1()
+        return min(int(count * sample), count - 1)
+
+    def _rows(self, sim, v, count: int) -> np.ndarray:
+        if self.direct:
+            # the dll divides the index as unsigned: a negative one wraps to a valid row
+            index = column(self.read_index(sim, v), v.n).astype(np.int64) & 0xFFFFFFFF
+            return index % count
+        if self.random:
+            return np.array([self._draw(sim, count) for _ in range(v.n)], np.int64)
+        def first(value):
+            return int(float(np.ravel(value)[0]))
+        step, loop = first(self.increment(sim, v)), first(self.full_loop_increment(sim, v))
+        index = first(self.start_point(sim, v))
+        rows = np.zeros(v.n, np.int64)
+        for i in range(v.n):
+            unsigned = index & 0xFFFFFFFF
+            if unsigned >= count:
+                unsigned = ((unsigned // count * loop + unsigned) & 0xFFFFFFFF) % count
+            rows[i] = unsigned
+            index = unsigned + step
+        return rows
+
+    def operate(self, sim, v, dt, strength):
+        snapshot = sim.snapshot(self.snapshot_point) if self.snapshot_point >= 0 else None
+        if snapshot is None or not snapshot.skinned or snapshot.count == 0 or v.n == 0:
+            return
+        arrays = snapshot.arrays
+        if (self.set_normal and "normal" not in arrays) or (self.set_radius and "radius" not in arrays):
+            return
+        rows = self._rows(sim, v, snapshot.count)
+        target = arrays["position"][rows]
+        normal = arrays["normal"][rows] if self.set_normal else None
+        radius = arrays["radius"][rows] if self.set_radius else None
+        model = models.model_of(sim, self.model_cp)
+        if model is not None and model.get("bind"):
+            ids = models.joint_ids(sim, [snapshot.joints[r] for r in rows])
+            weights = snapshot.weights[rows]
+            v.set("hitbox_offset", target)
+            v.set("bone_ids", ids)
+            v.set("bone_weights", weights)
+            skin, _ = models.skin_matrices(sim, model, ids, weights)
+            target = models.transform_points(skin, target)
+            if normal is not None:
+                normal = np.einsum("nij,nj->ni", skin[:, :3, :3], normal)
+                normal = normal / np.sqrt((normal * normal).sum(axis=1, keepdims=True) + np.finfo(np.float32).eps)
+            if radius is not None:
+                radius = radius * np.linalg.norm(skin[:, :3, :3], axis=1).max(axis=1)
+        weight = column(self.interpolation(sim, v), v.n)
+        blend = weight[:, None]
+        positions, previous = v.get("position"), v.get("previous")
+        v.set("position", positions + (target - positions) * blend)
+        v.set("previous", previous + (target - previous) * blend)
+        if normal is not None:
+            normals = v.get("normal")
+            v.set("normal", normals + (normal - normals) * blend)
+        if radius is not None:
+            radii = v.get("radius")
+            v.set("radius", radii + (radius - radii) * weight)
+        # the bridge's velocity cache follows the step the pair now makes
+        v.set("velocity", (v.get("position") - v.get("previous")) / (dt if dt > 0 else 1.0 / 30.0))
+
+
 @register(OPERATORS, "C_OP_SnapshotRigidSkinToBones")
 class SnapshotRigidSkinToBones(Operator):
     """Re-skins particles C_INIT_InitSkinnedPositionFromCPSnapshot bound to bones: each step the rest point is put
