@@ -70,6 +70,9 @@ BUILD_STAGES = {'charge', 'windup', 'hold', 'channel'}
 RELEASE_STAGES = {'cast', 'fire', 'release', 'throw', 'dash', 'land', 'activate'}
 # what a weapon's muzzle flash plays on: a shot, not the runs and idles artists preview it with
 SHOT_WORDS = {'shoot', 'fire', 'shot'}
+# vdata keys holding an effect for the casting action (the windup) or the cast completed one
+CASTING_KEYS = ('WhileCasting', 'WhileChanneling', 'CastDelay', 'CAST_DELAY')
+COMPLETED_KEYS = ('CAST_COMPLETED',)
 STAGE_ALIASES = {'precast': 'cast', 'casting': 'cast', 'charging': 'charge', 'channeling': 'channel',
                  'channelling': 'channel', 'landing': 'land', 'activation': 'activate'}
 # effects that show on whoever an ability hits, or away from the caster; generic/ and modifiers/ hold the shared
@@ -118,6 +121,30 @@ def _walk(node, key=''):
             yield from _walk(v, key)
     elif isinstance(node, str):
         yield key, node
+
+
+def _owned(block):
+    """(top-level key, key, string) for every string value under a vdata block: the top key names the inline
+    modifier an effect belongs to (m_UnstoppableWhileCastingModifier)."""
+    for top, value in block.items():
+        for key, string in _walk(value, top):
+            yield top, key, string
+
+
+def _phase(*keys):
+    """0 for an effect of the casting action, 1 of the cast completed action, by the keys it sits under."""
+    if any(m in k for k in keys for m in COMPLETED_KEYS):
+        return 1
+    if any(m in k for k in keys for m in CASTING_KEYS):
+        return 0
+    return None
+
+
+def _variants(block):
+    """The effect keys a Full variant of the same key replaces (m_PowerSlashParticle for m_PowerSlashFullParticle):
+    the game picks one by charge, and without charge input a cast is the fully charged one."""
+    keys = {key for key, value in _walk(block) if value.endswith('.vpcf')}
+    return {k.replace('Full', '', 1) for k in keys if 'Full' in k} & keys
 
 
 def _config(definition, name):
@@ -277,16 +304,18 @@ def _cores(clips):
     return set().union(*map(_core, clips))
 
 
-def _same_stage(key, path, clips, phases=None):
+def _same_stage(key, path, clips, phases=None, phase=None):
     """The clips sharing a stage word with the effect's name, else its key (m_CastParticle
-    yamato_power_slash_charge: the charge clips), else the casting or cast completed action's clips the stage
-    belongs to (yamato_blade_dash: the slash), else all."""
+    yamato_power_slash_charge: the charge clips), else the action's clips its modifier says (phase), else the casting
+    or cast completed action's clips the stage belongs to (yamato_blade_dash: the slash), else all."""
     name, key_stages = _stages(path.rsplit('/', 1)[-1]), _stages(key)
     for stages in (name, key_stages):
         found = {c for c in clips if _stages(c) & stages}
         if found:
             return found
     casting, completed = phases or (set(), set())
+    if phase is not None and (casting, completed)[phase]:
+        return set((casting, completed)[phase])
     # Billy's ram has a casting action only: its "charge" is the run, not a windup
     if not (casting and completed):
         return set(clips)
@@ -583,9 +612,12 @@ class ClipEffects:
             actions = abilities.get(clips_of) or {}
             phases = tuple(set(graph.get(actions.get(k) or None, ())) & clips
                            for k in ('m_strAG2CastingAction', 'm_strAG2CastCompletedAction'))
-            for key, value in _walk(block):
-                if not value.endswith('.vpcf') or value in seen or _skipped(key, value.rsplit('/', 1)[-1]):
+            replaced = _variants(block)
+            for top, key, value in _owned(block):
+                if (not value.endswith('.vpcf') or value in seen or key in replaced
+                        or _skipped(key, value.rsplit('/', 1)[-1])):
                     continue
+                phase = _phase(top, key)
                 if name != root and os.path.dirname(value) not in folders:
                     continue
                 cfg = _config(self.effect(value), 'preview')
@@ -599,17 +631,17 @@ class ClipEffects:
                     if clips and not found & clips and _cores(found) & _cores(clips):
                         # previewed on an older clip of the ability the animgraph no longer plays
                         # (bebop_hyperbeam_charge_loop)
-                        extra = _same_stage(key, value, clips, phases)
+                        extra = _same_stage(key, value, clips, phases, phase)
                 elif not clips or _status(key, value):
                     continue
                 elif _on_hero(cfg, attachments):
-                    found = _same_stage(key, value, clips, phases)
+                    found = _same_stage(key, value, clips, phases, phase)
                 elif (not any(d['type'] != 'PATTACH_WORLDORIGIN' for d in drivers) and 'ability_cast' in attachments
                       and _stages(key) | _stages(value.rsplit('/', 1)[-1])):
                     # placed by the game code alone (preview at the world origin): a cast's flash goes where
                     # the model says casts come from
                     drivers = [CAST_DRIVER] + [d for d in drivers if d['cp'] != 0]
-                    found, guessed = _same_stage(key, value, clips, phases), True
+                    found, guessed = _same_stage(key, value, clips, phases, phase), True
                 else:
                     continue
                 if 'muzzleflash' in key.lower() and '_weapon_' in name:
@@ -651,10 +683,13 @@ class ClipEffects:
                     continue
                 named.add(name)
                 block = abilities.get(name) or modifiers.get(name)
-                for key, value in _walk(block if isinstance(block, dict) else {}):
+                block = block if isinstance(block, dict) else {}
+                replaced = _variants(block)
+                for key, value in _walk(block):
                     if (value in abilities or value in modifiers) and key not in NOT_REFERENCES:
                         queue.append(value)
-                    if not value.endswith('.vpcf') or value in effects or _skipped(key, value.rsplit('/', 1)[-1]):
+                    if (not value.endswith('.vpcf') or value in effects or key in replaced
+                            or _skipped(key, value.rsplit('/', 1)[-1])):
                         continue
                     if self.effect(value) is None:
                         continue
