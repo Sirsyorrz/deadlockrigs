@@ -2742,6 +2742,52 @@ class MovementSkinnedPositionFromCPSnapshot(Operator):
         v.set("velocity", (v.get("position") - v.get("previous")) / (dt if dt > 0 else 1.0 / 30.0))
 
 
+@register(OPERATORS, "C_OP_SetControlPointsToModelParticles")
+class SetControlPointsToModelParticles(Operator):
+    """Binds a run of control points to the models a run of particles is drawn as (VRF master: the operator sets
+    the position, the model renderer binds the model): each point takes its particle's position, or with
+    m_bAttachment the named attachment's position and orientation, and carries the model for functions that read
+    bones or hitboxes. The bridge draws particle models in their rest pose, so the bones are the bind pose
+    through the particle's model matrix."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.first_point = p.int("m_nFirstControlPoint")
+        self.count = p.int("m_nNumControlPoints", 1)
+        self.first_source = p.int("m_nFirstSourcePoint")
+        self.attachment = p.str("m_AttachmentName") if p.bool("m_bAttachment") else None
+
+    def operate(self, sim, v, dt, strength):
+        if self.first_source < 0 or self.first_point < 0:
+            return
+        active = max(0, min(self.count, v.n - self.first_source, 64 - self.first_point))
+        if active == 0:
+            return
+        renderer = next((r for r in sim.definition.renderers if getattr(r, "kind", "") == "models"), None)
+        drawn = renderer.build(sim, None) if renderer is not None else None
+        positions = v.get("position")
+        for k in range(active):
+            index = self.first_source + k
+            point = self.first_point + k
+            rig = sim.definition.library.model_rig(drawn.paths[drawn.model[index]]) if drawn is not None else None
+            if rig is None or not rig["bind"]:
+                if self.attachment is None:
+                    sim.set_control_point(point, positions[index])
+                continue
+            matrix = drawn.matrix[index]
+            model = {"hitboxes": rig["hitboxes"], "bind": rig["bind"],
+                     "bones": {name: matrix @ bind for name, bind in rig["bind"].items()}}
+            if self.attachment is None:
+                sim.set_control_point(point, positions[index], None, model)
+                continue
+            found = rig["attachments"].get(self.attachment)
+            if found is None or found[0] not in model["bones"]:
+                continue
+            frame = model["bones"][found[0]] @ found[1]
+            basis = frame[:3, :3] / np.maximum(np.linalg.norm(frame[:3, :3], axis=0), 1e-9)
+            sim.set_control_point(point, frame[:3, 3], basis, model)
+
+
 @register(OPERATORS, "C_OP_SnapshotRigidSkinToBones")
 class SnapshotRigidSkinToBones(Operator):
     """Re-skins particles C_INIT_InitSkinnedPositionFromCPSnapshot bound to bones: each step the rest point is put

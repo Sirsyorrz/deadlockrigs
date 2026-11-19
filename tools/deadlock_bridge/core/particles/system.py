@@ -275,6 +275,49 @@ class Definition:
         return made
 
 
+def _quat_matrix(q) -> np.ndarray:
+    x, y, z, w = (kv3.as_float(c) for c in q)
+    return np.array(((1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)),
+                     (2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)),
+                     (2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y))))
+
+
+def _model_rig(resource) -> dict | None:
+    document = resource.keyvalues("DATA")
+    if document is None:
+        return None
+    skeleton = document.get("m_modelSkeleton") or {}
+    names = skeleton.get("m_boneName") or []
+    parents = skeleton.get("m_nParent") or []
+    positions = skeleton.get("m_bonePosParent") or []
+    rotations = skeleton.get("m_boneRotParent") or []
+    bind, order = {}, []
+    for i, name in enumerate(names):
+        local = np.eye(4)
+        local[:3, :3] = _quat_matrix(rotations[i] if i < len(rotations) else (0, 0, 0, 1))
+        local[:3, 3] = [kv3.as_float(c) for c in (positions[i] if i < len(positions) else (0, 0, 0))][:3]
+        parent = kv3.as_int(parents[i], -1) if i < len(parents) else -1
+        bind[name] = bind[order[parent]] @ local if 0 <= parent < len(order) else local
+        order.append(name)
+    data = resource.keyvalues("MDAT") or {}
+    attachments = {}
+    for item in data.get("m_attachments") or []:
+        value = item.get("value") or {}
+        names = value.get("m_influenceNames") or [""]
+        if not names[0] or not kv3.as_int(value.get("m_nInfluences", 1), 1):
+            continue
+        local = np.eye(4)
+        local[:3, :3] = _quat_matrix(value["m_vInfluenceRotations"][0])
+        local[:3, 3] = [kv3.as_float(c) for c in value["m_vInfluenceOffsets"][0]][:3]
+        attachments[value.get("m_name", item.get("key"))] = (names[0], local)
+    hitboxes = {item["key"]: [{"bone": box["m_sBoneName"], "mins": tuple(box["m_vMinBounds"]),
+                               "maxs": tuple(box["m_vMaxBounds"]), "radius": float(box.get("m_flShapeRadius", 0.0)),
+                               "shape": int(box.get("m_nShapeType", 0))}
+                              for box in (item.get("value") or {}).get("m_HitBoxes") or []]
+                for item in data.get("m_hitboxsets") or []}
+    return {"bind": bind, "attachments": attachments, "hitboxes": hitboxes}
+
+
 class Library:
     """Particle system definitions read from the game's content, each once, and a count of what the port skipped
     (per kind and class name) for the import report."""
@@ -285,6 +328,7 @@ class Library:
         self._definitions: dict[str, Definition | None] = {}
         self._sheets: dict[str, list | None] = {}
         self._snapshots: dict = {}
+        self._rigs: dict = {}
         self.unsupported = collections.Counter()
         self.missing: set[str] = set()
 
@@ -322,6 +366,15 @@ class Library:
             except (ValueError, IndexError, struct.error):
                 self._snapshots[key] = None
         return self._snapshots[key]
+
+    def model_rig(self, path: str) -> dict | None:
+        """A model's skeleton for control points that carry it: {"bind": {bone: 4x4 bind pose in model space},
+        "attachments": {name: (bone, 4x4 in the bone's space)}, "hitboxes": {set: [box, ...]}}, or None."""
+        key = (path or "").replace("\\", "/").lower().removesuffix("_c")
+        if key not in self._rigs:
+            data = self._read(key + "_c") if key else None
+            self._rigs[key] = _model_rig(ResourceFile(data)) if data is not None else None
+        return self._rigs[key]
 
     def material(self, path: str):
         """A compiled material, or None."""
