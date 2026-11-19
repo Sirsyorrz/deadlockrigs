@@ -1884,6 +1884,38 @@ class LocalAccelerationForce(Force):
         v.set("force", v.get("force") + force * strength)
 
 
+@register(FORCES, "C_OP_TwistAroundAxis")
+class TwistAroundAxis(Force):
+    """Pushes particles round an axis through a control point: force = (unit direction from the CP x axis) x
+    amount, so it fades towards the axis poles. Defaults and maths from particles.dll (ctor 0x18011a0cd, generate
+    0x180111260); the axis turns into the CP's frame with m_bLocalSpace using the CP only from behaviour version 3,
+    while the centre always uses the authored CP."""
+
+    EPSILON = 1.1920929e-07
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.amount = p.float("m_fForceAmount", 0.0)
+        self.axis = np.asarray(p.vector("m_TwistAxis", (0.0, 0.0, 1.0)), np.float64)
+        self.local = p.bool("m_bLocalSpace")
+        self.control_point = p.int("m_nControlPointNumber", 0)
+        self.axis_point = self.control_point if p.version >= 3 else 0
+
+    def generate(self, sim, v, dt, strength):
+        axis = self.axis
+        if self.local:
+            axis = transform_directions(Transform(self.axis_point)(sim), axis)
+        length = np.linalg.norm(axis)
+        axis = axis / length if length > 0 else np.array([0.0, 0.0, 1.0])
+        delta = v.get("position") - sim.control_point(self.control_point).position
+        square = np.einsum("ij,ij->i", delta, delta)
+        direction = delta / np.sqrt(np.maximum(square, self.EPSILON))[:, None]
+        alignment = 1.0 - direction @ axis
+        keep = (square > self.EPSILON) & (alignment * alignment > self.EPSILON)
+        force = np.cross(direction, axis) * (self.amount * strength)
+        v.set("force", v.get("force") + np.where(keep[:, None], force, 0.0))
+
+
 @register(FORCES, "C_OP_CurlNoiseForce")
 class CurlNoiseForce(Force):
     """Swirls particles with curl noise over their position (scrolled over time), scaled per axis."""
