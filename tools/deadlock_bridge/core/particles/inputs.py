@@ -195,14 +195,19 @@ def _cp_distance(p: Params):
     return lambda sim, v: np.linalg.norm(v.get("position") - sim.control_point(cp).position, axis=1)
 
 
-def _scalar_field(p: Params):
+def _attribute(sim, v, field: int, initial: bool):
+    # Initializers read the current value (particles.dll turns the initial types into the current ones there).
+    return v.initial_field(field) if initial and not sim.initializing else v.field(field)
+
+
+def _scalar_field(p: Params, initial: bool):
     field = p.int("m_nScalarAttribute", F.RADIUS)
-    return lambda sim, v: v.field(field) if not F.is_vector(field) else np.zeros(v.n)
+    return lambda sim, v: _attribute(sim, v, field, initial) if not F.is_vector(field) else np.zeros(v.n)
 
 
-def _vector_component(p: Params):
+def _vector_component(p: Params, initial: bool):
     field, component = p.int("m_nVectorAttribute", F.COLOR), min(max(p.int("m_nVectorComponent"), 0), 2)
-    return lambda sim, v: v.field(field)[:, component] if F.is_vector(field) else np.zeros(v.n)
+    return lambda sim, v: _attribute(sim, v, field, initial)[:, component] if F.is_vector(field) else np.zeros(v.n)
 
 
 def _number_normalized(sim, v):
@@ -264,10 +269,10 @@ def read_number(params: Params, key: str, default) -> Number:
         "PF_TYPE_CONTROL_POINT_SPEED": (lambda sim, _: 0.0, False),
         "PF_TYPE_PARTICLE_AGE": (lambda sim, v: v.get("age"), True),
         "PF_TYPE_PARTICLE_AGE_NORMALIZED": (lambda sim, v: v.normalized_age, True),
-        "PF_TYPE_PARTICLE_FLOAT": (_scalar_field(p), True),
-        "PF_TYPE_PARTICLE_INITIAL_FLOAT": (_scalar_field(p), True),
-        "PF_TYPE_PARTICLE_VECTOR_COMPONENT": (_vector_component(p), True),
-        "PF_TYPE_PARTICLE_INITIAL_VECTOR_COMPONENT": (_vector_component(p), True),
+        "PF_TYPE_PARTICLE_FLOAT": (_scalar_field(p, False), True),
+        "PF_TYPE_PARTICLE_INITIAL_FLOAT": (_scalar_field(p, True), True),
+        "PF_TYPE_PARTICLE_VECTOR_COMPONENT": (_vector_component(p, False), True),
+        "PF_TYPE_PARTICLE_INITIAL_VECTOR_COMPONENT": (_vector_component(p, True), True),
         "PF_TYPE_PARTICLE_SPEED": (lambda sim, v: np.linalg.norm(v.get("velocity"), axis=1), True),
         "PF_TYPE_PARTICLE_NUMBER": (lambda sim, v: v.get("unique_id"), True),
         "PF_TYPE_PARTICLE_NUMBER_NORMALIZED": (_number_normalized, True),
@@ -312,9 +317,7 @@ class ParticleVector(Vector):
     def __call__(self, sim, p=None):
         if p is None:
             return np.zeros(3)
-        # Initializers read the current value: the dll does so, as the initial values are taken after them.
-        read = p.initial_field if self.initial and not sim.initializing else p.field
-        value = read(self.field)
+        value = _attribute(sim, p, self.field, self.initial)
         if value.ndim == 1:
             # A scalar or unknown attribute (neutral_book_creature names 32, which the port has no name for).
             value = np.repeat(value[:, None], 3, axis=1)
