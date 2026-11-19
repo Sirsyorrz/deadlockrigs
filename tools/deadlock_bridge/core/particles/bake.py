@@ -121,6 +121,10 @@ def loop(definition, control_points, seed, start, length=None, rate=30.0, ambien
     for _ in range(steps):
         _step(probe, step, moving)
     persistent = {id(s): early[i] & set(_ids(p).tolist()) for i, (s, p) in enumerate(zip(systems, probe.walk()))}
+    for s, p in zip(systems, probe.walk()):
+        for renderer in s.definition.renderers:
+            if hasattr(renderer, "fit_loop"):
+                renderer.fit_loop(s, p)
     del probe
 
     frames = [[] for _ in range(steps)]

@@ -375,6 +375,8 @@ class Simulation:
         self.ground: float | None = None
         # bone name -> id, for particles skinned to a model's bones (the root's is shared by the tree)
         self.bone_ids: dict[str, int] = {}
+        # renderer index -> what that renderer carries from one drawn frame to the next
+        self.renderer_state: dict[int, dict] = {}
         (self.pre_emission, self.emitters, self.initializers, self.operators, self.forces,
          self.constraints) = definition.make_functions()
 
@@ -475,7 +477,9 @@ class Simulation:
         for _ in range(max(1, int(round(time / step)))):
             self.update(step)
 
-    def update(self, frame_time: float):
+    def update(self, frame_time: float, drawn: bool = True):
+        """One game frame. ``drawn`` frames also advance renderer state the game keeps between draws (presimulation
+        isn't drawn)."""
         if not self.started:
             self.start()
         definition = self.definition
@@ -486,10 +490,14 @@ class Simulation:
             self._simulate(step)
         if definition.stop_after > 0 and self.age >= definition.stop_after:
             return
+        if drawn:
+            for renderer in definition.renderers:
+                if hasattr(renderer, "after_frame"):
+                    renderer.after_frame(self)
         for child in self.children:
             if (child.end_cap_child and not child.started) or self.age < child.delay:
                 continue
-            child.update(frame_time)
+            child.update(frame_time, drawn)
 
     def end_cap(self):
         """Stops the tree as the game stops an effect: emitters stop, the end cap's own functions start running
@@ -529,7 +537,7 @@ class Simulation:
         if self.definition.presimulation > 0:
             step = self.definition.max_step
             for _ in range(min(2048, int(math.ceil(self.definition.presimulation / step)))):
-                self.update(step)
+                self.update(step, drawn=False)
 
     def _simulate(self, dt: float):
         definition = self.definition

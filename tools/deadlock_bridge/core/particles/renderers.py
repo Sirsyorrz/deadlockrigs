@@ -259,6 +259,9 @@ class Renderer:
         else:
             self.hidden = False
 
+    def after_frame(self, sim):
+        """Called once per drawn frame, for renderers that carry state from one draw to the next."""
+
     def shading(self, sim) -> dict:
         """The renderer's values for a whole draw (evaluated at the snapshot)."""
         low, high = (float(f(sim)) for f in self.alpha_remap)
@@ -570,37 +573,85 @@ class RenderRopes(Renderer):
             level += 1
         return 1 << level
 
+    def _node_order(self, v, n):
+        """Particle indices in drawing order, and whether the split field splits the rope."""
+        order = np.arange(n)[::-1] if self.reverse else np.arange(n)
+        splits = F.name(self.split_field) is not None and not F.is_vector(self.split_field)
+        if self.sort_by_segment and splits:
+            segment = v.field(self.split_field)[order]
+            _, first = np.unique(segment, return_index=True)
+            rank = {value: r for r, value in enumerate(segment[np.sort(first)])}
+            keys = np.array([rank[s] for s in segment])
+            order = order[np.argsort(keys, kind="stable")]
+        return order, splits
+
+    def _v_mapping(self, sim):
+        """V scroll rate, V offset and one over the texture's V world size."""
+        if self.v_params_cp >= 0:
+            params = sim.control_point(self.v_params_cp).position
+            return params[1], params[2], 1.0 / max(params[0], 1e-30)
+        return float(self.v_scroll(sim)), float(self.v_offset(sim)), 1.0 / max(float(self.v_world_size(sim)), 1e-30)
+
+    def after_frame(self, sim):
+        """The game carries a V offset from draw to draw: a draw whose first stored particle isn't the last draw's adds
+        the length the last draw's final segment had (the newest one, not the one that died), wrapped to the V world
+        size, so the texture creeps along ropes that lose particles off their start (VRF RenderRopes.CarryVOffset;
+        Rem's candle flame narrows and widens as the jagged texture's rows pass). Counted once per frame like the
+        game, so a slower frame rate creeps slower when more than one particle dies a frame."""
+        particles = sim.particles
+        n = particles.count
+        if n < 2:
+            return
+        state = sim.renderer_state.setdefault(self.index, {"v": 0.0, "first": None, "last_length": 0.0})
+        first = float(particles.array("particle_id")[0])
+        if state["first"] is not None and first != state["first"]:
+            state["v"] += state["last_length"]
+        state["first"] = first
+        v = F.View(particles, slice(0, n))
+        order, _ = self._node_order(v, n)
+        # VRF writes segments in batches of 527 and keeps the last length of the first batch
+        last = min(n if self.closed else n - 1, 527) - 1
+        position = v.get("position")
+        state["last_length"] = float(np.linalg.norm(position[order[(last + 1) % n]] - position[order[last]]))
+
+    def fit_loop(self, start, end):
+        """For a looping bake from ``start`` (the system at the loop's first step) to ``end`` (the same system one loop
+        later): stretches the carried V's creep so a loop moves it by whole texture lengths and the loop has no seam."""
+        a, b = start.renderer_state.get(self.index), end.renderer_state.get(self.index)
+        if not a or not b or b["v"] <= a["v"]:
+            return
+        drift = b["v"] - a["v"]
+        world_size = 1.0 / self._v_mapping(start)[2]
+        a["loop"] = (a["v"], round(drift / world_size) * world_size / drift)
+
+    def _carried_v(self, sim):
+        state = sim.renderer_state.get(self.index)
+        if not state:
+            return 0.0
+        carried = state["v"]
+        if "loop" in state:
+            base, scale = state["loop"]
+            carried = base + (carried - base) * scale
+        return math.fmod(carried, 1.0 / self._v_mapping(sim)[2])
+
     def build(self, sim, ambient) -> Ribbons | None:
         particles = sim.particles
         n = particles.count
         if n < 2:
             return None
         v = F.View(particles, slice(0, n))
-        order = np.arange(n)[::-1] if self.reverse else np.arange(n)
+        order, splits = self._node_order(v, n)
         position = v.get("position")[order]
         radius = (v.get("radius") * self.radius_scale(sim, v))[order]
         alpha = (v.get("alpha") * v.get("alpha_alternate") * self.alpha_scale(sim, v))[order]
         color = v.get("color")[order]
-        splits = F.name(self.split_field) is not None and not F.is_vector(self.split_field)
         segment = v.field(self.split_field)[order] if splits else np.zeros(n)
         normal = v.field(self.orientation_field)[order] if F.is_vector(self.orientation_field) else np.tile([0, 0, 1.0], (n, 1))
         scalar = (v.field(self.scalar_field)[order] * self.scalar_scale) if self.use_scalar and not F.is_vector(self.scalar_field) else np.zeros(n)
         references = self._alpha_references(sim, v, v.get("alpha") * self.alpha_scale(sim, v), v.get("radius") * self.radius_scale(sim, v))
         reference = references[order] if references is not None else np.zeros((n, 2))
-        if self.sort_by_segment and splits:
-            _, first = np.unique(segment, return_index=True)
-            rank = {value: r for r, value in enumerate(segment[np.sort(first)])}
-            keys = np.array([rank[s] for s in segment])
-            sort = np.argsort(keys, kind="stable")
-            position, radius, alpha, color, segment, normal, scalar, reference = (
-                a[sort] for a in (position, radius, alpha, color, segment, normal, scalar, reference))
-
-        if self.v_params_cp >= 0:
-            params = sim.control_point(self.v_params_cp).position
-            scroll, v_offset, inverse_size = params[1], params[2], 1.0 / max(params[0], 1e-30)
-        else:
-            scroll, v_offset = float(self.v_scroll(sim)), float(self.v_offset(sim))
-            inverse_size = 1.0 / max(float(self.v_world_size(sim)), 1e-30)
+        scroll, v_offset, inverse_size = self._v_mapping(sim)
+        carried = self._carried_v(sim)
 
         def index(i):
             if self.closed:
@@ -609,7 +660,7 @@ class RenderRopes(Renderer):
 
         subdivisions = self._subdivisions(n)
         segments = n if self.closed else n - 1
-        arc = scroll * sim.age
+        arc = scroll * sim.age + carried
         out_position, out_tangent, out_radius, out_color, out_v, out_normal, out_reference = [], [], [], [], [], [], []
         quads = []
         samples_so_far = 0
