@@ -594,6 +594,54 @@ class RemapDirectionToCPToVector(Operator):
         v.set_field(self.field, value)
 
 
+def rotate_about_axes(vectors, axes, degrees):
+    """Each vector turned about its own axis by its own angle with axis_rotation_matrix's maths, (n, 3)."""
+    radians = (np.asarray(degrees, np.float32) * np.float32(math.pi / 180.0)).astype(np.float64)
+    s, c = np.sin(radians)[:, None], np.cos(radians)[:, None]
+    along = np.sum(axes * vectors, axis=1, keepdims=True)
+    return vectors * c + axes * along * (1.0 - c) + np.cross(axes, vectors) * s
+
+
+def _unit_or_up(axis):
+    length = float(np.sqrt(np.dot(axis, axis)))
+    if length == 0.0:
+        return np.array([0.0, 0.0, 1.0])
+    return axis / length if 1e-17 <= length <= 1e17 else axis
+
+
+@register(OPERATORS, "C_OP_RotateVector")
+class RotateVector(Operator):
+    """Turns a vector attribute about an axis at a rate (degrees per second) both drawn per particle from one random
+    between min and max (particles.dll operate 0x1801face0). Unlike VRF, the dll's InitParams (0x1801fac60) turns a
+    zero min or max axis into +Z and normalizes both before the lerp, and an axis that cancels to zero isn't
+    skipped: its matrix is cos(angle) x identity, which the normalize then undoes."""
+
+    def __init__(self, p: Params):
+        super().__init__(p)
+        self.field = p.int("m_nFieldOutput", F.NORMAL)
+        self.axis_min = _unit_or_up(p.vector("m_vecRotAxisMin", (0.0, 0.0, 1.0)))
+        self.axis_max = _unit_or_up(p.vector("m_vecRotAxisMax", (0.0, 0.0, 1.0)))
+        self.rate_min = p.float("m_flRotRateMin", 180.0)
+        self.rate_max = p.float("m_flRotRateMax", 180.0)
+        self.scale = p.number("m_flScale", 1.0)
+        self.normalize = p.bool("m_bNormalize", True)
+
+    def operate(self, sim, v, dt, strength):
+        if not F.is_vector(self.field) or v.n == 0:
+            return
+        draw = sim.random.for_particle(v.get("particle_id"))
+        axes = lerp(self.axis_min, self.axis_max, draw[:, None])
+        length = np.sqrt(np.sum(axes * axes, axis=1, keepdims=True))
+        axes = np.divide(axes, length, out=np.where(length == 0.0, 0.0, axes), where=(length >= 1e-17) & (length <= 1e17))
+        degrees = lerp(self.rate_min, self.rate_max, draw) * column(self.scale(sim, v), v.n) * dt
+        current = v.field(self.field)
+        rotated = rotate_about_axes(current, axes, degrees)
+        if self.normalize:
+            size = np.sqrt(np.sum(rotated * rotated, axis=1, keepdims=True))
+            rotated = np.divide(rotated, size, out=rotated.copy(), where=(size >= 1e-17) & (size <= 1e17))
+        v.set_field(self.field, lerp(current, rotated, strength))
+
+
 @register(OPERATORS, "C_OP_OscillateVector")
 class OscillateVector(Operator):
     """Adds a sine wave to a vector attribute per component, each particle with its own rate and frequency, over a
