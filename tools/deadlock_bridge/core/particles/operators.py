@@ -496,23 +496,39 @@ class SpinUpdate(Operator):
 
 @register(OPERATORS, "C_OP_Spin")
 class Spin(Operator):
-    """Spins particles' roll at a rate in degrees (decaying to a minimum by m_fSpinRateStopTime)."""
+    """Spins particles' roll (C_OP_SpinYaw: yaw) by 2 pi x the rate in radians per second, decaying to the minimum
+    rate over m_fSpinRateStopTime x lifetime. particles.dll (CGeneralSpin operate 0x1801db2e0, shared by both): the
+    minimum (not scaled by strength) also floors an undecaying spin, an undecaying step is taken modulo a turn, and
+    a rate or strength of 0 skips the operator."""
+
+    field = "roll"
 
     def __init__(self, p: Params):
         super().__init__(p)
-        self.rate = p.int("m_nSpinRateDegrees")
-        self.minimum = p.int("m_nSpinRateMinDegrees")
+        self.rate = math.radians(p.int("m_nSpinRateDegrees"))
+        self.minimum = math.radians(p.int("m_nSpinRateMinDegrees"))
         self.stop = p.float("m_fSpinRateStopTime")
 
     def operate(self, sim, v, dt, strength):
+        rate = self.rate * strength
+        if rate == 0:
+            return
+        step = abs(rate * math.tau * dt)
         if self.stop == 0:
-            rate = np.full(v.n, self.rate * strength)
+            left = np.ones(v.n)
+            step = math.fmod(step, math.tau)
         else:
             stop_age = v.get("lifetime") * self.stop
             left = np.where(stop_age != 0, np.maximum(0.0, 1.0 - v.get("age") / np.where(stop_age != 0, stop_age, 1)), 0.0)
-            decayed = self.rate * strength * left
-            rate = np.maximum(decayed, self.minimum) if self.rate >= 0 else np.minimum(decayed, self.minimum)
-        v.set("roll", v.get("roll") + np.radians(rate) * math.tau * dt)
+        decayed = left * math.copysign(step, rate)
+        floor = self.minimum * math.tau * dt
+        step = np.maximum(decayed, floor) if rate >= 0 else np.minimum(decayed, floor)
+        v.set(self.field, v.get(self.field) + step)
+
+
+@register(OPERATORS, "C_OP_SpinYaw")
+class SpinYaw(Spin):
+    field = "yaw"
 
 
 @register(OPERATORS, "C_OP_Orient2DRelToCP")
