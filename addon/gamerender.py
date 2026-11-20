@@ -496,6 +496,42 @@ def prop_model(obj):
     return game_model_path(value) if isinstance(value, str) else ''
 
 
+_model_list = {}  # (vpk path, mtime) -> short model paths, e.g. 'props/barrel_03'
+MODEL_SEARCH_MAX = 300
+
+
+def game_models():
+    """Every model in the game's main VPK, as short paths ('props/barrel_03'); [] when the game isn't found."""
+    vpk = os.path.join(game_dir() or '', 'citadel', 'pak01_dir.vpk')
+    try:
+        key = (vpk, os.path.getmtime(vpk))
+    except OSError:
+        return []
+    if key not in _model_list:
+        try:
+            paths = gamelaunch.vpk_paths(vpk, 'vmdl_c')
+        except (OSError, ValueError) as e:
+            gamelaunch.log(f'model list: {e}')
+            paths = []
+        _model_list.clear()
+        _model_list[key] = sorted(p[len('models/'):-len('.vmdl_c')] for p in paths if p.startswith('models/'))
+    return _model_list[key]
+
+
+def search_game_models(text):
+    """Models whose path holds every word of text, ones whose file name matches first."""
+    text = text.lower().replace('\\', '/').removesuffix('.vmdl_c').removesuffix('.vmdl').removeprefix('models/')
+    words = text.replace('/', ' ').replace('_', ' ').split()
+    hits = []
+    for model in game_models():
+        flat = model.replace('/', ' ').replace('_', ' ')
+        if all(w in flat for w in words):
+            name = model.rsplit('/', 1)[-1].replace('_', ' ')
+            hits.append((not all(w in name for w in words), len(model), model))
+    hits.sort()
+    return [model for _, _, model in hits[:MODEL_SEARCH_MAX]]
+
+
 def scene_prop_models():
     return sorted({m for m in (prop_model(obj) for obj in bpy.data.objects) if m})
 
@@ -2504,10 +2540,12 @@ class DLR_OT_game_add_model(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     model: bpy.props.StringProperty(name='Model', description='Game model path, e.g. props/barrel_03 or '
-                                    'models/props/barrel_03.vmdl')
+                                    'models/props/barrel_03.vmdl. Type words of the name to search the game\'s '
+                                    'models',
+                                    search=lambda self, context, text: search_game_models(text))
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=400)
+        return context.window_manager.invoke_props_dialog(self, width=600)
 
     def execute(self, context):
         path = game_model_path(self.model)

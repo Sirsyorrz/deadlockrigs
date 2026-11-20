@@ -459,8 +459,9 @@ def bridge_path(game):
     return os.path.join(game, *OVERLAY.split('/'), 'bin', 'win64', 'server.dll')
 
 
-def vpk_read(dir_path, wanted):
-    """One file's bytes from a VPK v2 (pak01_dir.vpk + pak01_NNN.vpk), or None when it isn't in there."""
+def _vpk_entries(dir_path):
+    """(ext, folder, name, preload bytes, archive, offset, length) per file of a VPK v2 directory, and the offset
+    of data stored in the _dir file itself."""
     with open(dir_path, 'rb') as f:
         signature, version, tree_size = struct.unpack('<III', f.read(12))
         if signature != 0x55AA1234 or version != 2:
@@ -468,8 +469,6 @@ def vpk_read(dir_path, wanted):
         f.read(16)
         tree = f.read(tree_size)
     data_start = 28 + tree_size
-    stem, ext = wanted.rsplit('.', 1)
-    folder, name = stem.rsplit('/', 1) if '/' in stem else (' ', stem)
     pos = 0
 
     def string():
@@ -479,33 +478,51 @@ def vpk_read(dir_path, wanted):
         pos = end + 1
         return text
 
-    while True:
-        e = string()
-        if not e:
-            return None
+    def entries():
+        nonlocal pos
         while True:
-            p = string()
-            if not p:
-                break
+            e = string()
+            if not e:
+                return
             while True:
-                n = string()
-                if not n:
+                p = string()
+                if not p:
                     break
-                _crc, preload, archive, offset, length, _end = struct.unpack_from('<IHHIIH', tree, pos)
-                pos += 18
-                if (e, p, n) != (ext, folder, name):
-                    pos += preload
-                    continue
-                body = tree[pos:pos + preload]
-                if length:
-                    if archive == 0x7FFF:
-                        path, offset = dir_path, data_start + offset
-                    else:
-                        path = dir_path.replace('_dir.vpk', f'_{archive:03d}.vpk')
-                    with open(path, 'rb') as f:
-                        f.seek(offset)
-                        body += f.read(length)
-                return body
+                while True:
+                    n = string()
+                    if not n:
+                        break
+                    _crc, preload, archive, offset, length, _end = struct.unpack_from('<IHHIIH', tree, pos)
+                    pos += 18 + preload
+                    yield e, p, n, tree[pos - preload:pos], archive, offset, length
+
+    return entries(), data_start
+
+
+def vpk_read(dir_path, wanted):
+    """One file's bytes from a VPK v2 (pak01_dir.vpk + pak01_NNN.vpk), or None when it isn't in there."""
+    stem, ext = wanted.rsplit('.', 1)
+    folder, name = stem.rsplit('/', 1) if '/' in stem else (' ', stem)
+    entries, data_start = _vpk_entries(dir_path)
+    for e, p, n, body, archive, offset, length in entries:
+        if (e, p, n) != (ext, folder, name):
+            continue
+        if length:
+            if archive == 0x7FFF:
+                path, offset = dir_path, data_start + offset
+            else:
+                path = dir_path.replace('_dir.vpk', f'_{archive:03d}.vpk')
+            with open(path, 'rb') as f:
+                f.seek(offset)
+                body += f.read(length)
+        return body
+    return None
+
+
+def vpk_paths(dir_path, ext):
+    """Every file path in a VPK v2 with that extension, e.g. 'models/props/barrel_03.vmdl_c'."""
+    entries, _ = _vpk_entries(dir_path)
+    return [f'{n}.{e}' if p == ' ' else f'{p}/{n}.{e}' for e, p, n, *_ in entries if e == ext]
 
 
 def vpk_write(path, files):
