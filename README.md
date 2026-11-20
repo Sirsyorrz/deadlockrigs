@@ -25,12 +25,15 @@ A Blender add-on that builds animation rigs of Deadlock heroes, NPCs and maps fr
 
 Needs Blender 5.1 or newer and Deadlock installed through Steam. Works on Windows and Linux.
 
-[![Drag into Blender: Windows](https://img.shields.io/badge/Drag%20into%20Blender-Windows-0078D4?logo=blender&logoColor=white)](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-windows_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=windows-x64) [![Drag into Blender: Linux](https://img.shields.io/badge/Drag%20into%20Blender-Linux-E95420?logo=blender&logoColor=white)](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-linux_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=linux-x64)
+[![Windows](https://img.shields.io/badge/Windows%20x64-0078D4?logo=blender&logoColor=white)](https://github.com/Sirsyorrz/deadlockrigs/releases/latest) [Install for Windows](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-windows_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=windows-x64)
 
-1. Drag the button for your platform into an open Blender window. The first time, Blender asks to add the Deadlock Rigs repository: press Add Repository, tick Check for Updates
-   on Startup, then drag the button in again and press Install. From then on Blender offers updates in Edit >
-   Preferences > Get Extensions.
-2. Already installed from a zip? Uninstall it in Get Extensions first, then drag the button in. Zips installed from
+[![Linux](https://img.shields.io/badge/Linux%20x64-E95420?logo=blender&logoColor=white)](https://github.com/Sirsyorrz/deadlockrigs/releases/latest) [Install for Linux](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-linux_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=linux-x64)
+
+1. Drag the Install link for your platform (the text, not the badge) into an open Blender window. The first time,
+   Blender asks to add the Deadlock Rigs repository: press Add Repository, tick Check for Updates on Startup, then
+   drag the link in again and press Install. From then on Blender offers updates in Edit > Preferences > Get
+   Extensions.
+2. Already installed from a zip? Uninstall it in Get Extensions first, then drag the link in. Zips installed from
    disk don't get updates.
 3. Open the sidebar in the 3D View (N) > Deadlock Rigs, pick a hero and press Build Rig.
 
