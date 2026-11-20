@@ -399,6 +399,19 @@ class Puppet:
             bind = _transform_matrix(inv_binds[i]).inverted()
             self.bones.append((own_name, rest @ BLENDER_FROM_GAME @ bind))
         self.mesh_bones = _mesh_bones(arm, {name: i for i, name in enumerate(names)}) if bones else {}
+        self.bodygroups = {}  # group -> choice last sent
+
+    def bodygroup_commands(self, obj):
+        """ent_fire lines for the rig's bodygroup_<group> choices that changed (same choice order as the vmdl)."""
+        out = []
+        for key, value in obj.items():
+            if not key.startswith('bodygroup_') or not isinstance(value, (int, float)):
+                continue
+            group, choice = key[len('bodygroup_'):], int(value)
+            if self.bodygroups.get(group) != choice:
+                self.bodygroups[group] = choice
+                out.append(f'ent_fire {self.entity} SetBodygroup "{group},{choice}"')
+        return out
 
     def hidden_bones(self, depsgraph):
         """Game bones that only carry meshes hidden in Blender's render (the Weapon/Pillow part toggles, bodygroup
@@ -1390,6 +1403,11 @@ class Link:
     def _send_pose(self, puppet, obj, hidden=()):
         """Pose one puppet from an evaluated object; False while its entity hasn't reached the pose yet."""
         data, anchor = puppet.pose(obj, hidden)
+        commands = puppet.bodygroup_commands(obj)
+        if commands:
+            self.con.send(*commands)
+            self.setpos_at = time.time()
+            self.settle_console()
         # The entity's bounds decide culling: keep the entity with the pose.
         if puppet.origin is None or math.dist(anchor, puppet.origin) > FOLLOW_DISTANCE:
             self.con.send('ent_setpos {} {:.2f} {:.2f} {:.2f}'.format(puppet.entity, *anchor))
