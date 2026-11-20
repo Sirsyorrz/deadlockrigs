@@ -90,12 +90,17 @@ SETPOS_NUDGE = 2.0  # a paused game ticks for a puppet's ent_setpos for this lon
 SETUP_COMMON = ('citadel_hud_visible 0', 'citadel_photomode_enabled 1', 'cl_drawhud 0',
                 'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
                 'engine_no_focus_sleep 0', 'jpeg_quality 95')
-# Remove NPCs: troopers (with their zipline crates) and neutral camps stop spawning and the live ones are removed
-# without death effects or gold orbs (ent_remove_all matches the class exactly); hero bots are kicked. Guardians,
-# walkers, shrines, the mid boss and the Patron stay: they are part of the map. notarget keeps them from attacking the
-# hidden hero, which follows the camera into their range (not god: a god hero pushed out of the play area is stuck).
-NPCS_OFF = ('citadel_trooper_spawn_enabled 0', 'citadel_neutral_spawn_enabled 0', 'ent_remove_all npc_trooper',
-            'ent_remove_all npc_trooper_neutral', 'ent_remove_all npc_neutral_sinners_sacrifice', 'bot_kick_all')
+# Remove NPCs: troopers (with their zipline crates) and neutral camps stop spawning, and every combat NPC is removed
+# without death effects or gold orbs: troopers, neutrals, guardians, walkers, base guardians, sentries, the mid boss
+# and the Patron (ent_remove_all matches the class exactly; removing them doesn't end the match). The Hideout has none
+# of these; its ghosts, cat and pigeons, and Midtown's ghosts and critters, aren't NPC classes or are kept. notarget
+# keeps anything left from attacking the hidden hero, which follows the camera (not god: a god hero pushed out of the
+# play area is stuck).
+NPC_CLASSES = ('npc_trooper', 'npc_trooper_neutral', 'npc_neutral_sinners_sacrifice', 'npc_trooper_boss',
+               'npc_boss_tier2', 'npc_barrack_boss', 'npc_base_defense_sentry', 'npc_super_neutral', 'npc_boss_tier3',
+               'npc_boss_tier3core')
+NPCS_OFF = ('citadel_trooper_spawn_enabled 0', 'citadel_neutral_spawn_enabled 0',
+            *(f'ent_remove_all {name}' for name in NPC_CLASSES))
 NPCS_ON = ('citadel_trooper_spawn_enabled 1', 'citadel_neutral_spawn_enabled 1')
 NPC_NUDGES = 8
 # Console camera (no bridge): the camera is the hero's own eye.
@@ -2351,9 +2356,10 @@ def register():
         bpy.utils.register_class(c)
     bpy.types.Scene.dlr_game_no_npcs = bpy.props.BoolProperty(
         name='Remove NPCs', update=_no_npcs_changed,
-        description='Stop troopers and neutral camps from spawning, remove the ones alive, kick bots, and keep '
-                    'guardians and walkers from attacking the hidden hero. Sent again on every connect. Turned '
-                    'off, spawning resumes with the next wave; removed NPCs don\'t come back')
+        description='Stop troopers and neutral camps from spawning and remove every combat NPC (troopers, neutrals, '
+                    'guardians, walkers, base guardians, sentries, mid boss, Patron). Ambient ghosts and animals '
+                    'stay. Sent again on every connect. Turned off, spawning resumes with the next wave; removed '
+                    'NPCs don\'t come back until the map is reloaded')
     for panel in _shared_panels():
         panel.COMPAT_ENGINES.add(ENGINE_ID)
     if not bpy.app.timers.is_registered(_poll_frames):
