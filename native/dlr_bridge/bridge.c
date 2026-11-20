@@ -86,7 +86,7 @@ void *memset(void *dst, int c, u64 n) {
 // Addresses come from byte signatures (signatures.h, made by sigscan.py) and RTTI names, so a game update that only
 // moves code keeps working; the structure offsets below are still client 6861's and are checked where they can be.
 #include "signatures.h"
-static uptr gSetup, gCaller, gSetupDelegate, gSkeleton, gEntityList, gViewVtable, gPawnVtable;
+static uptr gSetup, gCaller, gSetupDelegate, gSkeleton, gSceneBounds, gEntityList, gViewVtable, gPawnVtable;
 static uptr gClientGlobals;  // client.dll's CGlobalVarsBase pointer variable
 static const u8 kSetupPrologue[32] = {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57,
                                       0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf1, 0xc6, 0x81, 0x30, 0x13,
@@ -99,7 +99,7 @@ static const u8 kSetupPrologue[32] = {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 
 // SetUpView, ~30 callers.
 static const u8 kSkeletonPrologue[16] = {0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56,
                                          0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41};
-#define SKELETON_STOLEN 5  // mov [rsp+8], rcx
+#define ENTRY_STOLEN 5  // skeleton: mov [rsp+8], rcx; scene bounds: mov [rsp+0x10], rdi
 
 // CViewSetup fields, relative to the SetUpView object + 0x10 (layout revision 1).
 #define VIEW_WIDTH 0x430
@@ -132,6 +132,7 @@ static const u8 kBasisEntry[] = {0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48,
 typedef void(__fastcall *AngleVectors)(const float *, float *, float *, float *);
 typedef void(__fastcall *SetupFn)(void *, uptr);
 typedef u64(__fastcall *SkeletonFn)(uptr, u64, u64, u64);
+typedef void(__fastcall *BoundsFn)(uptr);
 typedef void *(*Factory)(const char *, int *);
 
 // Global camera copies SetUpView also writes (used by culling, audio, effects).
@@ -144,6 +145,7 @@ static HANDLE gModule;
 static uptr gClient;
 static SetupFn gOriginal;
 static SkeletonFn gSkeletonOriginal;
+static BoundsFn gBoundsOriginal;
 static Factory gUnlockerFactory;
 static uptr gServer;  // the game's own server.dll
 static volatile long gStarted;
@@ -342,6 +344,7 @@ static int resolve_client(void) {
     gCaller = SIGNATURE(gClient, CALLER);
     gSetupDelegate = SIGNATURE(gClient, SETUP_DELEGATE);
     gSkeleton = SIGNATURE(gClient, SKELETON);
+    gSceneBounds = SIGNATURE(gClient, SCENE_BOUNDS);
     gEntityList = SIGNATURE(gClient, ENTITY_LIST);
     gClientGlobals = SIGNATURE(gClient, CLIENT_GLOBALS);
     gViewVtable = rtti_vtable(gClient, ".?AVCViewRender@@");
@@ -398,6 +401,13 @@ static int resolve_cache(void) {
 #define NODE_OWNER 0x30          // CGameSceneNode::m_pOwner
 #define NODE_ABS_ORIGIN 0xc8     // CGameSceneNode::m_vecAbsOrigin
 #define NODE_MODEL_STATE 0x140
+// Found in memory (client 6864): node+0x218 -> render link {+0x10 node, +0x20 CSceneObject}; the scene object's
+// world matrix3x4 (row-major, scale folded in) at +0x30 is what the renderer draws. The game rewrites it only when
+// the node moves, so a write after its update holds for the frame.
+#define NODE_RENDER_LINK 0x218
+#define LINK_NODE 0x10
+#define LINK_SCENE_OBJECT 0x20
+#define SCENE_OBJECT_MATRIX 0x30
 #define STATE_BONES 0x80         // world space pose: float pos[3], scale, quat xyzw per bone (32 bytes)
 #define STATE_BONE_COUNT 0x90
 #define STATE_MODEL_NAME 0xa8    // CModelState::m_ModelName (char *)
@@ -432,8 +442,10 @@ static int contains(const char *text, const char *part) {
 struct Slot {
     volatile u32 lock;
     u32 active;
+    u32 transform;  // pose[0] is the entity's whole transform (models without bones), written to its scene object
     u32 entity_index;
     uptr node;
+    uptr object;  // transform slots: the scene object last placed
     u32 count;
     float pose[MAX_BONES][8];
 };
@@ -525,7 +537,7 @@ static int list_visit(void *context, uptr node, u32 index, const char *name) {
 static void pose_node(uptr node) {
     for (u32 i = 0; i < POSE_SLOTS; i++) {
         struct Slot *slot = &gSlots[i];
-        if (slot->node != node || !slot->active)
+        if (slot->node != node || !slot->active || slot->transform)
             continue;
         uptr bones = *(uptr *)(node + NODE_MODEL_STATE + STATE_BONES);
         u32 game_count = *(u32 *)(node + NODE_MODEL_STATE + STATE_BONE_COUNT);
@@ -548,6 +560,94 @@ static void pose_node(uptr node) {
     }
 }
 
+// The node's scene object while the entity at `index` still owns that node (an entity removed behind Blender's back
+// frees it), else 0.
+static uptr live_scene_object(uptr node, u32 index) {
+    uptr list, chunk, instance, scene_node, link, link_node, object;
+    uptr identity;
+    if (!gEntityList || !safe_read(gEntityList, &list, 8) || !list || !safe_read(list + 8 * (index >> 9), &chunk, 8) ||
+        !chunk)
+        return 0;
+    identity = chunk + IDENTITY_STRIDE * (index & 511);
+    if (!safe_read(identity, &instance, 8) || !instance || !safe_read(instance + ENTITY_SCENE_NODE, &scene_node, 8) ||
+        scene_node != node || !safe_read(node + NODE_RENDER_LINK, &link, 8) ||
+        !safe_read(link + LINK_NODE, &link_node, 8) || link_node != node ||
+        !safe_read(link + LINK_SCENE_OBJECT, &object, 8) || !object)
+        return 0;
+    return object;
+}
+
+// The slot's transform as the scene object's matrix3x4; 0 when the slot is no transform slot (any more).
+static int slot_matrix(struct Slot *slot, float m[12], uptr *node, u32 *index) {
+    float t[8];
+    u32 before, after;
+    do {
+        before = slot->lock;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        memcpy(t, slot->pose[0], sizeof(t));
+        *node = slot->node;
+        *index = slot->entity_index;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        after = slot->lock;
+    } while ((before & 1) || before != after);
+    if (!slot->active || !slot->transform)
+        return 0;
+    float x = t[4], y = t[5], z = t[6], w = t[7], s = t[3];
+    float r[12] = {
+        (1 - 2 * (y * y + z * z)) * s, 2 * (x * y - z * w) * s,       2 * (x * z + y * w) * s,       t[0],
+        2 * (x * y + z * w) * s,       (1 - 2 * (x * x + z * z)) * s, 2 * (y * z - x * w) * s,       t[1],
+        2 * (x * z - y * w) * s,       2 * (y * z + x * w) * s,       (1 - 2 * (x * x + y * y)) * s, t[2],
+    };
+    memcpy(m, r, sizeof(r));
+    return 1;
+}
+
+static int floats_equal(const float *a, const float *b, u32 n) {
+    for (u32 i = 0; i < n; i++)
+        if (a[i] != b[i])
+            return 0;
+    return 1;
+}
+
+// Main thread, before the view is drawn: transform slots put their entity's scene object where Blender has it and
+// let the game recompute its bounds (culling). The console ent_setpos the add-on also sends lands a server tick
+// later and is interpolated after that; whenever the game rewrites the matrix for it, bounds_hook puts ours back.
+static void place_transforms(void) {
+    if (!gBoundsOriginal)
+        return;
+    for (u32 i = 0; i < POSE_SLOTS; i++) {
+        struct Slot *slot = &gSlots[i];
+        float m[12];
+        uptr node;
+        u32 index;
+        if (!slot->active || !slot->transform || !slot_matrix(slot, m, &node, &index))
+            continue;
+        uptr object = live_scene_object(node, index);
+        slot->object = object;
+        if (!object || floats_equal((const float *)(object + SCENE_OBJECT_MATRIX), m, 12))
+            continue;
+        memcpy((void *)(object + SCENE_OBJECT_MATRIX), m, sizeof(m));
+        gBoundsOriginal(object);
+    }
+}
+
+// The game calls this right after writing a scene object's matrix (any thread).
+static void __fastcall bounds_hook(uptr object) {
+    i64 now;
+    QueryPerformanceCounter(&now);
+    if (object && now - gLastPacket <= RELEASE_AFTER * gFrequency) {
+        for (u32 i = 0; i < POSE_SLOTS; i++) {
+            struct Slot *slot = &gSlots[i];
+            float m[12];
+            uptr node;
+            u32 index;
+            if (slot->object == object && slot->active && slot->transform && slot_matrix(slot, m, &node, &index))
+                memcpy((void *)(object + SCENE_OBJECT_MATRIX), m, sizeof(m));
+        }
+    }
+    gBoundsOriginal(object);
+}
+
 static u64 __fastcall skeleton_hook(uptr node, u64 mask, u64 r8, u64 r9) {
     u64 result = gSkeletonOriginal(node, mask, r8, r9);
     i64 now;
@@ -557,30 +657,29 @@ static u64 __fastcall skeleton_hook(uptr node, u64 mask, u64 r8, u64 r9) {
     return result;
 }
 
-// The skeleton routine runs on job threads all the time, so it can't be patched with a multi-instruction jump
-// like SetUpView. Its first instruction is 5 bytes and the entry is 16-aligned: one atomic 8-byte store puts a
-// rel32 jump to a stub allocated within 2 GB of client.dll.
-static int install_skeleton_hook(void) {
-    u8 *target = (u8 *)gSkeleton;
+// Routines that run on job threads all the time can't be patched with a multi-instruction jump like SetUpView.
+// These start with a 5-byte instruction at a 16-aligned entry: one atomic 8-byte store puts a rel32 jump to a stub
+// allocated within 2 GB of client.dll. Returns the trampoline that runs the original, or 0.
+static void *install_entry_hook(uptr address, void *hook) {
+    u8 *target = (u8 *)address;
     u8 *near = 0;
     for (uptr at = (gClient - 0x10000) & ~0xffffull; !near && at > gClient - 0x70000000; at -= 0x10000)
         near = VirtualAlloc((void *)at, 0x1000, 0x3000, 0x40);
-    if (!near || (uptr)target % 8)
+    if (!near || address % 8)
         return 0;
     u8 *tramp = near, *stub = near + 32;
-    memcpy(tramp, target, SKELETON_STOLEN);
-    u8 *jump = tramp + SKELETON_STOLEN;  // jmp [rip+0]; dq target+5
+    memcpy(tramp, target, ENTRY_STOLEN);
+    u8 *jump = tramp + ENTRY_STOLEN;  // jmp [rip+0]; dq target+5
     jump[0] = 0xff;
     jump[1] = 0x25;
     memset(jump + 2, 0, 4);
-    uptr back = (uptr)target + SKELETON_STOLEN;
+    uptr back = address + ENTRY_STOLEN;
     memcpy(jump + 6, &back, 8);
     stub[0] = 0xff;
     stub[1] = 0x25;
     memset(stub + 2, 0, 4);
-    uptr hook = (uptr)&skeleton_hook;
-    memcpy(stub + 6, &hook, 8);
-    gSkeletonOriginal = (SkeletonFn)tramp;
+    uptr to = (uptr)hook;
+    memcpy(stub + 6, &to, 8);
 
     u64 word = *(volatile u64 *)target;
     i32 rel = (i32)((i64)stub - (i64)(target + 5));
@@ -593,7 +692,7 @@ static int install_skeleton_hook(void) {
     __atomic_store_n((u64 *)target, word, __ATOMIC_SEQ_CST);
     VirtualProtect(target, 8, old, &old);
     FlushInstructionCache(GetCurrentProcess(), target, 8);
-    return 1;
+    return tramp;
 }
 
 static void apply(uptr view, const float *xyz, const float *angles) {
@@ -802,6 +901,8 @@ static void __fastcall setup_hook(void *self, uptr opaque) {
     i64 time_now;
     QueryPerformanceCounter(&time_now);
     update_time(time_now - gLastPacket <= RELEASE_AFTER * gFrequency);
+    if (time_now - gLastPacket <= RELEASE_AFTER * gFrequency)
+        place_transforms();
 
     struct Command c;
     u32 before, after;
@@ -1060,7 +1161,8 @@ static DWORD WINAPI net_thread(void *arg) {
             continue;
         }
         if (n >= 84 && bytes_equal(packet, (const u8 *)"DLRP", 4)) {
-            // slot, entity index (0 = find by model), flags (1 = pose), count, model substring[64], count x 32 bytes
+            // slot, entity index (0 = find by model), flags (1 = pose, 2 = transform: one entry for the whole model),
+            // count, model substring[64], count x 32 bytes
             u32 slot_index = *(const u32 *)(packet + 4), wanted = *(const u32 *)(packet + 8);
             u32 flags = *(const u32 *)(packet + 12), count = *(const u32 *)(packet + 16);
             char model[64];
@@ -1085,7 +1187,8 @@ static DWORD WINAPI net_thread(void *arg) {
                 slot->entity_index = index;
                 slot->count = count;
                 memcpy(slot->pose, packet + 84, count * 32);
-                slot->active = node && (flags & 1) && count;
+                slot->transform = (flags & 2) != 0;
+                slot->active = node && (flags & 1) && count && (!slot->transform || count == 1);
                 __atomic_fetch_add(&slot->lock, 1, __ATOMIC_ACQ_REL);
                 if (node && node_model(node, name, sizeof(name))) {
                     reply.found = 1;
@@ -1141,10 +1244,12 @@ static DWORD WINAPI worker(void *arg) {
     gStatus.state = 1;
     if (!gSkeleton || !gEntityList || !bytes_equal((const u8 *)gSkeleton, kSkeletonPrologue, sizeof(kSkeletonPrologue)))
         set_message("camera hook installed; skeleton routine differs: no posing");
-    else if (!install_skeleton_hook())
+    else if (!(gSkeletonOriginal = (SkeletonFn)install_entry_hook(gSkeleton, (void *)&skeleton_hook)))
         set_message("camera hook installed; could not patch the skeleton routine: no posing");
+    else if (!gSceneBounds || !(gBoundsOriginal = (BoundsFn)install_entry_hook(gSceneBounds, (void *)&bounds_hook)))
+        set_message("camera and pose hooks installed; scene bounds routine not found: models without bones lag");
     else
-        set_message("camera and pose hooks installed");
+        set_message("camera, pose and transform hooks installed");
     return 0;
 }
 

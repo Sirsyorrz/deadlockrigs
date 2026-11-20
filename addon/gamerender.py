@@ -85,8 +85,8 @@ PAWN_FOLLOW = 512.0
 PAWN_STREAM_IN = 0.5
 SERVER_TICK = 1 / 64
 SETPOS_NUDGE = 2.0  # a paused game ticks for a puppet's ent_setpos for this long at most
-# A model without bones has no pose slot: it moves by console (ent_setpos/ent_setang, one server tick) and nothing
-# reports when it got there.
+# A model without bones and no free pose slot moves by console only (ent_setpos/ent_setang, one server tick) and
+# nothing reports when it got there.
 PROP_SETTLE = 0.15
 CONSOLE_NUDGES = 8  # server ticks a paused game gets for a console move or removal (a puppet's took ~7)
 PROP_KEY = 'dlr_game_model'  # object property: the game model the game draws at that object
@@ -325,10 +325,12 @@ class PoseChannel:
             self.sock.sendto(packet, self.addr)
             return self.sock.recvfrom(65536)[0]
 
-    def pose(self, slot, model, pose=b'', count=0, entity=0, active=True):
+    def pose(self, slot, model, pose=b'', count=0, entity=0, active=True, transform=False):
         """Bind the slot (to `entity`, or the newest unclaimed entity whose model path contains `model`) and set its
-        pose (count x 32 bytes: pos xyz, scale, quat xyzw, game world space). Returns the bound entity or None."""
-        head = _POSE_HEAD.pack(b'DLRP', slot, entity, 1 if active and count else 0, count, model.encode()[:63])
+        pose (count x 32 bytes: pos xyz, scale, quat xyzw, game world space). transform: the one entry places the
+        whole model (models without bones). Returns the bound entity or None."""
+        flags = (1 if active and count else 0) | (2 if transform else 0)
+        head = _POSE_HEAD.pack(b'DLRP', slot, entity, flags, count, model.encode()[:63])
         f = _POSE_REPLY.unpack(self._exchange(head + pose)[:_POSE_REPLY.size])
         if not f[1]:
             return None
@@ -500,16 +502,24 @@ def scene_prop_models():
 
 class GameProp:
     """A game model entity kept at a Blender object's transform (scale included). Models with bones take a pose slot
-    and are posed rigidly like a puppet (exact, no server tick); models without bones move by console."""
+    and are posed rigidly like a puppet (exact, no server tick). Models without bones move by console too (bounds,
+    collision, after Blender lets go), but a transform slot draws them at the object from the next frame on: the
+    console move lands a server tick later and the client then interpolates to it."""
 
     def __init__(self, obj_name, entity, model, puppet=None):
         self.obj_name, self.entity, self.model, self.puppet = obj_name, entity, model, puppet
+        self.transform_slot = None
         self.sent = None  # (pos, angles, scale) last sent by console
         self.origin = None
 
     @property
     def slot(self):
-        return self.puppet.slot if self.puppet else None
+        return self.puppet.slot if self.puppet else self.transform_slot
+
+    def transform(self, obj):
+        """The object's game world transform as one pose entry: pos xyz, uniform scale, quat xyzw."""
+        loc, rot, scale = (GAME_FROM_BLENDER @ obj.matrix_world @ BLENDER_FROM_GAME).decompose()
+        return struct.pack('<8f', *loc, (scale.x + scale.y + scale.z) / 3, rot.x, rot.y, rot.z, rot.w)
 
     @staticmethod
     def placement(obj):
@@ -1256,15 +1266,17 @@ class Link:
                     names, parents, inv_binds = self.poses.skeleton(slot)
                     prop.puppet = Puppet(obj.name, slot, entity, model, names, parents, inv_binds, obj)
                 except ConnectionError:
-                    # Attachments but no bones (the xmas gift box): moved by console like a static model.
+                    # Attachments but no bones (the xmas gift box): placed whole like a static model.
                     pass
+            if bound is not None and prop.puppet is None:
+                prop.transform_slot = slot
         self.props[obj.name] = prop
         self._save_spawned()
         return prop
 
     def remove_prop(self, prop):
         self.props.pop(prop.obj_name, None)
-        if prop.puppet:
+        if prop.slot is not None:
             try:
                 self.poses.pose(prop.slot, prop.model, entity=prop.entity, active=False)
             except OSError:
@@ -1393,8 +1405,16 @@ class Link:
             if commands:
                 self.con.send(*commands)
                 self.setpos_at = time.time()
-                self.settle_console()
-            if time.time() - self.setpos_at < PROP_SETTLE:
+                # The transform slot draws it there already; a paused game's server catches up on its next tick.
+                if prop.transform_slot is None:
+                    self.settle_console()
+            if prop.transform_slot is not None:
+                try:
+                    self.poses.pose(prop.transform_slot, prop.model, prop.transform(obj), 1, entity=prop.entity,
+                                    transform=True)
+                except OSError as error:
+                    self.error = f'pose: {error}'
+            elif time.time() - self.setpos_at < PROP_SETTLE:
                 arrived = False
         if not arrived and time.time() - self.setpos_at < SETPOS_NUDGE:
             self.nudge()
