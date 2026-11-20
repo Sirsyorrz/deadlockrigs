@@ -57,6 +57,47 @@ def prefs(context=None):
     return (context or bpy.context).preferences.addons[__package__].preferences
 
 
+def _version(text):
+    try:
+        return tuple(int(p) for p in text.split('.'))
+    except (AttributeError, ValueError):
+        return ()
+
+
+_update_cache = {}
+
+
+def available_update(context):
+    """Newer version in the cached index of the repo we were installed from, or None. Blender refreshes that cache
+    when it checks the repo for updates, so this reads a file and never goes online itself."""
+    parts = __package__.split('.')
+    if len(parts) != 3 or parts[0] != 'bl_ext':
+        return None
+    repo = next((r for r in context.preferences.extensions.repos if r.module == parts[1]), None)
+    if repo is None or not repo.use_remote_url:
+        return None
+    index = os.path.join(repo.directory, '.blender_ext', 'index.json')
+    try:
+        mtime = os.path.getmtime(index)
+    except OSError:
+        return None
+    if _update_cache.get('key') != (index, mtime):
+        newest = None
+        try:
+            import tomllib
+            with open(os.path.join(HERE, 'blender_manifest.toml'), 'rb') as f:
+                installed = _version(tomllib.load(f)['version'])
+            with open(index, encoding='utf-8') as f:
+                versions = [e.get('version') for e in json.load(f).get('data', []) if e.get('id') == parts[2]]
+            latest = max(versions, key=_version, default=None)
+            if installed and _version(latest) > installed:
+                newest = latest
+        except (OSError, ValueError, KeyError):
+            pass
+        _update_cache.update(key=(index, mtime), newest=newest)
+    return _update_cache['newest']
+
+
 def user_dir(sub):
     try:
         return bpy.utils.extension_path_user(__package__, path=sub, create=True)
@@ -623,6 +664,11 @@ class DLR_PT_main(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         sc = context.scene
+        newest = available_update(context)
+        if newest:
+            box = layout.box()
+            box.label(text=f'Update {newest} available', icon='INFO')
+            box.label(text='Edit > Preferences > Get Extensions')
         col = layout.column(align=True)
         col.prop(sc, 'dlr_hero', text='')
         busy = _job is not None and not _job.done
