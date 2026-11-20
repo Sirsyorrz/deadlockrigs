@@ -83,6 +83,8 @@ ARRIVED = 48.0
 # after a move waits PAWN_STREAM_IN seconds for the entities to arrive.
 PAWN_FOLLOW = 512.0
 PAWN_STREAM_IN = 0.5
+SERVER_TICK = 1 / 64
+SETPOS_NUDGE = 2.0  # a paused game ticks for a puppet's ent_setpos for this long at most
 # citadel_hud_visible 0 alone leaves the own health bar (shown once the hero leaves the Hideout's main room) and the
 # health bars over units: photomode hides both, cl_drawhud 0 (cheat) the rest of the HUD layer.
 SETUP_COMMON = ('citadel_hud_visible 0', 'citadel_photomode_enabled 1', 'cl_drawhud 0',
@@ -852,6 +854,9 @@ class Link:
         self.puppets = {}  # armature name -> Puppet
         self.declined = set()  # rigs the user took out of the game, or that failed to spawn
         self.render_frame = None  # last frame rendered while the game clock is frozen
+        self.paused = False  # the user's Pause Game: the clock stays frozen outside renders too
+        self.thawed_until = 0.0  # paused, but running until entities near the moved hero have streamed in
+        self.setpos_at = 0.0
         self.stream_restarted = 0.0
         self.time_step = 0
         self.frames_error = ''  # why the bridge's frame capture didn't start
@@ -879,6 +884,11 @@ class Link:
             self.con.send(*commands)
             self.pawn_at = target
             self.pawn_moved = time.time()
+            if self.paused or self.render_frame is not None:
+                # Nothing streams in while the clock is frozen.
+                self.render_frame = None
+                self.thawed_until = self.pawn_moved + PAWN_STREAM_IN
+                self._hold_clock()
         return self.streaming()
 
     def streaming(self):
@@ -890,8 +900,7 @@ class Link:
         (entities only stream in while it runs, so effects jump ahead by about PAWN_STREAM_IN there)."""
         if self.follow(pos) <= 0:
             return False
-        if self.render_frame is not None:
-            self.release_time()
+        self.render_frame = None
         return True
 
     def _place(self, view):
@@ -1037,6 +1046,8 @@ class Link:
                 self.poses.pose(PAWN_SLOT, '', active=False)
             except OSError:
                 pass
+        self.paused = False
+        self.thawed_until = 0.0
         self.release_time()
         if had_puppets and self.con:
             # Closing the console right after sending can drop the ent_remove commands.
@@ -1171,6 +1182,7 @@ class Link:
             if puppet.origin is None or math.dist(anchor, puppet.origin) > FOLLOW_DISTANCE:
                 self.con.send('ent_setpos {} {:.2f} {:.2f} {:.2f}'.format(puppet.entity, *anchor))
                 puppet.origin = anchor
+                self.setpos_at = time.time()
             try:
                 bound = self.poses.pose(puppet.slot, puppet.model, data, len(puppet.bones), entity=puppet.entity)
             except OSError as error:
@@ -1178,6 +1190,8 @@ class Link:
                 continue
             if bound is None or math.dist(bound['origin'], puppet.origin) > ARRIVED:
                 arrived = False
+        if not arrived and time.time() - self.setpos_at < SETPOS_NUDGE:
+            self.nudge()
         return arrived
 
     def reshoot(self):
@@ -1231,6 +1245,7 @@ class Link:
         last rendered frame, so effects play at the animation's speed however long each capture takes."""
         if not self.poses:
             return
+        self.thawed_until = 0.0
         if self.render_frame is None or frame <= self.render_frame:
             state = self.poses.time(True, self.time_step)
         else:
@@ -1246,11 +1261,35 @@ class Link:
 
     def release_time(self):
         self.render_frame = None
-        if self.poses:
-            try:
-                self.poses.time(False, self.time_step)
-            except OSError:
-                pass
+        self._hold_clock()
+
+    def set_paused(self, paused):
+        self.paused = paused
+        if self.render_frame is None:
+            return self._hold_clock()
+        return None
+
+    def _hold_clock(self):
+        """The clock outside renders: frozen while paused, except while entities stream in after a hero move."""
+        if not self.poses:
+            return None
+        try:
+            state = self.poses.time(self.paused and not self.thawed_until, self.time_step)
+        except OSError:
+            return None
+        if self.paused and not state['available']:
+            self.error = 'game clock not available (bridge): Pause Game does nothing'
+        return state
+
+    def nudge(self):
+        """One server tick for a paused game: ent_setpos only lands on a tick, and a frozen game ticks rarely."""
+        if not (self.paused and self.render_frame is None and not self.thawed_until and self.poses):
+            return
+        self.time_step += 1
+        try:
+            self.poses.time(True, self.time_step, SERVER_TICK)
+        except OSError:
+            pass
 
     def capture(self, view, kind='jpeg_screenshot', settle=SETTLE):
         """Place the game camera and take a screenshot; returns the file path (the caller moves or deletes it)."""
@@ -1295,15 +1334,22 @@ class Link:
 
     def _keepalive(self):
         """The bridge gives the camera back to the game after 3 s without packets (Blender closed or crashed). Its
-        own thread: a slow capture (a screenshot can take seconds) must not let the camera snap back meanwhile."""
+        own thread: a slow capture (a screenshot can take seconds) must not let the camera snap back meanwhile.
+        Also freezes a paused game again once entities have streamed in."""
+        last = 0.0
         while self.running:
+            if self.thawed_until and time.time() > self.thawed_until:
+                self.thawed_until = 0.0
+                if self.render_frame is None:
+                    self._hold_clock()
             bridge = self.bridge
-            if bridge:
+            if bridge and time.time() - last >= 1.0:
+                last = time.time()
                 try:
                     bridge.status()
                 except OSError:
                     pass
-            time.sleep(1.0)
+            time.sleep(0.05)
 
     def _restart_stream(self):
         """ffmpeg ends when the window is unmapped or resized (minimised, fullscreen toggle): grab it again."""
@@ -2167,6 +2213,25 @@ class DLR_OT_game_unpose_rig(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class DLR_OT_game_pause(bpy.types.Operator):
+    bl_idname = 'dlr.game_pause'
+    bl_label = 'Pause Game'
+    bl_description = ('Stop the game clock so effects, animation and NPCs hold still between renders and in the '
+                      'viewport. F12 and animation renders still step it by the frame time')
+
+    @classmethod
+    def poll(cls, context):
+        return _link is not None and _link.running and _link.poses is not None
+
+    def execute(self, context):
+        state = _link.set_paused(not _link.paused)
+        if state is not None and not state['available']:
+            _link.paused = False
+            self.report({'ERROR'}, 'the bridge has no game clock (bridge.log: cvars not found)')
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
 class DLR_PT_game_render(bpy.types.Panel):
     bl_label = 'Deadlock Game'
     bl_space_type = 'PROPERTIES'
@@ -2196,6 +2261,8 @@ class DLR_PT_game_render(bpy.types.Panel):
                 col.label(text='View is outside the play area', icon='ERROR')
             col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
             if lk.poses:
+                col.operator(DLR_OT_game_pause.bl_idname, text='Resume Game' if lk.paused else 'Pause Game',
+                             icon='PLAY' if lk.paused else 'PAUSE', depress=lk.paused)
                 col.label(text='Visible Deadlock rigs are posed in the game (Rendered shading or F12)')
                 arm = puppet_armature(context.active_object)
                 if arm is not None and arm.name in lk.declined:
@@ -2230,7 +2297,7 @@ def _view_menu(self, context):
 
 
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
-           DLR_OT_game_jump,
+           DLR_OT_game_jump, DLR_OT_game_pause,
            DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_PT_game_render,
            DLR_OT_game_plate)
 
