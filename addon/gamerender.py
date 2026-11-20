@@ -85,6 +85,11 @@ PAWN_FOLLOW = 512.0
 PAWN_STREAM_IN = 0.5
 SERVER_TICK = 1 / 64
 SETPOS_NUDGE = 2.0  # a paused game ticks for a puppet's ent_setpos for this long at most
+# A model without bones has no pose slot: it moves by console (ent_setpos/ent_setang, one server tick) and nothing
+# reports when it got there.
+PROP_SETTLE = 0.15
+CONSOLE_NUDGES = 8  # server ticks a paused game gets for a console move or removal (a puppet's took ~7)
+PROP_KEY = 'dlr_game_model'  # object property: the game model the game draws at that object
 # citadel_hud_visible 0 alone leaves the own health bar (shown once the hero leaves the Hideout's main room) and the
 # health bars over units: photomode hides both, cl_drawhud 0 (cheat) the rest of the HUD layer.
 SETUP_COMMON = ('citadel_hud_visible 0', 'citadel_photomode_enabled 1', 'cl_drawhud 0',
@@ -380,7 +385,7 @@ class Puppet:
     def __init__(self, arm_name, slot, entity, model, names, parents, inv_binds, arm):
         self.arm_name, self.slot, self.entity, self.model = arm_name, slot, entity, model
         self.origin = None
-        bones = arm.data.bones
+        bones = arm.data.bones if arm.type == 'ARMATURE' else {}
         self.bones = []  # (blender bone name, Rest^-1 * K * Bind) per game bone
         for i, name in enumerate(names):
             own = i
@@ -397,7 +402,7 @@ class Puppet:
     def pose(self, arm):
         """The packed pose of an evaluated armature, and a point to keep the entity at (game units)."""
         world = GAME_FROM_BLENDER @ arm.matrix_world
-        pose_bones = arm.pose.bones
+        pose_bones = arm.pose.bones if arm.pose else {}
         cache = {}
         out = np.empty((len(self.bones), 8), np.float32)
         for i, (name, local) in enumerate(self.bones):
@@ -422,6 +427,66 @@ def rig_models():
         models.add(hero.get('model'))
         models.update(extra.get('model') for extra in (hero.get('extra_models') or {}).values())
     return sorted(m for m in models if m)
+
+
+def game_model_path(text):
+    """'props/barrel_03', 'models\\props\\barrel_03.vmdl_c', ... -> 'models/props/barrel_03.vmdl'."""
+    path = text.strip().replace('\\', '/').lower().lstrip('/')
+    if path.endswith('.vmdl_c'):
+        path = path[:-2]
+    if not path:
+        return ''
+    if not path.endswith('.vmdl'):
+        path += '.vmdl'
+    return path if path.startswith('models/') else 'models/' + path
+
+
+def prop_model(obj):
+    """The game model an object stands for (its dlr_game_model property), or ''."""
+    value = obj.get(PROP_KEY) if obj is not None else None
+    return game_model_path(value) if isinstance(value, str) else ''
+
+
+def scene_prop_models():
+    return sorted({m for m in (prop_model(obj) for obj in bpy.data.objects) if m})
+
+
+class GameProp:
+    """A game model entity kept at a Blender object's transform (scale included). Models with bones take a pose slot
+    and are posed rigidly like a puppet (exact, no server tick); models without bones move by console."""
+
+    def __init__(self, obj_name, entity, model, puppet=None):
+        self.obj_name, self.entity, self.model, self.puppet = obj_name, entity, model, puppet
+        self.sent = None  # (pos, angles, scale) last sent by console
+        self.origin = None
+
+    @property
+    def slot(self):
+        return self.puppet.slot if self.puppet else None
+
+    @staticmethod
+    def placement(obj):
+        """Game position, angles (pitch, yaw, roll in degrees) and uniform scale of an evaluated object."""
+        m = GAME_FROM_BLENDER @ obj.matrix_world @ BLENDER_FROM_GAME
+        loc, rot, scale = m.decompose()
+        # Source angles: R = Rz(yaw) Ry(pitch) Rx(roll), Blender's XYZ euler order.
+        roll, pitch, yaw = rot.to_euler('XYZ')
+        return (tuple(loc), (math.degrees(pitch), math.degrees(yaw), math.degrees(roll)),
+                (scale.x + scale.y + scale.z) / 3)
+
+    def commands(self, obj):
+        """Console commands that move the entity to the object (none when it hasn't moved)."""
+        pos, angles, scale = placement = self.placement(obj)
+        old = self.sent
+        out = []
+        if old is None or math.dist(pos, old[0]) > 0.01:
+            out.append('ent_setpos {} {:.3f} {:.3f} {:.3f}'.format(self.entity, *pos))
+        if old is None or max(abs((a - b + 180) % 360 - 180) for a, b in zip(angles, old[1])) > 0.01:
+            out.append('ent_setang {} {:.3f} {:.3f} {:.3f}'.format(self.entity, *angles))
+        if (old is None and abs(scale - 1) > 1e-4) or (old is not None and abs(scale - old[2]) > 1e-4):
+            out.append(f'ent_fire {self.entity} SetScale {scale:.4f}')
+        self.sent = placement
+        return out
 
 
 def _arm_model(arm):
@@ -865,6 +930,7 @@ class Link:
         self.history = deque(maxlen=120)  # (time sent, View), for pairing stream frames with views
         self.poses = None
         self.puppets = {}  # armature name -> Puppet
+        self.props = {}  # object name -> GameProp
         self.declined = set()  # rigs the user took out of the game, or that failed to spawn
         self.render_frame = None  # last frame rendered while the game clock is frozen
         self.paused = False  # the user's Pause Game: the clock stays frozen outside renders too
@@ -1054,9 +1120,10 @@ class Link:
         if self.stream:
             self.stream.stop()
             self.stream = None
-        had_puppets = bool(self.puppets)
-        for puppet in list(self.puppets.values()):
-            self.remove_puppet(puppet)
+        had_puppets = bool(self.puppets or self.props)
+        # Not paused: removals land once the clock runs again below, no ticking per prop.
+        self.paused = False
+        self.remove_spawned()
         if self.poses:
             try:
                 self.poses.pose(PAWN_SLOT, '', active=False)
@@ -1086,20 +1153,10 @@ class Link:
         model = _arm_model(arm)
         if not model:
             raise ValueError(f'{arm.name} is not a Deadlock rig (no game model known for it)')
-        used = {p.slot for p in self.puppets.values()} | {PAWN_SLOT}
-        slot = next((i for i in range(POSE_SLOTS) if i not in used), None)
+        slot = self._free_slot()
         if slot is None:
             raise ValueError(f'all {POSE_SLOTS} pose slots are in use')
-        before = self.poses.entities(model)
-        # prop_dynamic_create prepends models/ itself.
-        self.con.send(f'prop_dynamic_create {model[len("models/"):] if model.startswith("models/") else model}')
-        bound = None
-        end = time.time() + 5.0
-        while bound is None and time.time() < end:
-            time.sleep(0.1)
-            new = self.poses.entities(model) - before
-            if new:
-                bound = self.poses.pose(slot, model, entity=max(new), active=False)
+        bound = self.poses.pose(slot, model, entity=self._spawn(model), active=False)
         if bound is None:
             raise TimeoutError(f'the game did not spawn {model}')
         if not bound['count']:
@@ -1111,6 +1168,70 @@ class Link:
         self.puppets[arm.name] = puppet
         self._save_spawned()
         return puppet
+
+    def _free_slot(self):
+        used = {p.slot for p in self.puppets.values()} | {p.slot for p in self.props.values()} | {PAWN_SLOT}
+        return next((i for i in range(POSE_SLOTS) if i not in used), None)
+
+    def _spawn(self, model, override=False):
+        """Create a prop_dynamic of the model; its entity index. override: prop_dynamic_override, which also takes
+        models whose prop data says physics only (breakables: prop_dynamic_create silently makes nothing)."""
+        before = self.poses.entities(model)
+        if override:
+            self.con.send(f'ent_create prop_dynamic_override {{"model" "{model}"}}')
+        else:
+            # prop_dynamic_create prepends models/ itself.
+            self.con.send(f'prop_dynamic_create {model[len("models/"):] if model.startswith("models/") else model}')
+        end = time.time() + 5.0
+        while time.time() < end:
+            # A paused game only creates it on a server tick.
+            self.nudge()
+            time.sleep(0.1)
+            new = self.poses.entities(model) - before
+            if new:
+                return max(new)
+        raise TimeoutError(f'the game did not spawn {model}')
+
+    def add_prop(self, obj):
+        """Spawn the game model an object names (dlr_game_model) and keep it at the object."""
+        if not self.poses:
+            raise ConnectionError('game models need the bridge (start the session with --bridge)')
+        model = prop_model(obj)
+        entity = self._spawn(model, override=True)
+        prop = GameProp(obj.name, entity, model)
+        slot = self._free_slot()
+        if slot is not None:
+            bound = self.poses.pose(slot, model, entity=entity, active=False)
+            # No bones: a static model, or one the map didn't load (the game draws ERROR then; nothing tells them
+            # apart from here).
+            if bound is not None and bound['count']:
+                try:
+                    names, parents, inv_binds = self.poses.skeleton(slot)
+                    prop.puppet = Puppet(obj.name, slot, entity, model, names, parents, inv_binds, obj)
+                except ConnectionError:
+                    # Attachments but no bones (the xmas gift box): moved by console like a static model.
+                    pass
+        self.props[obj.name] = prop
+        self._save_spawned()
+        return prop
+
+    def remove_prop(self, prop):
+        self.props.pop(prop.obj_name, None)
+        if prop.puppet:
+            try:
+                self.poses.pose(prop.slot, prop.model, entity=prop.entity, active=False)
+            except OSError:
+                pass
+        if self.con and self.con.alive:
+            self.con.send(f'ent_remove {prop.entity}')
+            self.settle_console()
+        self._save_spawned()
+
+    def remove_spawned(self):
+        for puppet in list(self.puppets.values()):
+            self.remove_puppet(puppet)
+        for prop in list(self.props.values()):
+            self.remove_prop(prop)
 
     def hide_player(self):
         """Fold the player's own hero (the session needs one, and it stands where the shots are) into a point: every
@@ -1130,7 +1251,7 @@ class Link:
         try:
             os.makedirs(os.path.dirname(SPAWNED), exist_ok=True)
             with open(SPAWNED, 'w') as f:
-                json.dump([[p.entity, p.model] for p in self.puppets.values()], f)
+                json.dump([[p.entity, p.model] for p in (*self.puppets.values(), *self.props.values())], f)
         except OSError:
             pass
 
@@ -1164,8 +1285,26 @@ class Link:
             except (OSError, ValueError, TimeoutError) as error:
                 self.declined.add(arm.name)
                 self.error = f'{arm.name}: {error}'
-        if self.puppets:
+        self._sync_props(depsgraph)
+        if self.puppets or self.props:
             self.send_poses(depsgraph)
+
+    def _sync_props(self, depsgraph):
+        """Visible objects with a dlr_game_model are in the game; hidden ones, or ones whose model changed, leave it."""
+        for prop in list(self.props.values()):
+            obj = bpy.data.objects.get(prop.obj_name)
+            if obj is None or prop_model(obj) != prop.model or not obj.visible_get():
+                self.remove_prop(prop)
+        for inst in depsgraph.objects:
+            obj = inst.original
+            if (obj.name in self.props or obj.name in self.declined or not prop_model(obj)
+                    or not obj.visible_get()):
+                continue
+            try:
+                self.add_prop(obj)
+            except (OSError, ValueError, TimeoutError) as error:
+                self.declined.add(obj.name)
+                self.error = f'{obj.name}: {error}'
 
     def remove_puppet(self, puppet):
         self.puppets.pop(puppet.arm_name, None)
@@ -1193,22 +1332,41 @@ class Link:
             if arm is None or arm.type != 'ARMATURE':
                 self.remove_puppet(puppet)
                 continue
-            data, anchor = puppet.pose(arm.evaluated_get(depsgraph))
-            # The entity's bounds decide culling: keep the entity with the pose.
-            if puppet.origin is None or math.dist(anchor, puppet.origin) > FOLLOW_DISTANCE:
-                self.con.send('ent_setpos {} {:.2f} {:.2f} {:.2f}'.format(puppet.entity, *anchor))
-                puppet.origin = anchor
-                self.setpos_at = time.time()
-            try:
-                bound = self.poses.pose(puppet.slot, puppet.model, data, len(puppet.bones), entity=puppet.entity)
-            except OSError as error:
-                self.error = f'pose: {error}'
+            arrived &= self._send_pose(puppet, arm.evaluated_get(depsgraph))
+        for prop in list(self.props.values()):
+            obj = bpy.data.objects.get(prop.obj_name)
+            if obj is None:
+                self.remove_prop(prop)
                 continue
-            if bound is None or math.dist(bound['origin'], puppet.origin) > ARRIVED:
+            obj = obj.evaluated_get(depsgraph)
+            if prop.puppet:
+                arrived &= self._send_pose(prop.puppet, obj)
+                continue
+            commands = prop.commands(obj)
+            if commands:
+                self.con.send(*commands)
+                self.setpos_at = time.time()
+                self.settle_console()
+            if time.time() - self.setpos_at < PROP_SETTLE:
                 arrived = False
         if not arrived and time.time() - self.setpos_at < SETPOS_NUDGE:
             self.nudge()
         return arrived
+
+    def _send_pose(self, puppet, obj):
+        """Pose one puppet from an evaluated object; False while its entity hasn't reached the pose yet."""
+        data, anchor = puppet.pose(obj)
+        # The entity's bounds decide culling: keep the entity with the pose.
+        if puppet.origin is None or math.dist(anchor, puppet.origin) > FOLLOW_DISTANCE:
+            self.con.send('ent_setpos {} {:.2f} {:.2f} {:.2f}'.format(puppet.entity, *anchor))
+            puppet.origin = anchor
+            self.setpos_at = time.time()
+        try:
+            bound = self.poses.pose(puppet.slot, puppet.model, data, len(puppet.bones), entity=puppet.entity)
+        except OSError as error:
+            self.error = f'pose: {error}'
+            return True
+        return bound is not None and math.dist(bound['origin'], puppet.origin) <= ARRIVED
 
     def reshoot(self):
         with self.lock:
@@ -1308,6 +1466,14 @@ class Link:
         if self.paused and not state['available']:
             self.error = 'game clock not available (bridge): Pause Game does nothing'
         return state
+
+    def settle_console(self):
+        """A paused game applies console entity changes only on a server tick, and ticks rarely: tick it a few times."""
+        if not (self.paused and self.render_frame is None and not self.thawed_until and self.poses):
+            return
+        for _ in range(CONSOLE_NUDGES):
+            self.nudge()
+            time.sleep(0.05)
 
     def nudge(self):
         """One server tick for a paused game: ent_setpos only lands on a tick, and a frozen game ticks rarely."""
@@ -1599,7 +1765,7 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         lk = _link
         if lk:
             lk.sync_puppets(depsgraph)
-        puppets = set(lk.puppets) if lk else set()
+        puppets = set(lk.puppets) | set(lk.props) if lk else set()
         if lk and puppets and not lk.stream and any(
                 isinstance(u.id, bpy.types.Object) and u.id.original.name in puppets for u in depsgraph.updates):
             # Screenshot mode only shoots when the view moves: a new pose needs a new shot too.
@@ -1611,9 +1777,9 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
                 continue
             if _is_map_object(obj.original):
                 continue
-            # The game draws posed rigs itself.
+            # The game draws posed rigs and game models itself.
             owner = puppet_armature(obj.original)
-            if owner is not None and owner.name in puppets:
+            if (owner is not None and owner.name in puppets) or obj.original.name in puppets:
                 continue
             name = obj.original.name
             seen.add(name)
@@ -1740,12 +1906,12 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         first = lk.render_frame is None
         moved = lk.follow_render(view.pos)
         lk.sync_puppets(depsgraph)
-        if lk.puppets:
+        if lk.puppets or lk.props:
             # Entities move through server ticks: wait before the clock stops; later frames move during the step.
             lk.send_poses(depsgraph, settle=2.0 if first or moved else 0.0)
         time.sleep(lk.streaming())
         lk.advance(frame_number, render.fps / render.fps_base)
-        if lk.puppets and not first:
+        if (lk.puppets or lk.props) and not first:
             lk.send_poses(depsgraph, settle=1.0)
         if lk.stream and lk.bridge:
             frame = lk.capture_stream(view)
@@ -2152,7 +2318,7 @@ class DLR_OT_game_start(bpy.types.Operator):
         if screen and height > screen[1]:
             height = screen[1]
         session = gamelaunch.Session(game, PORT, map_name=self.map, size=(height * 16 // 9, height),
-                                     borderless=bool(screen) and height >= screen[1], precache=rig_models())
+                                     borderless=bool(screen) and height >= screen[1], precache=sorted(set(rig_models()) | set(scene_prop_models())))
         try:
             session.start()
         except (OSError, RuntimeError) as error:
@@ -2174,8 +2340,7 @@ class DLR_OT_game_quit(bpy.types.Operator):
         if _link:
             con = _link.con
             _link.running = False
-            for puppet in list(_link.puppets.values()):
-                _link.remove_puppet(puppet)
+            _link.remove_spawned()
         if _session:
             _session.stop(con)
             _session = None
@@ -2206,12 +2371,22 @@ class DLR_OT_game_pose_rig(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        arm = puppet_armature(context.active_object)
-        return (_link is not None and _link.running and _link.poses is not None and arm is not None
-                and arm.name not in _link.puppets)
+        if _link is None or not _link.running or _link.poses is None:
+            return False
+        obj = context.active_object
+        if prop_model(obj):
+            return obj.name not in _link.props
+        arm = puppet_armature(obj)
+        return arm is not None and arm.name not in _link.puppets
 
     def execute(self, context):
-        arm = puppet_armature(context.active_object)
+        obj = context.active_object
+        if prop_model(obj):
+            _link.declined.discard(obj.name)
+            # Spawned with the next viewport or render update.
+            obj.update_tag()
+            return {'FINISHED'}
+        arm = puppet_armature(obj)
         _link.declined.discard(arm.name)
         try:
             _link.add_puppet(arm)
@@ -2233,13 +2408,58 @@ class DLR_OT_game_unpose_rig(bpy.types.Operator):
 
     def execute(self, context):
         puppet = _link.puppets.get(self.armature) if _link else None
-        if puppet:
+        prop = _link.props.get(self.armature) if _link else None
+        if puppet or prop:
             _link.declined.add(self.armature)
-            _link.remove_puppet(puppet)
+            if puppet:
+                _link.remove_puppet(puppet)
+            else:
+                _link.remove_prop(prop)
             arm = bpy.data.objects.get(self.armature)
             if arm:
                 arm.update_tag()
         return {'FINISHED'}
+
+
+class DLR_OT_game_add_model(bpy.types.Operator):
+    bl_idname = 'dlr.game_add_model'
+    bl_label = 'Add Game Model'
+    bl_description = ('Add an empty at the 3D cursor that the game draws a model at (any vmdl in the game files, '
+                      'e.g. props/barrel_03). Move, turn and scale the empty; posing rigs isn\'t needed. Models '
+                      'the map doesn\'t use show as ERROR until Deadlock is started again from Blender (Start '
+                      'Deadlock loads every game model in the file). Any object with a dlr_game_model property works '
+                      'the same way')
+    bl_options = {'REGISTER', 'UNDO'}
+
+    model: bpy.props.StringProperty(name='Model', description='Game model path, e.g. props/barrel_03 or '
+                                    'models/props/barrel_03.vmdl')
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=400)
+
+    def execute(self, context):
+        path = game_model_path(self.model)
+        if not path:
+            self.report({'ERROR'}, 'no model path given')
+            return {'CANCELLED'}
+        obj = bpy.data.objects.new(os.path.splitext(os.path.basename(path))[0], None)
+        obj.empty_display_type = 'ARROWS'
+        obj.empty_display_size = 0.5
+        obj[PROP_KEY] = path
+        obj.location = context.scene.cursor.location
+        context.collection.objects.link(obj)
+        for other in context.selected_objects:
+            other.select_set(False)
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+        if _link and _link.running and path not in _session_precache():
+            self.report({'WARNING'}, f'{path}: if the game shows ERROR, quit Deadlock and start it again from '
+                                     'Blender (it loads the file\'s game models at start)')
+        return {'FINISHED'}
+
+
+def _session_precache():
+    return set(_session.precache) if _session else set()
 
 
 class DLR_OT_game_pause(bpy.types.Operator):
@@ -2293,14 +2513,23 @@ class DLR_PT_game_render(bpy.types.Panel):
             if lk.poses:
                 col.operator(DLR_OT_game_pause.bl_idname, text='Resume Game' if lk.paused else 'Pause Game',
                              icon='PLAY' if lk.paused else 'PAUSE', depress=lk.paused)
-                col.label(text='Visible Deadlock rigs are posed in the game (Rendered shading or F12)')
+                col.label(text='Visible Deadlock rigs and game models are in the game (Rendered shading or F12)')
                 arm = puppet_armature(context.active_object)
                 if arm is not None and arm.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, icon='ARMATURE_DATA')
+                obj = context.active_object
+                if prop_model(obj) and obj.name in lk.declined:
+                    col.operator(DLR_OT_game_pose_rig.bl_idname, text='Show in Game', icon='MESH_CUBE')
                 for name, puppet in lk.puppets.items():
                     row = col.row()
                     row.label(text=f'{name}: entity {puppet.entity}', icon='OUTLINER_OB_ARMATURE')
                     row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
+                for name, prop in lk.props.items():
+                    row = col.row()
+                    row.label(text=f'{name}: {os.path.basename(prop.model)}, entity {prop.entity}',
+                              icon='MESH_CUBE')
+                    row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
+                col.operator(DLR_OT_game_add_model.bl_idname, icon='ADD')
             row = col.row()
             row.operator(DLR_OT_game_disconnect.bl_idname)
             if _session:
@@ -2311,6 +2540,7 @@ class DLR_PT_game_render(bpy.types.Panel):
             row = col.row()
             row.operator(DLR_OT_game_start.bl_idname, icon='PLAY')
             row.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
+            col.operator(DLR_OT_game_add_model.bl_idname, icon='ADD')
         if _session and _session.error:
             col.label(text=_session.error, icon='ERROR')
         if lk and lk.error:
@@ -2327,7 +2557,7 @@ def _view_menu(self, context):
 
 
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
-           DLR_OT_game_jump, DLR_OT_game_pause,
+           DLR_OT_game_jump, DLR_OT_game_pause, DLR_OT_game_add_model,
            DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_PT_game_render,
            DLR_OT_game_plate)
 
