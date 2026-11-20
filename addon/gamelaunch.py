@@ -167,17 +167,22 @@ class Session:
     # gameinfo.gi ----------------------------------------------------------------------------------------------
     def _patched(self, original):
         nl = '\r\n' if '\r\n' in original else '\n'
-        out, inserted, in_search = [], False, False
-        for line in original.split(nl):
+        lines = original.split(nl)
+        block = _search_paths_block(lines)
+        keys = {lines[i].split()[0].lower() for i in block if lines[i].split()}
+        out, inserted = [], False
+        for i, line in enumerate(lines):
             parts = line.split()
             key = parts[0].lower() if parts else ''
-            if key == 'searchpaths':
-                in_search = True
-            if not in_search:
+            if i not in block:
                 out.append(line)
                 continue
             if key == 'game' and not inserted:
                 indent = line[:len(line) - len(line.lstrip())]
+                # The stock file (since the 2026-09-29 update) has no Mod/Write keys, so the first Game path
+                # becomes MOD and the write path: the overlay would take both from citadel and the game dies with
+                # "Unable to read default keybinding configuration (user_keys_default)".
+                out += [f'{indent}{k}\t\t\t\tcitadel\t{MARK}' for k in ('Mod', 'Write') if k.lower() not in keys]
                 out.append(f'{indent}Game\t\t\t\t{OVERLAY}\t{MARK}')
                 inserted = True
             # Without mods: Deadlock Mod Manager's mounts are left out, so the session looks like the vanilla game.
@@ -277,6 +282,9 @@ class Session:
     def bridge_path(self):
         return bridge_path(self.game)
 
+    def console_log(self):
+        return os.path.join(self.game, 'citadel', 'console.log')
+
     def precache_path(self):
         return os.path.join(os.path.dirname(self.bridge_path()), 'precache.txt')
 
@@ -347,7 +355,7 @@ class Session:
             # The bridge answers once the map's server has loaded it, then counts drawn views. A console client
             # that connects while the map is still loading can hang the game for good (twice, at 2 s into the
             # map): wait until it has drawn steadily for a while.
-            steady_since, last_views = None, -1
+            steady_since, last_views, seen, gone_since = None, -1, False, None
             while True:
                 views = _bridge_views()
                 if views is not None and views > last_views >= 0:
@@ -360,6 +368,17 @@ class Session:
                 if time.time() > end:
                     self.error = ('the game did not come up with the camera bridge' if game_running(self.game)
                                   else 'the game did not start (is Steam running?)')
+                    return
+                if game_running(self.game):
+                    seen, gone_since = True, None
+                elif seen and time.time() - (gone_since or time.time()) < 3:
+                    gone_since = gone_since or time.time()
+                elif seen:
+                    # Put everything back now: the user's next launch (from Steam) must not see the session's edits.
+                    self.error = f'the game quit while starting (its log: {self.console_log()})'
+                    self.restore_gameinfo()
+                    self.restore_cfgs()
+                    self.remove_bridge()
                     return
                 if game_insecure() is False:
                     self.error = ('Deadlock started without -insecure (was it already open, or launched by '
@@ -390,6 +409,21 @@ class Session:
         if not game_running(self.game):
             self.restore_cfgs()
             self.remove_bridge()
+
+
+def _search_paths_block(lines):
+    """Indices of the lines inside gameinfo.gi's SearchPaths { } block."""
+    start = next((i for i, line in enumerate(lines) if line.split()[:1] and line.split()[0].lower() == 'searchpaths'),
+                 None)
+    if start is None:
+        return range(0)
+    depth = 0
+    for i in range(start + 1, len(lines)):
+        code = lines[i].split('//')[0]
+        depth += code.count('{') - code.count('}')
+        if depth <= 0 and '}' in code:
+            return range(start + 1, i)
+    return range(start + 1, len(lines))
 
 
 def bridge_path(game):
