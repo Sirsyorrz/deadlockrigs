@@ -90,6 +90,14 @@ SETPOS_NUDGE = 2.0  # a paused game ticks for a puppet's ent_setpos for this lon
 SETUP_COMMON = ('citadel_hud_visible 0', 'citadel_photomode_enabled 1', 'cl_drawhud 0',
                 'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
                 'engine_no_focus_sleep 0', 'jpeg_quality 95')
+# Remove NPCs: troopers (with their zipline crates) and neutral camps stop spawning and the live ones are removed
+# without death effects or gold orbs (ent_remove_all matches the class exactly); hero bots are kicked. Guardians,
+# walkers, shrines, the mid boss and the Patron stay: they are part of the map. notarget keeps them from attacking the
+# hidden hero, which follows the camera into their range (not god: a god hero pushed out of the play area is stuck).
+NPCS_OFF = ('citadel_trooper_spawn_enabled 0', 'citadel_neutral_spawn_enabled 0', 'ent_remove_all npc_trooper',
+            'ent_remove_all npc_trooper_neutral', 'ent_remove_all npc_neutral_sinners_sacrifice', 'bot_kick_all')
+NPCS_ON = ('citadel_trooper_spawn_enabled 1', 'citadel_neutral_spawn_enabled 1')
+NPC_NUDGES = 8
 # Console camera (no bridge): the camera is the hero's own eye.
 SETUP = (
     'citadel_camera_free_roam 0', 'noclip 1', 'citadel_camera_overrides_enabled 1',
@@ -862,6 +870,7 @@ class Link:
         self.frames_error = ''  # why the bridge's frame capture didn't start
         self.pawn_at = None
         self.pawn_moved = 0.0
+        self.no_npcs = False
 
     @property
     def min_vfov(self):
@@ -973,6 +982,8 @@ class Link:
         # Read the game's own camera before taking it over (Connect jumps the viewports there).
         self.start_camera = self.game_camera()
         self.con.send(*SETUP_COMMON)
+        if self.no_npcs:
+            self.set_npcs(False)
         if self.poses:
             self.remove_leftovers()
             self.hide_player()
@@ -1262,6 +1273,18 @@ class Link:
     def release_time(self):
         self.render_frame = None
         self._hold_clock()
+
+    def set_npcs(self, shown):
+        self.no_npcs = not shown
+        self.con.send(*(NPCS_ON if shown else NPCS_OFF))
+        # notarget only toggles; its reply says the new state.
+        reply = self.con.request('notarget', 'notarget', timeout=2.0)
+        if reply is not None and (reply.split()[-1] == 'ON') == shown:
+            self.con.send('notarget')
+        # A paused game takes seconds to show the removal otherwise.
+        for _ in range(NPC_NUDGES):
+            self.nudge()
+            time.sleep(0.05)
 
     def set_paused(self, paused):
         self.paused = paused
@@ -2040,6 +2063,7 @@ def connect(context, port=PORT, setup=(), launched=False):
     if _link:
         _link.stop()
     _link = Link(port, setup, launched)
+    _link.no_npcs = context.scene.dlr_game_no_npcs
     try:
         _link.start()
     except OSError:
@@ -2260,6 +2284,7 @@ class DLR_PT_game_render(bpy.types.Panel):
             if lk.outside:
                 col.label(text='View is outside the play area', icon='ERROR')
             col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
+            col.prop(context.scene, 'dlr_game_no_npcs')
             if lk.poses:
                 col.operator(DLR_OT_game_pause.bl_idname, text='Resume Game' if lk.paused else 'Pause Game',
                              icon='PLAY' if lk.paused else 'PAUSE', depress=lk.paused)
@@ -2316,9 +2341,19 @@ def _shared_panels():
             yield panel
 
 
+def _no_npcs_changed(scene, _context):
+    if _link and _link.running and _link.no_npcs != scene.dlr_game_no_npcs:
+        _link.set_npcs(not scene.dlr_game_no_npcs)
+
+
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
+    bpy.types.Scene.dlr_game_no_npcs = bpy.props.BoolProperty(
+        name='Remove NPCs', update=_no_npcs_changed,
+        description='Stop troopers and neutral camps from spawning, remove the ones alive, kick bots, and keep '
+                    'guardians and walkers from attacking the hidden hero. Sent again on every connect. Turned '
+                    'off, spawning resumes with the next wave; removed NPCs don\'t come back')
     for panel in _shared_panels():
         panel.COMPAT_ENGINES.add(ENGINE_ID)
     if not bpy.app.timers.is_registered(_poll_frames):
@@ -2355,3 +2390,4 @@ def unregister():
         panel.COMPAT_ENGINES.discard(ENGINE_ID)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
+    del bpy.types.Scene.dlr_game_no_npcs
