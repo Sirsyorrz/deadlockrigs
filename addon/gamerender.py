@@ -398,9 +398,21 @@ class Puppet:
                 rest = bones[own_name].matrix_local.inverted()
             bind = _transform_matrix(inv_binds[i]).inverted()
             self.bones.append((own_name, rest @ BLENDER_FROM_GAME @ bind))
+        self.mesh_bones = _mesh_bones(arm, {name: i for i, name in enumerate(names)}) if bones else {}
 
-    def pose(self, arm):
-        """The packed pose of an evaluated armature, and a point to keep the entity at (game units)."""
+    def hidden_bones(self, depsgraph):
+        """Game bones that only carry meshes hidden in Blender's render (the Weapon/Pillow part toggles, bodygroup
+        choices). The game model has no per-mesh switch, so those bones go to scale 0 and fold their meshes away."""
+        hidden, shown = set(), set()
+        for name, bones in self.mesh_bones.items():
+            obj = bpy.data.objects.get(name)
+            if obj is not None:
+                (hidden if obj.evaluated_get(depsgraph).hide_render else shown).update(bones)
+        return hidden - shown
+
+    def pose(self, arm, hidden=()):
+        """The packed pose of an evaluated armature, and a point to keep the entity at (game units). Bones in
+        `hidden` (game bone indices) get scale 0."""
         world = GAME_FROM_BLENDER @ arm.matrix_world
         pose_bones = arm.pose.bones if arm.pose else {}
         cache = {}
@@ -412,10 +424,32 @@ class Puppet:
             m = moved @ local
             loc, rot, scale = m.decompose()
             out[i] = (*loc, (scale.x + scale.y + scale.z) / 3, rot.x, rot.y, rot.z, rot.w)
+        if hidden:
+            out[sorted(hidden), 3] = 0.0
         pos = out[:, :3]
         # Near the feet, robust to stray helper bones (Abrams' muzzle_fx hangs metres below the floor in some clips).
         anchor = (float(np.median(pos[:, 0])), float(np.median(pos[:, 1])), float(np.percentile(pos[:, 2], 10)))
         return out.tobytes(), anchor
+
+
+_MESH_BONES = {}
+
+
+def _mesh_bones(arm, index):
+    """Mesh object name -> indices of the game bones its vertices are weighted to, for the rig's own meshes (extra
+    models are other game entities)."""
+    out = {}
+    for obj in bpy.data.objects:
+        if obj.type != 'MESH' or obj.get('dlrig_extra') or obj.find_armature() != arm:
+            continue
+        mesh = obj.data
+        key = (mesh.name, len(mesh.vertices), tuple(g.name for g in obj.vertex_groups))
+        groups = _MESH_BONES.get(key)
+        if groups is None:
+            used = {g.group for v in mesh.vertices for g in v.groups if g.weight > 1e-4}
+            groups = _MESH_BONES[key] = {obj.vertex_groups[i].name for i in used}
+        out[obj.name] = {index[g] for g in groups if g in index}
+    return out
 
 
 def rig_models():
@@ -1332,7 +1366,7 @@ class Link:
             if arm is None or arm.type != 'ARMATURE':
                 self.remove_puppet(puppet)
                 continue
-            arrived &= self._send_pose(puppet, arm.evaluated_get(depsgraph))
+            arrived &= self._send_pose(puppet, arm.evaluated_get(depsgraph), puppet.hidden_bones(depsgraph))
         for prop in list(self.props.values()):
             obj = bpy.data.objects.get(prop.obj_name)
             if obj is None:
@@ -1353,9 +1387,9 @@ class Link:
             self.nudge()
         return arrived
 
-    def _send_pose(self, puppet, obj):
+    def _send_pose(self, puppet, obj, hidden=()):
         """Pose one puppet from an evaluated object; False while its entity hasn't reached the pose yet."""
-        data, anchor = puppet.pose(obj)
+        data, anchor = puppet.pose(obj, hidden)
         # The entity's bounds decide culling: keep the entity with the pose.
         if puppet.origin is None or math.dist(anchor, puppet.origin) > FOLLOW_DISTANCE:
             self.con.send('ent_setpos {} {:.2f} {:.2f} {:.2f}'.format(puppet.entity, *anchor))
