@@ -2,6 +2,8 @@
 
 A Blender add-on that builds animation rigs of Deadlock heroes, NPCs and maps from your own game install.
 
+[![Install Deadlock Rigs](https://img.shields.io/badge/Install-Deadlock%20Rigs-E95420?logo=blender&logoColor=white&style=for-the-badge)](https://sirsyorrz.github.io/deadlockrigs/)
+
 ![Violet's rig in Blender](docs/violet_rig.png)
 
 ## Features
@@ -24,6 +26,7 @@ A Blender add-on that builds animation rigs of Deadlock heroes, NPCs and maps fr
 ## Install
 
 Needs Blender 5.1 or newer and Deadlock installed through Steam. Works on Windows and Linux.
+The easiest way is the [install page](https://sirsyorrz.github.io/deadlockrigs/): drag its button into Blender.
 
 [![Windows](https://img.shields.io/badge/Windows%20x64-0078D4?logo=blender&logoColor=white)](https://sirsyorrz.github.io/deadlockrigs/) [Install for Windows](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-windows_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=windows-x64)
 
