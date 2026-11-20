@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install Deadlock Rigs</title>
+<style>
+  :root { --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3; --dim: #8b949e; --accent: #e95420; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 24px; }
+  h1 { margin: 0 0 4px; font-size: 32px; }
+  .tagline { color: var(--dim); margin: 0 0 24px; }
+  .hero { width: 100%; border-radius: 8px; border: 1px solid var(--border); display: block; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-top: 24px; }
+  .platforms { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .platform { text-align: center; }
+  .drag { width: 100%; padding: 14px; border: 0; border-radius: 6px; color: #fff; font: 600 16px system-ui, sans-serif;
+          cursor: grab; display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .drag:active { cursor: grabbing; }
+  .drag.dragging { opacity: 0.5; }
+  .windows { background: #0078d4; }
+  .linux { background: var(--accent); }
+  .drag svg { width: 20px; height: 20px; fill: currentColor; }
+  .platform small { display: block; margin-top: 8px; color: var(--dim); }
+  a { color: #58a6ff; }
+  ol { margin: 0; padding-left: 20px; }
+  li + li { margin-top: 8px; }
+  .needs { color: var(--dim); font-size: 14px; margin: 16px 0 0; text-align: center; }
+  footer { margin-top: 32px; color: var(--dim); font-size: 14px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Deadlock Rigs</h1>
+  <p class="tagline">A Blender add-on that builds animation rigs of Deadlock heroes, NPCs and maps from your own game install.</p>
+  <img class="hero" src="violet_rig.png" alt="Violet's rig in Blender">
+
+  <div class="card">
+    <div class="platforms">
+      <div class="platform">
+        <button class="drag windows" draggable="true" data-platform="windows_x64" data-tag="windows-x64">
+          <svg viewBox="0 0 24 24"><path d="M10 2v4H6l6 6 6-6h-4V2zM3 14h18v2H3zm0 4h18v2H3z"/></svg>
+          Drag into Blender: Windows
+        </button>
+        <small>...or <a data-download="windows_x64">download the zip</a></small>
+      </div>
+      <div class="platform">
+        <button class="drag linux" draggable="true" data-platform="linux_x64" data-tag="linux-x64">
+          <svg viewBox="0 0 24 24"><path d="M10 2v4H6l6 6 6-6h-4V2zM3 14h18v2H3zm0 4h18v2H3z"/></svg>
+          Drag into Blender: Linux
+        </button>
+        <small>...or <a data-download="linux_x64">download the zip</a></small>
+      </div>
+    </div>
+    <p class="needs">Needs Blender 5.1 or newer and Deadlock installed through Steam.</p>
+  </div>
+
+  <div class="card">
+    <ol>
+      <li>Drag the button for your platform into an open Blender window.</li>
+      <li>The first time, Blender asks to add the Deadlock Rigs repository: press Add Repository and tick Check for
+        Updates on Startup, then drag the button in again and press Install. From then on Blender offers updates in
+        Edit &gt; Preferences &gt; Get Extensions.</li>
+      <li>Already installed from a zip? Uninstall it in Get Extensions first. Zips installed from disk don't get updates.</li>
+      <li>Open the sidebar in the 3D View (N) &gt; Deadlock Rigs, pick a hero and press Build Rig.</li>
+    </ol>
+  </div>
+
+  <footer><a href="https://github.com/Sirsyorrz/deadlockrigs">GitHub</a> · <a href="https://ko-fi.com/sirsyorrz">Ko-fi</a></footer>
+</main>
+<script>
+  const releases = 'https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/';
+  const zip = platform => `${releases}deadlock_rigs-${platform}.zip`;
+
+  // Blender only installs from a drop that carries the URL as plain text; a dragged link or image also carries
+  // the image or HTML, which Blender reads instead.
+  for (const button of document.querySelectorAll('.drag')) {
+    const url = `${zip(button.dataset.platform)}?repository=${releases}index.json` +
+                `&blender_version_min=5.1.0&platforms=${button.dataset.tag}`;
+    button.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', url);
+      button.classList.add('dragging');
+    });
+    button.addEventListener('dragend', () => button.classList.remove('dragging'));
+  }
+  for (const link of document.querySelectorAll('[data-download]')) link.href = zip(link.dataset.download);
+</script>
+</body>
+</html>
