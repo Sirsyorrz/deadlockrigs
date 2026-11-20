@@ -10,10 +10,12 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import threading
 import time
+import zlib
 
 APPID = '1422450'
 OVERLAY = 'citadel/dlrigs_bridge'
@@ -23,6 +25,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # packaged: native/ inside the add-on; in the repo the build output next to addon/
 BRIDGE_DLLS = (os.path.join(HERE, 'native', 'dlr_bridge.dll'),
                os.path.join(os.path.dirname(HERE), 'native', 'dlr_bridge', 'build', 'dlr_bridge.dll'))
+# The build watermark (Deadlock logo, top left) and the connection/matchmaking notes live in the overlay layer, not
+# the HUD, so no cvar hides them. The session mounts a copy of their stylesheet with every entry kept invisible.
+# Same-length edit of the compiled file: offsets and block sizes stay valid. It has to be packed: the engine searches
+# every path's pak01 VPK before any loose folder, so a loose copy in the overlay never wins over citadel's VPK.
+CLIENT_STATUS_CSS = 'panorama/styles/citadel_client_status.vcss_c'
+CLIENT_STATUS_EDIT = (b'.StatusEntry.ShowStatus{opacity: 1.0;}', b'.StatusEntry.ShowStatus{opacity: 0.0;}')
 # Launch to console: ~60 s, plus a stall of ~95 s that some launches sit through after "Game started".
 READY_DRAWING = 8.0  # seconds of steady drawing before the first console client
 CONSOLE_TIMEOUT = 300
@@ -291,11 +299,31 @@ class Session:
     def remove_bridge(self):
         """The bridge stays inert without -insecure, but it is only on disk while a session runs, so a normal
         (VAC-secured) launch can never find a foreign server.dll even if gameinfo.gi was left patched."""
-        for path in (self.bridge_path(), self.precache_path()):
+        for path in (self.bridge_path(), self.precache_path(), self.client_status_path()):
             try:
                 os.remove(path)
             except OSError:
                 pass
+
+    def client_status_path(self):
+        return os.path.join(self.game, *OVERLAY.split('/'), 'pak01_dir.vpk')
+
+    def hide_client_status(self):
+        """Mount the client status stylesheet with its entries invisible. Skipped (logged) when the game's copy no
+        longer has the rule: the watermark then shows, nothing else changes."""
+        try:
+            data = vpk_read(os.path.join(self.game, 'citadel', 'pak01_dir.vpk'), CLIENT_STATUS_CSS)
+        except (OSError, ValueError, struct.error) as error:
+            log(f'client status style not read: {error}')
+            return
+        old, new = CLIENT_STATUS_EDIT
+        if data is None or data.count(old) != 1:
+            log('client status style: rule not found, the watermark stays')
+            return
+        try:
+            vpk_write(self.client_status_path(), {CLIENT_STATUS_CSS: data.replace(old, new)})
+        except OSError as error:
+            log(f'client status style not written: {error}')
 
     # launch ---------------------------------------------------------------------------------------------------
     def args(self):
@@ -328,6 +356,7 @@ class Session:
         shutil.copyfile(dll, target)
         with open(self.precache_path(), 'w') as f:
             f.write(''.join(path + '\n' for path in self.precache))
+        self.hide_client_status()
         stale = os.path.join(os.path.dirname(target), 'dlr_unlocker.dll')
         if os.path.exists(stale):
             os.remove(stale)
@@ -428,6 +457,80 @@ def _search_paths_block(lines):
 
 def bridge_path(game):
     return os.path.join(game, *OVERLAY.split('/'), 'bin', 'win64', 'server.dll')
+
+
+def vpk_read(dir_path, wanted):
+    """One file's bytes from a VPK v2 (pak01_dir.vpk + pak01_NNN.vpk), or None when it isn't in there."""
+    with open(dir_path, 'rb') as f:
+        signature, version, tree_size = struct.unpack('<III', f.read(12))
+        if signature != 0x55AA1234 or version != 2:
+            raise ValueError(f'{dir_path} is not a VPK v2')
+        f.read(16)
+        tree = f.read(tree_size)
+    data_start = 28 + tree_size
+    stem, ext = wanted.rsplit('.', 1)
+    folder, name = stem.rsplit('/', 1) if '/' in stem else (' ', stem)
+    pos = 0
+
+    def string():
+        nonlocal pos
+        end = tree.index(b'\0', pos)
+        text = tree[pos:end].decode('utf-8', 'replace')
+        pos = end + 1
+        return text
+
+    while True:
+        e = string()
+        if not e:
+            return None
+        while True:
+            p = string()
+            if not p:
+                break
+            while True:
+                n = string()
+                if not n:
+                    break
+                _crc, preload, archive, offset, length, _end = struct.unpack_from('<IHHIIH', tree, pos)
+                pos += 18
+                if (e, p, n) != (ext, folder, name):
+                    pos += preload
+                    continue
+                body = tree[pos:pos + preload]
+                if length:
+                    if archive == 0x7FFF:
+                        path, offset = dir_path, data_start + offset
+                    else:
+                        path = dir_path.replace('_dir.vpk', f'_{archive:03d}.vpk')
+                    with open(path, 'rb') as f:
+                        f.seek(offset)
+                        body += f.read(length)
+                return body
+
+
+def vpk_write(path, files):
+    """A VPK v2 with its data inside the _dir file, holding {path inside: bytes}."""
+    tree, body = bytearray(), bytearray()
+    by_ext = {}
+    for inner, data in files.items():
+        stem, ext = inner.rsplit('.', 1)
+        folder, name = stem.rsplit('/', 1) if '/' in stem else (' ', stem)
+        by_ext.setdefault(ext, {}).setdefault(folder, []).append((name, data))
+    for ext, folders in by_ext.items():
+        tree += ext.encode() + b'\0'
+        for folder, entries in folders.items():
+            tree += folder.encode() + b'\0'
+            for name, data in entries:
+                tree += name.encode() + b'\0'
+                tree += struct.pack('<IHHIIH', zlib.crc32(data), 0, 0x7FFF, len(body), len(data), 0xFFFF)
+                body += data
+            tree += b'\0'
+        tree += b'\0'
+    tree += b'\0'
+    with open(path, 'wb') as f:
+        f.write(struct.pack('<IIIIIII', 0x55AA1234, 2, len(tree), len(body), 0, 0, 0))
+        f.write(tree)
+        f.write(body)
 
 
 def bridge_log(game):
