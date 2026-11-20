@@ -83,7 +83,10 @@ ARRIVED = 48.0
 # after a move waits PAWN_STREAM_IN seconds for the entities to arrive.
 PAWN_FOLLOW = 512.0
 PAWN_STREAM_IN = 0.5
-SETUP_COMMON = ('citadel_hud_visible 0', 'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
+# citadel_hud_visible 0 alone leaves the own health bar (shown once the hero leaves the Hideout's main room) and the
+# health bars over units: photomode hides both, cl_drawhud 0 (cheat) the rest of the HUD layer.
+SETUP_COMMON = ('citadel_hud_visible 0', 'citadel_photomode_enabled 1', 'cl_drawhud 0',
+                'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
                 'engine_no_focus_sleep 0', 'jpeg_quality 95')
 # Console camera (no bridge): the camera is the hero's own eye.
 SETUP = (
