@@ -90,6 +90,7 @@ SETPOS_NUDGE = 2.0  # a paused game ticks for a puppet's ent_setpos for this lon
 PROP_SETTLE = 0.15
 CONSOLE_NUDGES = 8  # server ticks a paused game gets for a console move or removal (a puppet's took ~7)
 PROP_KEY = 'dlr_game_model'  # object property: the game model the game draws at that object
+LIGHT_KEY = 'dlr_game_light'  # Object.dlr_game_light: the game draws a light at this Blender light
 # citadel_hud_visible 0 alone leaves the own health bar (shown once the hero leaves the Hideout's main room) and the
 # health bars over units: photomode hides both, cl_drawhud 0 (cheat) the rest of the HUD layer.
 SETUP_COMMON = ('citadel_hud_visible 0', 'citadel_photomode_enabled 1', 'cl_drawhud 0',
@@ -582,6 +583,88 @@ class GameProp:
         return out
 
 
+# Game light units (tools/map_environment.py, checked against the game's own lights): brightness is log2 of the
+# intensity, 1 = a Blender light of LIGHT_WATTS seen from 100 units. The game reads only brightness (brightness_lumens
+# is ignored when spawned).
+LIGHT_REFERENCE = 100.0
+LIGHT_WATTS = 4 * math.pi ** 2 * (UNIT * LIGHT_REFERENCE) ** 2
+# A spot becomes a barn light whose eye is the lamp: the opening sits this far in front of it.
+BARN_NEAR = 4.0
+LIGHT_NAME = 'dlrlight'  # targetname prefix of the lights Blender spawns
+GAME_LIGHT_TYPES = ('SPOT', 'POINT')
+
+
+def wants_game_light(obj):
+    # A registered property: since Blender 5 it is stored apart from custom properties, obj.get() doesn't see it.
+    return obj is not None and obj.type == 'LIGHT' and getattr(obj, LIGHT_KEY, False)
+
+
+def _linear_to_srgb(c):
+    c = min(max(c, 0.0), 1.0)
+    return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
+
+
+def light_entity(obj):
+    """The game light an evaluated Blender light stands for: (classname, keyvalues, origin, angles), positions in
+    game units, angles (pitch, yaw, roll). Spots become light_barn, points light_omni2 (an omni2's outer_angle
+    defaults to a narrow cone, hence the 180s). Range: the light's custom distance, else where it has faded to 1/256
+    of its brightness at 100 units."""
+    light = obj.data
+    world = GAME_FROM_BLENDER @ obj.matrix_world
+    eye, rot, scale = world.decompose()
+    rot = rot.to_matrix()
+    # Blender lamps shine down their -Z with +Y up; game lights along +X with +Z up (+Y to the left).
+    forward, left, up = rot @ Vector((0, 0, -1)), rot @ Vector((-1, 0, 0)), rot @ Vector((0, 1, 0))
+    roll, pitch, yaw = Matrix((forward, left, up)).transposed().to_euler('XYZ')
+    angles = (math.degrees(pitch), math.degrees(yaw), math.degrees(roll))
+    linear = max(light.energy, 1e-6) / LIGHT_WATTS
+    if light.use_custom_distance:
+        reach = light.cutoff_distance / UNIT
+    else:
+        reach = min(max(LIGHT_REFERENCE * math.sqrt(256 * linear), 64.0), 16384.0)
+    keys = {'color': ' '.join(str(round(255 * _linear_to_srgb(c))) for c in light.color), 'colormode': '0',
+            'directlight': '2', 'enabled': '1', 'castshadows': '1' if light.use_shadow else '0',
+            'range': f'{reach:.1f}', 'skirt': '0.1', 'fog': '0'}
+    radius = light.shadow_soft_size / UNIT
+    if light.type == 'SPOT':
+        tan_half = math.tan(min(light.spot_size, math.radians(170)) / 2)
+        depth = max(abs(scale.z), 1e-6)
+        half = [BARN_NEAR * tan_half * abs(s) / depth for s in (scale.x, scale.y)]
+        # the barn's intensity is given at the opening, a spot's at the lamp
+        linear /= ((BARN_NEAR + LIGHT_REFERENCE) / LIGHT_REFERENCE) ** 2
+        soft = min(max(light.spot_blend, 0.0), 1.0)
+        keys.update({'size_params': f'{half[0]:.4f} {half[1]:.4f} {1 / BARN_NEAR:.4f}', 'shape': '1',
+                     'soft_x': f'{soft:.3f}', 'soft_y': f'{soft:.3f}', 'skirt_near': '0',
+                     'luminaire_size': f'{max(2 * radius, 0.1):.2f}', 'luminaire_shape': '1'})
+        classname, origin = 'light_barn', eye + BARN_NEAR * forward
+    else:
+        size = max(2 * radius, 0.1)
+        keys.update({'size_params': f'{size:.2f} {size:.2f} {size:.2f}', 'inner_angle': '180',
+                     'outer_angle': '180'})
+        classname, origin = 'light_omni2', eye
+    keys['brightness'] = f'{math.log2(linear):.4f}'
+    return classname, keys, tuple(origin), angles
+
+
+class GameLight:
+    """A runtime light entity kept at a Blender light. Moves go by console (ent_setpos/ent_setang, a server tick
+    later); any other change (energy, colour, cone, shadows) spawns it again."""
+
+    def __init__(self, obj_name, entity, name, spec):
+        self.obj_name, self.entity, self.name, self.spec = obj_name, entity, name, spec
+        self.sent = None  # (origin, angles)
+
+    def commands(self, origin, angles):
+        out = []
+        old = self.sent
+        if old is None or math.dist(origin, old[0]) > 0.01:
+            out.append('ent_setpos {} {:.3f} {:.3f} {:.3f}'.format(self.entity, *origin))
+        if old is None or max(abs((a - b + 180) % 360 - 180) for a, b in zip(angles, old[1])) > 0.01:
+            out.append('ent_setang {} {:.3f} {:.3f} {:.3f}'.format(self.entity, *angles))
+        self.sent = (origin, angles)
+        return out
+
+
 def _arm_model(arm):
     if arm.get('dlr_model'):
         return arm['dlr_model']
@@ -1024,6 +1107,8 @@ class Link:
         self.poses = None
         self.puppets = {}  # armature name -> Puppet
         self.props = {}  # object name -> GameProp
+        self.lights = {}  # object name -> GameLight
+        self.light_count = 0
         self.declined = set()  # rigs the user took out of the game, or that failed to spawn
         self.render_frame = None  # last frame rendered while the game clock is frozen
         self.paused = False  # the user's Pause Game: the clock stays frozen outside renders too
@@ -1150,6 +1235,7 @@ class Link:
             self.set_npcs(False)
         if self.poses:
             self.remove_leftovers()
+            self.remove_leftover_lights()
             self.hide_player()
         if self.bridge is None:
             self.con.send(*SETUP)
@@ -1213,7 +1299,7 @@ class Link:
         if self.stream:
             self.stream.stop()
             self.stream = None
-        had_puppets = bool(self.puppets or self.props)
+        had_puppets = bool(self.puppets or self.props or self.lights)
         # Not paused: removals land once the clock runs again below, no ticking per prop.
         self.paused = False
         self.remove_spawned()
@@ -1327,6 +1413,109 @@ class Link:
             self.remove_puppet(puppet)
         for prop in list(self.props.values()):
             self.remove_prop(prop)
+        for light in list(self.lights.values()):
+            self.remove_light(light)
+
+    def find_entities(self, text, wait=0.4):
+        """ent_find: [(entity index, classname, targetname)] of entities whose class or name holds text."""
+        with self.con.lines_lock:
+            self.con.lines.clear()
+        self.con.send(f'ent_find {text}')
+        time.sleep(wait)
+        with self.con.lines_lock:
+            lines = list(self.con.lines)
+        found = []
+        for line in lines:
+            # '   'light_barn' : 'dlrlight3' (entindex 412)'
+            parts = line.strip().split("'")
+            if len(parts) >= 5 and '(entindex ' in parts[4]:
+                try:
+                    found.append((int(parts[4].split('(entindex ')[1].split(')')[0]), parts[1], parts[3]))
+                except ValueError:
+                    pass
+        return found
+
+    def add_light(self, obj, depsgraph):
+        """Spawn the game light a Blender light (with dlr_game_light) stands for."""
+        classname, keys, origin, angles = light_entity(obj.evaluated_get(depsgraph))
+        self.light_count += 1
+        name = f'{LIGHT_NAME}{os.getpid()}_{self.light_count}'
+        values = {'targetname': name, 'origin': '{:.3f} {:.3f} {:.3f}'.format(*origin),
+                  'angles': '{:.3f} {:.3f} {:.3f}'.format(*angles), **keys}
+        self.con.send(f'ent_create {classname} {{' + ' '.join(f'"{k}" "{v}"' for k, v in values.items()) + '}')
+        end = time.time() + 5.0
+        while time.time() < end:
+            # A paused game only creates it on a server tick.
+            self.nudge()
+            found = [e for e, _, n in self.find_entities(name, 0.2) if n == name]
+            if found:
+                light = GameLight(obj.name, found[0], name, (classname, keys))
+                # A barn as spawned lights only a small hot spot without its shadow until it is moved once (even
+                # to where it already is).
+                self.con.send(*light.commands(origin, angles))
+                self.setpos_at = time.time()
+                self.settle_console()
+                self.lights[obj.name] = light
+                return light
+        raise TimeoutError(f'the game did not spawn {classname}')
+
+    def remove_light(self, light):
+        self.lights.pop(light.obj_name, None)
+        if self.con and self.con.alive:
+            self.con.send(f'ent_remove {light.entity}')
+            self.settle_console()
+
+    def remove_leftover_lights(self):
+        """Lights an earlier Blender spawned and never removed."""
+        for entity, classname, name in self.find_entities(LIGHT_NAME):
+            if name.startswith(LIGHT_NAME) and classname.startswith('light_'):
+                self.con.send(f'ent_remove {entity}')
+
+    def _sync_lights(self, depsgraph):
+        """Visible Blender lights with dlr_game_light are in the game; hidden or unmarked ones leave it."""
+        for light in list(self.lights.values()):
+            obj = bpy.data.objects.get(light.obj_name)
+            if obj is None or not wants_game_light(obj) or not obj.visible_get():
+                self.remove_light(light)
+        for inst in depsgraph.objects:
+            obj = inst.original
+            if (obj.name in self.lights or obj.name in self.declined or not wants_game_light(obj)
+                    or not obj.visible_get()):
+                continue
+            if obj.data.type not in GAME_LIGHT_TYPES:
+                self.declined.add(obj.name)
+                self.error = f'{obj.name}: only spot and point lights go to the game'
+                continue
+            try:
+                self.add_light(obj, depsgraph)
+            except (OSError, TimeoutError) as error:
+                self.declined.add(obj.name)
+                self.error = f'{obj.name}: {error}'
+
+    def _send_lights(self, depsgraph):
+        """Move the game lights to their Blender lights; a light whose settings changed is spawned again."""
+        moved = False
+        for light in list(self.lights.values()):
+            obj = bpy.data.objects.get(light.obj_name)
+            if obj is None or obj.type != 'LIGHT':
+                self.remove_light(light)
+                continue
+            classname, keys, origin, angles = light_entity(obj.evaluated_get(depsgraph))
+            if (classname, keys) != light.spec:
+                self.remove_light(light)
+                try:
+                    self.add_light(obj, depsgraph)
+                except (OSError, TimeoutError) as error:
+                    self.declined.add(obj.name)
+                    self.error = f'{obj.name}: {error}'
+                continue
+            commands = light.commands(origin, angles)
+            if commands:
+                self.con.send(*commands)
+                moved = True
+        if moved:
+            self.setpos_at = time.time()
+            self.settle_console()
 
     def hide_player(self):
         """Fold the player's own hero (the session needs one, and it stands where the shots are) into a point: every
@@ -1381,7 +1570,8 @@ class Link:
                 self.declined.add(arm.name)
                 self.error = f'{arm.name}: {error}'
         self._sync_props(depsgraph)
-        if self.puppets or self.props:
+        self._sync_lights(depsgraph)
+        if self.puppets or self.props or self.lights:
             self.send_poses(depsgraph)
 
     def _sync_props(self, depsgraph):
@@ -1422,6 +1612,7 @@ class Link:
 
     def _send_poses(self, depsgraph):
         arrived = True
+        self._send_lights(depsgraph)
         for puppet in list(self.puppets.values()):
             arm = bpy.data.objects.get(puppet.arm_name)
             if arm is None or arm.type != 'ARMATURE':
@@ -2484,12 +2675,14 @@ class DLR_OT_game_pose_rig(bpy.types.Operator):
         obj = context.active_object
         if prop_model(obj):
             return obj.name not in _link.props
+        if wants_game_light(obj):
+            return obj.name not in _link.lights
         arm = puppet_armature(obj)
         return arm is not None and arm.name not in _link.puppets
 
     def execute(self, context):
         obj = context.active_object
-        if prop_model(obj):
+        if prop_model(obj) or wants_game_light(obj):
             _link.declined.discard(obj.name)
             # Spawned with the next viewport or render update.
             obj.update_tag()
@@ -2517,12 +2710,15 @@ class DLR_OT_game_unpose_rig(bpy.types.Operator):
     def execute(self, context):
         puppet = _link.puppets.get(self.armature) if _link else None
         prop = _link.props.get(self.armature) if _link else None
-        if puppet or prop:
+        light = _link.lights.get(self.armature) if _link else None
+        if puppet or prop or light:
             _link.declined.add(self.armature)
             if puppet:
                 _link.remove_puppet(puppet)
-            else:
+            elif prop:
                 _link.remove_prop(prop)
+            else:
+                _link.remove_light(light)
             arm = bpy.data.objects.get(self.armature)
             if arm:
                 arm.update_tag()
@@ -2565,6 +2761,30 @@ class DLR_OT_game_add_model(bpy.types.Operator):
         if _link and _link.running and path not in _session_precache():
             self.report({'WARNING'}, f'{path}: if the game shows ERROR, quit Deadlock and start it again from '
                                      'Blender (it loads the file\'s game models at start)')
+        return {'FINISHED'}
+
+
+class DLR_OT_game_add_light(bpy.types.Operator):
+    bl_idname = 'dlr.game_add_light'
+    bl_label = 'Add Game Light'
+    bl_description = ('Add a spot light at the 3D cursor that the game draws too, shadows included. Any spot or '
+                      'point light with "Light in Game" on works the same way. Moves reach the game a server tick '
+                      'later; other changes (energy, colour, cone, shadow) spawn the game light again')
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        data = bpy.data.lights.new('Game Light', 'SPOT')
+        data.energy = 1000.0
+        data.spot_size = math.radians(60)
+        data.spot_blend = 0.25
+        obj = bpy.data.objects.new('Game Light', data)
+        setattr(obj, LIGHT_KEY, True)
+        obj.location = context.scene.cursor.location
+        context.collection.objects.link(obj)
+        for other in context.selected_objects:
+            other.select_set(False)
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
         return {'FINISHED'}
 
 
@@ -2623,13 +2843,15 @@ class DLR_PT_game_render(bpy.types.Panel):
             if lk.poses:
                 col.operator(DLR_OT_game_pause.bl_idname, text='Resume Game' if lk.paused else 'Pause Game',
                              icon='PLAY' if lk.paused else 'PAUSE', depress=lk.paused)
-                col.label(text='Visible Deadlock rigs and game models are in the game (Rendered shading or F12)')
+                col.label(text='Visible rigs, game models and lights are in the game (Rendered shading or F12)')
                 arm = puppet_armature(context.active_object)
                 if arm is not None and arm.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, icon='ARMATURE_DATA')
                 obj = context.active_object
                 if prop_model(obj) and obj.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, text='Show in Game', icon='MESH_CUBE')
+                if wants_game_light(obj) and obj.name in lk.declined:
+                    col.operator(DLR_OT_game_pose_rig.bl_idname, text='Show in Game', icon='LIGHT')
                 for name, puppet in lk.puppets.items():
                     row = col.row()
                     row.label(text=f'{name}: entity {puppet.entity}', icon='OUTLINER_OB_ARMATURE')
@@ -2639,7 +2861,14 @@ class DLR_PT_game_render(bpy.types.Panel):
                     row.label(text=f'{name}: {os.path.basename(prop.model)}, entity {prop.entity}',
                               icon='MESH_CUBE')
                     row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
+                for name, light in lk.lights.items():
+                    row = col.row()
+                    row.label(text=f'{name}: {light.spec[0]}, entity {light.entity}', icon='LIGHT')
+                    row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
                 col.operator(DLR_OT_game_add_model.bl_idname, icon='ADD')
+                col.operator(DLR_OT_game_add_light.bl_idname, icon='LIGHT_SPOT')
+            if context.active_object is not None and context.active_object.type == 'LIGHT':
+                col.prop(context.active_object, 'dlr_game_light')
             row = col.row()
             row.operator(DLR_OT_game_disconnect.bl_idname)
             if _session:
@@ -2651,6 +2880,9 @@ class DLR_PT_game_render(bpy.types.Panel):
             row.operator(DLR_OT_game_start.bl_idname, icon='PLAY')
             row.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
             col.operator(DLR_OT_game_add_model.bl_idname, icon='ADD')
+            col.operator(DLR_OT_game_add_light.bl_idname, icon='LIGHT_SPOT')
+            if context.active_object is not None and context.active_object.type == 'LIGHT':
+                col.prop(context.active_object, 'dlr_game_light')
         if _session and _session.error:
             col.label(text=_session.error, icon='ERROR')
         if lk and lk.error:
@@ -2667,7 +2899,7 @@ def _view_menu(self, context):
 
 
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
-           DLR_OT_game_jump, DLR_OT_game_pause, DLR_OT_game_add_model,
+           DLR_OT_game_jump, DLR_OT_game_pause, DLR_OT_game_add_model, DLR_OT_game_add_light,
            DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_PT_game_render,
            DLR_OT_game_plate)
 
@@ -2700,6 +2932,9 @@ def register():
                     'guardians, walkers, base guardians, sentries, mid boss, Patron). Ambient ghosts and animals '
                     'stay. Sent again on every connect. Turned off, spawning resumes with the next wave; removed '
                     'NPCs don\'t come back until the map is reloaded')
+    bpy.types.Object.dlr_game_light = bpy.props.BoolProperty(
+        name='Light in Game',
+        description='The game draws this spot or point light too (Deadlock Game render engine)')
     for panel in _shared_panels():
         panel.COMPAT_ENGINES.add(ENGINE_ID)
     if not bpy.app.timers.is_registered(_poll_frames):
@@ -2737,3 +2972,4 @@ def unregister():
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
     del bpy.types.Scene.dlr_game_no_npcs
+    del bpy.types.Object.dlr_game_light
