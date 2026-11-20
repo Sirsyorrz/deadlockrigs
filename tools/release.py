@@ -26,7 +26,8 @@ ADDON_TOOLS = ['__init__.py', 'pipeline.py', 'hero.py', 'vmdl_extract.py', 'game
                'map_probes.py', 'map_reflections.py', 'map_anim.py', 'map_particles.py', 'map_textures.py', 'map_parallax.py',
                'map_npcs.py', 'map_ziplines.py', 'clip_effects.py', 'rig_effects.py', 's2v_compat.py']
 SCIPY = 'scipy>=1.16,<1.17'
-# Blender 5.1+ runs Python 3.13
+# Blender 5.1/5.2 run Python 3.13, 5.3+ runs 3.14; Blender installs only the wheel matching its own Python
+PYTHON_VERSIONS = ['3.13', '3.14']
 WHEEL_PLATFORMS = {
     'linux-x64': ['manylinux_2_17_x86_64', 'manylinux2014_x86_64'],
     'windows-x64': ['win_amd64'],
@@ -69,15 +70,18 @@ def download_wheels(dest):
     if subprocess.run(pip + ['--version'], capture_output=True).returncode != 0:
         pip = ['uvx', 'pip']
     names = []
-    for plats in WHEEL_PLATFORMS.values():
-        before = set(os.listdir(dest))
-        cmd = pip + ['download', SCIPY, '--only-binary=:all:', '--python-version', '3.13', '--no-deps', '-q',
-                     '-d', dest]
-        for p in plats:
-            cmd += ['--platform', p]
-        subprocess.run(cmd, check=True)
-        new = sorted(set(os.listdir(dest)) - before) or [f for f in os.listdir(dest) if any(p in f for p in plats)]
-        names += new
+    for py in PYTHON_VERSIONS:
+        tag = 'cp' + py.replace('.', '')
+        for plats in WHEEL_PLATFORMS.values():
+            before = set(os.listdir(dest))
+            cmd = pip + ['download', SCIPY, '--only-binary=:all:', '--python-version', py, '--no-deps', '-q',
+                         '-d', dest]
+            for p in plats:
+                cmd += ['--platform', p]
+            subprocess.run(cmd, check=True)
+            new = sorted(set(os.listdir(dest)) - before) or [
+                f for f in os.listdir(dest) if tag in f and any(p in f for p in plats)]
+            names += new
     return sorted(set(names))
 
 

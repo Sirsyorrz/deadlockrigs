@@ -9,7 +9,7 @@ type = "add-on"
 website = "https://github.com/Sirsyorrz/deadlockrigs"
 tags = ["Rigging", "Animation", "Import-Export"]
 
-# the face keys need scipy built for Blender's Python 3.13
+# the face keys need scipy wheels for Blender's Python (3.13 on 5.1/5.2, 3.14 on 5.3+)
 blender_version_min = "5.1.0"
 
 license = ["SPDX:GPL-3.0-or-later"]
