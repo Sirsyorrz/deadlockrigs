@@ -188,9 +188,6 @@ class DLR_Preferences(bpy.types.AddonPreferences):
     deadlock_dir: bpy.props.StringProperty(
         name='Deadlock Folder', subtype='DIR_PATH', default='',
         description="Deadlock's install folder. Leave empty to find it through Steam")
-    s2v_path: bpy.props.StringProperty(
-        name='Source2Viewer-CLI', subtype='FILE_PATH', default='',
-        description='An existing Source2Viewer-CLI to use. Leave empty to download it on the first build')
     exports: bpy.props.BoolProperty(
         name='Also save the model as .glb and .fbx', default=False,
         description='For other programs (Unity, Unreal, Maya). The rig itself is Blender only')
@@ -206,7 +203,6 @@ class DLR_Preferences(bpy.types.AddonPreferences):
         col = self.layout.column()
         col.prop(self, 'output_dir')
         col.prop(self, 'deadlock_dir')
-        col.prop(self, 's2v_path')
         col.prop(self, 'exports')
         col.prop(self, 'keep_build_files')
         col.label(text=f'Build files: {work_dir(context)}', icon='INFO')
@@ -368,8 +364,6 @@ def start(context, slug, kind, quiet=False):
             '--work', work_dir(context), '--out', output_dir(context), '--s2v-cache', user_dir('s2v')]
     if p.deadlock_dir:
         cmd += ['--pak', bpy.path.abspath(p.deadlock_dir)]
-    if p.s2v_path:
-        cmd += ['--s2v', bpy.path.abspath(p.s2v_path)]
     if p.exports and kind not in ('MAP', 'NPCS'):
         cmd.append('--exports')
     if kind == 'MAP' and not p.map_mods:

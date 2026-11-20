@@ -185,8 +185,8 @@ def find_s2v(given=None, cache=None):
     except OSError as e:
         if shutil.which('dotnet'):
             return build_s2v(target)
-        raise BuildError(f'could not download Source2Viewer-CLI from {url} ({e}). Set the path to an existing '
-                         'Source2Viewer-CLI in the add-on preferences (or --s2v)') from e
+        raise BuildError(f'could not download Source2Viewer-CLI from {url} ({e}). Check your internet connection and '
+                         'try again') from e
     with zipfile.ZipFile(zpath) as z:
         z.extractall(target)
     os.remove(zpath)
