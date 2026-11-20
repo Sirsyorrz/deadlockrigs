@@ -115,6 +115,8 @@ typedef i32 (*VkCreateInstance)(const void *, const void *, void **);
 typedef i32 (*VkEnumeratePhysicalDevices)(void *, u32 *, void **);
 typedef void (*VkGetPhysicalDeviceInfo)(void *, void *);  // properties, memory properties
 typedef void (*VkDestroyInstance)(void *, const void *);
+typedef i32 (*VkCreateDevice)(void *, const void *, const void *, void **);
+typedef void (*VkDestroyDevice)(void *, const void *);
 
 static struct {
     VkGetDeviceProcAddr get_device_proc;
@@ -278,17 +280,16 @@ static int load_device(void *device) {
     return 1;
 }
 
-// Memory types belong to the physical device; a throwaway instance reads them (the device does not say which
-// physical device it came from). The discrete GPU, or the first one.
-static int pick_memory_type(u32 type_bits) {
+// The device does not say which physical device it came from: a throwaway instance picks the discrete GPU, or the
+// first one. Returns the instance (destroy it with vkDestroyInstance) or 0.
+static void *open_physical_device(void **physical) {
     HANDLE loader = GetModuleHandleW(L"vulkan-1.dll");
     VkCreateInstance create = (VkCreateInstance)GetProcAddress(loader, "vkCreateInstance");
     VkEnumeratePhysicalDevices enumerate = (VkEnumeratePhysicalDevices)GetProcAddress(loader, "vkEnumeratePhysicalDevices");
     VkGetPhysicalDeviceInfo properties = (VkGetPhysicalDeviceInfo)GetProcAddress(loader, "vkGetPhysicalDeviceProperties");
-    VkGetPhysicalDeviceInfo memory = (VkGetPhysicalDeviceInfo)GetProcAddress(loader, "vkGetPhysicalDeviceMemoryProperties");
     VkDestroyInstance destroy = (VkDestroyInstance)GetProcAddress(loader, "vkDestroyInstance");
-    if (!create || !enumerate || !properties || !memory || !destroy)
-        return -1;
+    if (!create || !enumerate || !properties || !destroy)
+        return 0;
     struct {
         u32 type;
         const void *next;
@@ -302,27 +303,39 @@ static int pick_memory_type(u32 type_bits) {
     void *instance = 0, *devices[8];
     u32 count = 8;
     if (create(&info, 0, &instance) || !instance)
+        return 0;
+    if (enumerate(instance, &count, devices) < 0 || !count) {
+        destroy(instance, 0);
+        return 0;
+    }
+    *physical = devices[0];
+    static u8 props[2048];
+    for (u32 i = 0; i < count; i++) {
+        properties(devices[i], props);
+        if (*(u32 *)(props + 16) == 2)  // VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+            *physical = devices[i];
+    }
+    return instance;
+}
+
+static int pick_memory_type(u32 type_bits) {
+    HANDLE loader = GetModuleHandleW(L"vulkan-1.dll");
+    VkGetPhysicalDeviceInfo memory = (VkGetPhysicalDeviceInfo)GetProcAddress(loader, "vkGetPhysicalDeviceMemoryProperties");
+    VkDestroyInstance destroy = (VkDestroyInstance)GetProcAddress(loader, "vkDestroyInstance");
+    void *chosen = 0, *instance = memory && destroy ? open_physical_device(&chosen) : 0;
+    if (!instance)
         return -1;
     int found = -1;
-    if (enumerate(instance, &count, devices) >= 0 && count) {
-        void *chosen = devices[0];
-        static u8 props[2048];
-        for (u32 i = 0; i < count; i++) {
-            properties(devices[i], props);
-            if (*(u32 *)(props + 16) == 2)  // VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
-                chosen = devices[i];
-        }
-        static struct VkMemoryProperties mem;
-        memory(chosen, &mem);
-        u32 want[2] = {VK_MEMORY_HOST_VISIBLE | VK_MEMORY_HOST_COHERENT | VK_MEMORY_HOST_CACHED,
-                       VK_MEMORY_HOST_VISIBLE | VK_MEMORY_HOST_COHERENT};
-        for (int w = 0; w < 2 && found < 0; w++)
-            for (u32 i = 0; i < mem.type_count; i++)
-                if ((type_bits >> i & 1) && (mem.types[i].flags & want[w]) == want[w]) {
-                    found = (int)i;
-                    break;
-                }
-    }
+    static struct VkMemoryProperties mem;
+    memory(chosen, &mem);
+    u32 want[2] = {VK_MEMORY_HOST_VISIBLE | VK_MEMORY_HOST_COHERENT | VK_MEMORY_HOST_CACHED,
+                   VK_MEMORY_HOST_VISIBLE | VK_MEMORY_HOST_COHERENT};
+    for (int w = 0; w < 2 && found < 0; w++)
+        for (u32 i = 0; i < mem.type_count; i++)
+            if ((type_bits >> i & 1) && (mem.types[i].flags & want[w]) == want[w]) {
+                found = (int)i;
+                break;
+            }
     destroy(instance, 0);
     return found;
 }
@@ -925,6 +938,48 @@ static int swap_slot(uptr data, u64 size, uptr value, void *hook, void **origina
     return 1;
 }
 
+// On Windows the renderer's table holds what vkGetDeviceProcAddr gave it (driver or layer entries), not the
+// loader's exports. Those are the same for any device of the same driver in this process, so a throwaway device
+// with VK_KHR_swapchain answers for the game's one.
+static int device_entries(const char *const *names, uptr *out, u32 count) {
+    HANDLE loader = GetModuleHandleW(L"vulkan-1.dll");
+    VkCreateDevice create = (VkCreateDevice)GetProcAddress(loader, "vkCreateDevice");
+    VkDestroyDevice destroy_device = (VkDestroyDevice)GetProcAddress(loader, "vkDestroyDevice");
+    VkDestroyInstance destroy = (VkDestroyInstance)GetProcAddress(loader, "vkDestroyInstance");
+    void *physical = 0, *instance = create && destroy_device && destroy ? open_physical_device(&physical) : 0;
+    if (!instance)
+        return 0;
+    static const float priority = 1.0f;
+    static const char *const extensions[] = {"VK_KHR_swapchain"};
+    struct {
+        u32 type;
+        const void *next;
+        u32 flags, family, count;
+        const float *priorities;
+    } queue_info = {2, 0, 0, 0, 1, &priority};
+    struct {
+        u32 type;
+        const void *next;
+        u32 flags, queue_count;
+        const void *queues;
+        u32 layer_count;
+        const void *layers;
+        u32 extension_count;
+        const char *const *extensions;
+        const void *features;
+    } device_info = {3, 0, 0, 1, &queue_info, 0, 0, 1, extensions, 0};
+    void *device = 0;
+    int ok = 0;
+    if (!create(physical, &device_info, 0, &device) && device) {
+        ok = 1;
+        for (u32 i = 0; i < count; i++)
+            ok &= (out[i] = (uptr)vk.get_device_proc(device, names[i])) != 0;
+        destroy_device(device, 0);
+    }
+    destroy(instance, 0);
+    return ok;
+}
+
 static void install_dx11(void);
 
 // Called from the worker once the renderer is loaded.
@@ -942,19 +997,30 @@ static void install_capture(void) {
         return;
     }
     vk.get_device_proc = (VkGetDeviceProcAddr)GetProcAddress(loader, "vkGetDeviceProcAddr");
-    uptr create = (uptr)GetProcAddress(loader, "vkCreateSwapchainKHR");
-    uptr present = (uptr)GetProcAddress(loader, "vkQueuePresentKHR");
-    uptr submit = (uptr)GetProcAddress(loader, "vkQueueSubmit");
-    uptr acquire = (uptr)GetProcAddress(loader, "vkAcquireNextImageKHR");
-    // Under Wine the renderer's table holds the loader's exports; on Windows it holds driver entry points (not
-    // found here, so no capture there yet).
-    vk.submit = (VkQueueSubmit)submit;
-    if (!vk.get_device_proc || !create || !present || !submit ||
-        !swap_slot(data, size, create, (void *)create_swapchain_hook, (void **)&vk.create_swapchain)) {
-        cap_fail("Vulkan swapchain slot not found (on Windows start without -vulkan)");
+    static const char *const names[] = {"vkCreateSwapchainKHR", "vkQueuePresentKHR", "vkQueueSubmit",
+                                        "vkAcquireNextImageKHR", "vkCreateImage"};
+    uptr entries[5];
+    for (u32 i = 0; i < 5; i++)
+        entries[i] = (uptr)GetProcAddress(loader, names[i]);
+    // The submit is called, not swapped: the loader's trampoline works for the game's queue either way.
+    vk.submit = (VkQueueSubmit)entries[2];
+    if (!vk.get_device_proc || !entries[0] || !entries[1] || !entries[2]) {
+        cap_fail("vulkan-1.dll lacks the swapchain functions");
         return;
     }
-    uptr create_image = (uptr)GetProcAddress(loader, "vkCreateImage");
+    // Under Wine the renderer's table holds the loader's exports; on Windows the device's own entries.
+    if (!swap_slot(data, size, entries[0], (void *)create_swapchain_hook, (void **)&vk.create_swapchain)) {
+        if (!device_entries(names, entries, 5)) {
+            cap_fail("could not look up the Vulkan device functions");
+            return;
+        }
+        if (!swap_slot(data, size, entries[0], (void *)create_swapchain_hook, (void **)&vk.create_swapchain)) {
+            cap_fail("Vulkan swapchain slot not found (start the game with -dx11)");
+            return;
+        }
+        log_line("capture: renderer table holds device entries");
+    }
+    uptr present = entries[1], acquire = entries[3], create_image = entries[4];
     if (create_image)
         swap_slot(data, size, create_image, (void *)create_image_hook, (void **)&vk.create_image);
     gRendererData = data;
