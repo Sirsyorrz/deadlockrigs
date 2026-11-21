@@ -780,6 +780,11 @@ def light_entity(obj):
     return classname, keys, tuple(origin), angles
 
 
+class NotNearYet(TimeoutError):
+    """The server made the prop but the client hasn't got it: it is outside the area the game draws, far from the
+    game camera. It shows by itself once the view gets near; the panel lists it as waiting, not as an error."""
+
+
 class LateSpawn:
     """A spawn that timed out: a prop (what = model, extra = entities of it before) or a light (what = targetname,
     extra = its (classname, keys))."""
@@ -788,6 +793,7 @@ class LateSpawn:
         self.kind, self.what, self.extra, self.name = kind, what, extra, name
         self.entity = None  # a prop the server has made but the client hasn't got (yet)
         self.origin = None  # where it was last sent to, meanwhile
+        self.distance = None  # metres from the game camera, while it waits for the camera to come near
         self.until = time.time() + 60.0
         self.next_check = 0.0
 
@@ -1594,8 +1600,7 @@ class Link:
                 # The server made it, the client hasn't got it: it is outside the area the game draws (far from
                 # the camera). It is taken on whenever it arrives.
                 late.until = float('inf')
-                raise TimeoutError(f'{os.path.basename(model)} is too far from the game camera to show yet: it '
-                                   'appears once the camera gets near it')
+                raise NotNearYet(model)
             raise TimeoutError(f'the game is slow to create {os.path.basename(model)}: it is added if it shows up '
                                'in the next minute')
         raise TimeoutError(f'the game did not spawn {model}')
@@ -1740,6 +1745,9 @@ class Link:
                     # keep it at the empty, so it is there when the camera gets near the empty
                     self.con.send('ent_setpos {} {} {} {}'.format(late.entity, *origin))
                     late.origin = origin
+                if not present:
+                    camera = self.game_camera()
+                    late.distance = math.dist(camera[0], origin) * UNIT if camera else None
             elif late.kind == 'prop':
                 known = {p.entity for p in self.props.values()}
                 new = sorted(self.poses.entities(late.what) - late.extra - known)
@@ -1900,8 +1908,9 @@ class Link:
         map_parts = map_part_objects(depsgraph.scene)
         for obj in depsgraph.objects:
             orig = obj.original
-            if (obj.type not in MESH_TYPES or orig.name in self.declined or not orig.visible_get()
-                    or not wants_game_mesh(orig, map_parts)):
+            # one waiting for the camera to come near (late) keeps its model, or the wait would be dropped
+            if (obj.type not in MESH_TYPES or (orig.name in self.declined and orig.name not in self.late)
+                    or not orig.visible_get() or not wants_game_mesh(orig, map_parts)):
                 continue
             wanted.add(orig.name)
             scale = tuple(round(s, 5) for s in obj.matrix_world.to_scale())
@@ -1959,6 +1968,8 @@ class Link:
                 continue
             try:
                 self.add_prop(obj)
+            except NotNearYet:
+                self.declined.add(obj.name)
             except (OSError, ValueError, TimeoutError) as error:
                 self.declined.add(obj.name)
                 self.error = f'{obj.name}: {error}'
@@ -3382,7 +3393,7 @@ class DLR_PT_game(bpy.types.Panel):
                 if arm is not None and arm.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, icon='ARMATURE_DATA')
                 obj = context.active_object
-                if (prop_model(obj) or wants_game_mesh(obj)) and obj.name in lk.declined:
+                if (prop_model(obj) or wants_game_mesh(obj)) and obj.name in lk.declined and obj.name not in lk.late:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, text='Show in Game', icon='MESH_CUBE')
                 if wants_game_light(obj) and obj.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, text='Show in Game', icon='LIGHT')
@@ -3395,6 +3406,10 @@ class DLR_PT_game(bpy.types.Panel):
                 for name, text, icon in shown:
                     row = uitext.label(context, col, text, icon=icon, buttons=1)
                     row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
+                for name, late in lk.late.items():
+                    if late.kind == 'prop' and late.entity is not None and late.until == float('inf'):
+                        away = f' ({late.distance:.0f} m away)' if late.distance is not None else ''
+                        uitext.label(context, col, f'{name}: shows once the view gets near it{away}', icon='TIME')
                 col.operator('dlr.game_model_browser', icon='ADD')
                 col.operator(DLR_OT_game_add_light.bl_idname, icon='LIGHT_SPOT')
             _object_toggles(context, col)
