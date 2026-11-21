@@ -896,6 +896,9 @@
   "name": "Nurse Harrow",
   "codename": "nurse",
   "model": "models/heroes_wip/nurse/nurse.vmdl",
+  "drop_materials": [
+   "nurse_visdev"
+  ],
   "face": {
    "part": "nurse_head_static_model",
    "mesh": "nurse_head_static_model",

@@ -66,6 +66,15 @@ for o in list(bpy.data.objects):
 if not alt.objects:
     bpy.data.collections.remove(alt)
 
+# faces hidden behind the game's shut lips that an opened mouth would show (Harrow's grey dev slab of teeth)
+drop_mats = set(hero.cfg.get('drop_materials', []))
+for o in [o for o in bpy.data.objects if o.type == 'MESH' and drop_mats & {m.name for m in o.data.materials if m}]:
+    bm = bmesh.new()
+    bm.from_mesh(o.data)
+    gone = {i for i, m in enumerate(o.data.materials) if m and m.name in drop_mats}
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.material_index in gone], context='FACES')
+    bm.to_mesh(o.data)
+    bm.free()
 
 split_meshes(hero)
 print('meshes', sorted(o.name for o in bpy.data.objects if o.type == 'MESH' and not o.hide_viewport),
