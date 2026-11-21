@@ -567,9 +567,21 @@ def _in_map_collection(obj):
     return False
 
 
+def rig_own_mesh(obj, arm):
+    """A mesh of the rig's game model (its body, gun, extras), which the game draws already, not one the user
+    weighted or parented to the rig."""
+    if obj.get('dlrig_mesh') or obj.get('dlrig_extra'):
+        return True
+    if arm.get('dlrig_meshes_marked'):
+        return False
+    # a rig added before its meshes were marked: its own meshes are the ones in its collection
+    return any(obj.name in c.all_objects for c in arm.users_collection)
+
+
 def wants_game_mesh(obj, map_parts=None):
     """Meshes are in the game by default, except what the game draws already (the built map with its masks, crops
-    and NPCs, Deadlock rigs' bodies, objects that name a game model). map_parts: map_part_objects(), when known."""
+    and NPCs, Deadlock rigs' own meshes, objects that name a game model). map_parts: map_part_objects(), when
+    known."""
     if obj is None or obj.type not in MESH_TYPES or not getattr(obj, MESH_KEY, True):
         return False
     if obj.get(PROP_KEY) or _is_map_object(obj) or any(k in obj for k in MAP_OBJECT_KEYS):
@@ -577,7 +589,7 @@ def wants_game_mesh(obj, map_parts=None):
     if obj.name in map_parts if map_parts is not None else _in_map_collection(obj):
         return False
     arm = puppet_armature(obj)
-    return arm is None or not arm.get('dlrig')
+    return arm is None or not arm.get('dlrig') or not rig_own_mesh(obj, arm)
 
 
 def prop_model(obj):
@@ -656,8 +668,10 @@ def scene_prop_models():
 class GameMesh:
     """An object's own mesh, exported as a game model (gamemodel.export) and drawn by a GameProp."""
 
-    def __init__(self, model, scale):
+    def __init__(self, model, scale, skin=None):
         self.model, self.scale = model, scale
+        # skinned (gamemodel.Skin's armature name): posed by the rig, scale is where it sits on the rig
+        self.skin = skin
         self.changed_at = None  # when the mesh, its materials or its scale last changed, until exported again
 
 
@@ -673,6 +687,7 @@ class GameProp:
         self.sent = None  # (pos, angles, scale) last sent by console
         self.origin = None
         self.unscaled = False  # an exported mesh: its scale is in the model, the entity isn't scaled
+        self.skin = None  # a skinned mesh: the armature that poses it
 
     @property
     def slot(self):
@@ -1605,17 +1620,27 @@ class Link:
                                'in the next minute')
         raise TimeoutError(f'the game did not spawn {model}')
 
+    def spawn_origin(self, obj):
+        """Where a prop's entity goes (game units): the object's origin, or for a skinned mesh its armature's (the
+        model is in armature space)."""
+        mesh = self.meshes.get(obj.name)
+        arm = bpy.data.objects.get(mesh.skin) if mesh is not None and mesh.skin else None
+        return GAME_FROM_BLENDER @ (arm or obj).matrix_world.translation
+
     def add_prop(self, obj):
         """Spawn the game model an object names (dlr_game_model) and keep it at the object."""
         if not self.poses:
             raise ConnectionError('game models need the bridge (start the session with --bridge)')
         model = prop_model(obj)
-        origin = GAME_FROM_BLENDER @ obj.matrix_world.translation
+        origin = self.spawn_origin(obj)
         return self._bind_prop(obj, model, self._spawn(model, override=True, late_for=obj.name, origin=origin))
 
     def _bind_prop(self, obj, model, entity):
         prop = GameProp(obj.name, entity, model)
         prop.unscaled = obj.name in self.meshes
+        mesh = self.meshes.get(obj.name)
+        prop.skin = mesh.skin if mesh and mesh.model == model else None
+        poser = bpy.data.objects.get(prop.skin) if prop.skin else obj
         slot = self._free_slot()
         if slot is not None:
             bound = self.poses.pose(slot, model, entity=entity, active=False)
@@ -1624,7 +1649,7 @@ class Link:
             if bound is not None and bound['count']:
                 try:
                     names, parents, inv_binds = self.poses.skeleton(slot)
-                    prop.puppet = Puppet(obj.name, slot, entity, model, names, parents, inv_binds, obj)
+                    prop.puppet = Puppet(obj.name, slot, entity, model, names, parents, inv_binds, poser)
                 except ConnectionError:
                     # Attachments but no bones (the xmas gift box): placed whole like a static model.
                     pass
@@ -1740,7 +1765,7 @@ class Link:
             if late.kind == 'prop' and late.entity is not None:
                 present = late.entity in self.poses.entities(late.what)
                 new = [late.entity] if present else []
-                origin = tuple(round(v, 1) for v in GAME_FROM_BLENDER @ obj.matrix_world.translation)
+                origin = tuple(round(v, 1) for v in self.spawn_origin(obj))
                 if not present and origin != late.origin:
                     # keep it at the empty, so it is there when the camera gets near the empty
                     self.con.send('ent_setpos {} {} {} {}'.format(late.entity, *origin))
@@ -1888,11 +1913,16 @@ class Link:
                 pass
         self._save_spawned()
 
-    def mesh_changed(self, names=None):
-        """Export these game meshes (all with None: a material or image changed) again once they are still."""
+    def mesh_changed(self, names=None, data=None):
+        """Export these game meshes (all with None: a material or image changed) again once they are still.
+        data: names of the Mesh datablocks edited; a skinned mesh's object changes geometry with every pose, so only
+        an edit of its mesh counts."""
         now = time.time()
         for name, mesh in self.meshes.items():
             if names is None or name in names:
+                obj = bpy.data.objects.get(name) if mesh.skin and names is not None else None
+                if obj is not None and obj.data and obj.data.name not in (data or ()):
+                    continue
                 mesh.changed_at = now
 
     def meshes_settled(self):
@@ -1913,10 +1943,16 @@ class Link:
                     or not orig.visible_get() or not wants_game_mesh(orig, map_parts)):
                 continue
             wanted.add(orig.name)
-            scale = tuple(round(s, 5) for s in obj.matrix_world.to_scale())
+            mod = gamemodel.skin_modifier(orig, depsgraph.mode == 'RENDER')
+            if mod is not None:
+                # where it sits on the rig, which the model holds
+                rel = mod.object.evaluated_get(depsgraph).matrix_world.inverted() @ obj.matrix_world
+                scale = tuple(v for row in rel for v in row)
+            else:
+                scale = tuple(round(s, 5) for s in obj.matrix_world.to_scale())
             mesh = self.meshes.get(orig.name)
             if mesh is not None:
-                if scale != mesh.scale:
+                if len(scale) != len(mesh.scale) or max(abs(a - b) for a, b in zip(scale, mesh.scale)) > 1e-4:
                     mesh.scale, mesh.changed_at = scale, now
                 if mesh.changed_at is None or now - mesh.changed_at < settle:
                     continue
@@ -1927,7 +1963,7 @@ class Link:
                 self.declined.add(orig.name)
                 self.error = f'{orig.name}: {error}'
                 continue
-            self.meshes[orig.name] = GameMesh(model, scale)
+            self.meshes[orig.name] = GameMesh(model, scale, mod.object.name if mod else None)
         # Hidden, taken out or gone: exported afresh if it comes back (the files of an unchanged mesh are kept).
         for name in set(self.meshes) - wanted:
             del self.meshes[name]
@@ -2009,7 +2045,11 @@ class Link:
                 continue
             obj = obj.evaluated_get(depsgraph)
             if prop.puppet:
-                arrived &= self._send_pose(prop.puppet, obj)
+                arm = bpy.data.objects.get(prop.skin) if prop.skin else None
+                if prop.skin and arm is None:
+                    self.remove_prop(prop)
+                    continue
+                arrived &= self._send_pose(prop.puppet, arm.evaluated_get(depsgraph) if arm else obj)
                 continue
             commands = prop.commands(obj)
             if commands:
@@ -2494,7 +2534,8 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
                        for u in depsgraph.updates):
                     lk.mesh_changed()
                 else:
-                    lk.mesh_changed(rebuild)
+                    lk.mesh_changed(rebuild, {u.id.original.name for u in depsgraph.updates
+                                              if isinstance(u.id, bpy.types.Mesh)})
             lk.sync_puppets(depsgraph)
         puppets = set(lk.puppets) | set(lk.props) if lk else set()
         if lk and puppets and not lk.stream and any(

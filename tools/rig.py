@@ -2598,6 +2598,11 @@ for o in bpy.data.objects:
         if m.type == 'ARMATURE' and m.object == arm:
             m.use_deform_preserve_volume = True
 arm['dlrig'] = hero.slug
+# the rig's own meshes (game draws them with the hero), apart from meshes a user weights to the rig
+for o in bpy.data.objects:
+    if o.type == 'MESH' and (o.find_armature() == arm or o.parent == arm):
+        o['dlrig_mesh'] = hero.slug
+arm['dlrig_meshes_marked'] = 1
 arm['rig_scale'] = SCALE
 
 if RIDER_IDLE:

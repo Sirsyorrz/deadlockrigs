@@ -21,6 +21,15 @@ MODEL_TEMPLATE = 'models/props/barrel_03.vmdl_c'
 MATERIAL_TEMPLATE = 'models/props_city/materials/bench01a.vmat_c'
 VERTEX_SIZE = 20  # position f32 x3, uv f16 x2, packed normal
 VERTEX_FIELDS = {('POSITION', 0): 0, ('TEXCOORD', 0): 12, ('NORMAL', 0): 16}
+# skinned: then 4 bone indices (R8G8B8A8_UINT) and 4 weights summing to 255 (R8G8B8A8_UNORM), as the zip-line
+# tower's model has them
+SKIN_FIELDS = (('BLENDINDICES', 'BlendIndices', 30, 20), ('blendweight', '', 28, 24))
+SKIN_VERTEX_SIZE = 28
+OBJECT_BONE = 'dlr_object'  # carries the vertices no bone deforms: they follow the armature object
+MAX_SKIN_BONES = 255
+SKIN_FORMAT = 4  # in the path's hash: bump when the skinned file changes for the same mesh
+# game model space from Blender's armature space: x forward (Blender +y), units
+TURN = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], np.float32)
 MAX_TEXTURE = 2048
 
 _templates = {}
@@ -114,6 +123,75 @@ def _ngons_triangulated(mesh):
     return out
 
 
+@dataclass
+class Skin:
+    """A mesh deformed by a Deadlock rig (an Armature modifier): sent in the rig's rest shape with bone weights,
+    the game skins it to the bones the rig poses. space: object to armature space; deform: bone -> pose @ rest^-1
+    (armature space), what Blender deformed the evaluated mesh with; rest: bone -> rest matrix (armature space)."""
+    arm_name: str
+    space: np.ndarray
+    deform: dict
+    rest: dict
+
+
+def skin_modifier(obj, render=False):
+    """The enabled Armature modifier of obj that deforms it by a Deadlock rig, or None."""
+    for mod in getattr(obj, 'modifiers', ()):
+        if (mod.type == 'ARMATURE' and mod.object is not None and mod.object.get('dlrig') and mod.use_vertex_groups
+                and (mod.show_render if render else mod.show_viewport)):
+            return mod
+    return None
+
+
+def _np(m):
+    return np.array([list(row) for row in m], np.float64)
+
+
+def skin_of(obj, depsgraph):
+    """The Skin of an object, or None when no Deadlock rig deforms it."""
+    mod = skin_modifier(obj, depsgraph.mode == 'RENDER')
+    if mod is None:
+        return None
+    arm = mod.object
+    arm_eval = arm.evaluated_get(depsgraph)
+    rest_pose = arm.data.pose_position == 'REST'
+    names = {g.name for g in obj.vertex_groups}
+    deform, rest = {}, {}
+    for bone in arm.data.bones:
+        if bone.use_deform and bone.name in names:
+            rest[bone.name] = _np(bone.matrix_local)
+            deform[bone.name] = (np.eye(4) if rest_pose else
+                                 _np(arm_eval.pose.bones[bone.name].matrix) @ np.linalg.inv(rest[bone.name]))
+    space = np.linalg.inv(_np(arm_eval.matrix_world)) @ _np(obj.evaluated_get(depsgraph).matrix_world)
+    return Skin(arm.name, space, deform, rest)
+
+
+def _skin_weights(mesh, obj, skin):
+    """Per vertex: the 4 strongest deform bones (as names), their weights normalised (0 where none), and the
+    matrix Blender deformed it with (the weighted mean of the bones' deforms, as the Armature modifier blends)."""
+    group_names = [g.name for g in obj.vertex_groups]
+    nv = len(mesh.vertices)
+    bones = np.full((nv, 4), -1, np.int32)
+    weights = np.zeros((nv, 4), np.float64)
+    order = list(skin.deform)
+    index = {name: i for i, name in enumerate(order)}
+    deforms = np.stack([skin.deform[n] for n in order]) if order else np.zeros((0, 4, 4))
+    blend = np.tile(np.eye(4), (nv, 1, 1))
+    for v in mesh.vertices:
+        found = [(g.weight, index[group_names[g.group]]) for g in v.groups
+                 if g.group < len(group_names) and group_names[g.group] in index and g.weight > 0]
+        if not found:
+            continue
+        total = sum(w for w, _ in found)
+        blend[v.index] = sum(w * deforms[b] for w, b in found) / total
+        found.sort(reverse=True)
+        top = found[:4]
+        kept = sum(w for w, _ in top)
+        for k, (w, b) in enumerate(top):
+            bones[v.index, k], weights[v.index, k] = b, w / kept
+    return order, bones, weights, blend
+
+
 def _corner_arrays(mesh):
     mesh.calc_loop_triangles()
     tris = mesh.loop_triangles
@@ -148,16 +226,20 @@ def _corner_arrays(mesh):
             bitangents)
 
 
-def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
+def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0), skin=None):
     """(positions in game units, packed tangent frames, uvs, triangles, material index per triangle) of an object's
     evaluated mesh in its own space with scale applied, axes turned to the game's (x forward), one vertex per
     distinct corner. A negative scale mirrors it. The game culls back faces: an open mesh (some edge with one face)
     gets each triangle twice, the copy facing the other way, unless its material has Backface Culling on.
-    Tangents (for normal maps) are Blender's, from the active uv map."""
+    Tangents (for normal maps) are Blender's, from the active uv map. With a Skin: in the rig's rest shape (the
+    pose Blender deformed it with undone), in armature space, and also returns its (bone names, per vertex bone
+    indices into them, weights), scale unused."""
     evaluated = obj.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh()
     triangulated = None
     try:
+        if skin is not None:
+            bone_order, vbones, vweights, blend = _skin_weights(mesh, obj, skin)
         if mesh.uv_layers.active is not None and _has_ngons(mesh):
             triangulated = _ngons_triangulated(mesh)
         loops, mat, is_open, vert_of_loop, co, normals, uv, tangents, bitangents = _corner_arrays(
@@ -170,9 +252,16 @@ def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
     nt = len(mat)
     if not nt:
         raise NoFaces(f'{obj.name} has no faces')
-    scale = np.array(scale, np.float32)
-    scale = np.copysign(np.maximum(np.abs(scale), 1e-6), scale)
-    if np.prod(scale) < 0:
+    if skin is not None:
+        # undo the pose per vertex: rest = blend^-1 @ space @ deformed
+        undo = np.linalg.inv(blend) @ skin.space
+        lin, shift = undo[:, :3, :3], undo[:, :3, 3]
+        mirrored = np.linalg.det(skin.space[:3, :3]) < 0
+    else:
+        scale = np.array(scale, np.float32)
+        scale = np.copysign(np.maximum(np.abs(scale), 1e-6), scale)
+        mirrored = np.prod(scale) < 0
+    if mirrored:
         loops = loops.reshape(-1, 3)[:, ::-1].reshape(-1)  # mirrored: keep the faces facing out
     if is_open:
         both = np.repeat(_two_sided(obj, int(mat.max()) + 1)[mat], 3)
@@ -181,24 +270,37 @@ def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
         mat = np.concatenate([mat, mat[both[::3]]])
     sign = np.ones(len(loops), np.float32)
     sign[nt * 3:] = -1
-    co = co[vert_of_loop[loops]] * scale
-    normals = normals[loops] / scale * sign[:, None]
+    verts = vert_of_loop[loops]
+    if skin is not None:
+        corner_lin = lin[verts]
+        co = (np.einsum('cij,cj->ci', corner_lin, co[verts]) + shift[verts]).astype(np.float32)
+        normals = np.einsum('cji,cj->ci', np.linalg.inv(corner_lin), normals[loops]).astype(np.float32)
+        normals *= sign[:, None]
+        tangents = np.einsum('cij,cj->ci', corner_lin, tangents[loops]).astype(np.float32)
+        bitangents = np.einsum('cij,cj->ci', corner_lin, bitangents[loops]).astype(np.float32)
+    else:
+        co = co[verts] * scale
+        normals = normals[loops] / scale * sign[:, None]
+        # tangent and bitangent lie along the surface: they scale like positions
+        tangents, bitangents = tangents[loops] * scale, bitangents[loops] * scale
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
-    # tangent and bitangent lie along the surface: they scale like positions
-    tangents, bitangents = tangents[loops] * scale, bitangents[loops] * scale
     uv = uv[loops] * [1, -1] + [0, 1]  # the game's v runs down from the top of the image
     # Blender +y is game +x (GAME_FROM_BLENDER turns 90 degrees about z).
-    turn = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], np.float32)
-    pos = co @ turn.T / UNIT
-    normals, tangents, bitangents = normals @ turn.T, tangents @ turn.T, bitangents @ turn.T
+    pos = co @ TURN.T / UNIT
+    normals, tangents, bitangents = normals @ TURN.T, tangents @ TURN.T, bitangents @ TURN.T
     tangents -= normals * np.einsum('ij,ij->i', tangents, normals)[:, None]
     # The game's bitangent is w cross(n, t); w picks Blender's, so Blender's tangent-space normals carry over.
     w = np.where(np.einsum('ij,ij->i', np.cross(normals, tangents), bitangents) < 0, -1.0, 1.0)
     frames = pack_frames(normals, tangents, w)
     # Corners alike in position, frame and uv share a vertex.
-    rows = np.concatenate([np.round(pos, 4), frames[:, None].astype(np.float64), np.round(uv, 5)], axis=1)
-    _, first, index = np.unique(rows, axis=0, return_index=True, return_inverse=True)
-    return pos[first], frames[first], uv[first], index.reshape(-1).astype(np.uint32), mat
+    rows = [np.round(pos, 4), frames[:, None].astype(np.float64), np.round(uv, 5)]
+    if skin is not None:
+        rows += [vbones[verts], np.round(vweights[verts], 4)]
+    _, first, index = np.unique(np.concatenate(rows, axis=1), axis=0, return_index=True, return_inverse=True)
+    out = pos[first], frames[first], uv[first], index.reshape(-1).astype(np.uint32), mat
+    if skin is None:
+        return out
+    return out + ((bone_order, vbones[verts][first], vweights[verts][first]),)
 
 
 def _image_floats(image):
@@ -476,8 +578,85 @@ def _set_int(obj, key, value):
     obj[key] = s2res.integer(value)
 
 
-def model_file(game, model_path, pos, frames, uv, indices, groups):
-    """The vmdl_c bytes of a static, collision-free model. groups: [(material path, first index, index count)]."""
+def _typed(et, values, t=s2res.ARRAY_AUX):
+    return s2res.Node(t, [s2res.Node(et, v) for v in values], et=et)
+
+
+def _vectors(values, et=s2res.DOUBLE):
+    return s2res.Node(s2res.ARRAY_BYTE_LEN, [_typed(et, [float(x) for x in v]) for v in values], et=s2res.ARRAY_AUX)
+
+
+def _quat_xyzw(r):
+    """A rotation matrix's quaternion, (x, y, z, w)."""
+    w = np.sqrt(max(0.0, 1 + r[0, 0] + r[1, 1] + r[2, 2])) / 2
+    x = np.copysign(np.sqrt(max(0.0, 1 + r[0, 0] - r[1, 1] - r[2, 2])) / 2, r[2, 1] - r[1, 2])
+    y = np.copysign(np.sqrt(max(0.0, 1 - r[0, 0] + r[1, 1] - r[2, 2])) / 2, r[0, 2] - r[2, 0])
+    z = np.copysign(np.sqrt(max(0.0, 1 - r[0, 0] - r[1, 1] + r[2, 2])) / 2, r[1, 0] - r[0, 1])
+    q = np.array([x, y, z, w])
+    return q / np.linalg.norm(q)
+
+
+@dataclass
+class SkinData:
+    """A skinned model's bones (flat: the bridge poses every bone in world space), their binds in game model space
+    (rotation, position), and per vertex 4 bone indices and weights summing to 255."""
+    names: list
+    binds: list
+    bones: np.ndarray
+    weights: np.ndarray
+
+
+def _skeleton(res, data, mdat, skin, pos):
+    """Fill the model and mesh skeletons (DATA m_modelSkeleton, MDAT m_skeleton) of a skinned model."""
+    n = len(skin.names)
+    inv = []
+    spheres, centres, sizes = [], [], []
+    for i, (rot, at) in enumerate(skin.binds):
+        r_inv = rot.T
+        inv.append(np.concatenate([r_inv, (-r_inv @ at)[:, None]], axis=1))
+        local = (pos[(skin.bones == i).any(axis=1)] - at) @ rot
+        if len(local):
+            lo, hi = local.min(0), local.max(0)
+            spheres.append(float(np.linalg.norm(local, axis=1).max()))
+            centres.append((lo + hi) / 2)
+            sizes.append((hi - lo) / 2)  # half extents, as in Valve's models
+        else:
+            spheres.append(0.0)
+            centres.append(np.zeros(3))
+            sizes.append(np.zeros(3))
+    skeleton = s2res.Node(s2res.OBJECT, [])
+    skeleton['m_boneName'] = _typed(s2res.STRING, list(skin.names), s2res.ARRAY_BYTE_LEN)
+    skeleton['m_nParent'] = _typed(s2res.INT32, [-1] * n)
+    skeleton['m_boneSphere'] = _typed(s2res.DOUBLE, spheres)
+    # the zip-line tower's flags (bone used by vertices at every LOD)
+    skeleton['m_nFlag'] = _typed(s2res.UINT32, [261344] + [261312] * (n - 1))
+    skeleton['m_bonePosParent'] = _vectors([at for _, at in skin.binds])
+    skeleton['m_boneRotParent'] = _vectors([_quat_xyzw(rot) for rot, _ in skin.binds])
+    skeleton['m_boneScaleParent'] = _typed(s2res.DOUBLE, [1.0] * n)
+    data.root['m_modelSkeleton'] = skeleton
+    data.root['m_remappingTable'] = _typed(s2res.INT32, list(range(n)))
+    data.root['m_remappingTableStarts'] = _typed(s2res.UINT32, [0])
+    info = data.root['m_modelInfo']
+    # set in the zip-line tower's (skinned) model, not in the static barrel's
+    info['m_nFlags'] = s2res.Node(s2res.UINT32, info['m_nFlags'].v | 1024)
+    bones = []
+    for i, name in enumerate(skin.names):
+        bone = s2res.Node(s2res.OBJECT, [])
+        bone['m_boneName'] = s2res.Node(s2res.STRING, name)
+        bone['m_parentName'] = s2res.Node(s2res.STRING, '')
+        bone['m_invBindPose'] = _typed(s2res.FLOAT, [float(x) for x in inv[i].reshape(-1)])
+        box = s2res.Node(s2res.OBJECT, [])
+        box['m_vecCenter'] = _typed(s2res.FLOAT, [float(x) for x in centres[i]])
+        box['m_vecSize'] = _typed(s2res.FLOAT, [float(x) for x in sizes[i]])
+        bone['m_bbox'] = box
+        bone['m_flSphereRadius'] = _number(spheres[i])
+        bones.append(bone)
+    mdat.root['m_skeleton']['m_bones'] = s2res.Node(s2res.ARRAY_BYTE_LEN, bones, et=s2res.OBJECT)
+
+
+def model_file(game, model_path, pos, frames, uv, indices, groups, skin=None):
+    """The vmdl_c bytes of a collision-free model, static or skinned (skin: SkinData). groups: [(material path,
+    first index, index count)]."""
     res = _template(game, MODEL_TEMPLATE)
     res.drop('RED2')
     res.drop('PHYS')
@@ -493,15 +672,29 @@ def model_file(game, model_path, pos, frames, uv, indices, groups):
         raise ValueError(f'{MODEL_TEMPLATE} changed its vertex layout')
     for f in fields:
         _set_int(f, 'm_nOffset', VERTEX_FIELDS[(f['m_pSemanticName'].v, f['m_nSemanticIndex'].v)])
+    layout = [('pos', '<f4', 3), ('uv', '<f2', 2), ('normal', '<u4')]
+    vertex_size = VERTEX_SIZE
+    if skin is not None:
+        for semantic, shader_semantic, fmt, offset in SKIN_FIELDS:
+            f = copy.deepcopy(fields[1])
+            f['m_pSemanticName'].v, f['m_szShaderSemantic'].v = semantic, shader_semantic
+            f['m_nSemanticIndex'] = s2res.integer(0)
+            f['m_Format'] = s2res.Node(s2res.UINT32, fmt)
+            _set_int(f, 'm_nOffset', offset)
+            fields.append(f)
+        layout += [('bones', 'u1', 4), ('weights', 'u1', 4)]
+        vertex_size = SKIN_VERTEX_SIZE
     vb['m_inputLayoutFields'].v = fields
 
-    rows = np.zeros(len(pos), [('pos', '<f4', 3), ('uv', '<f2', 2), ('normal', '<u4')])
+    rows = np.zeros(len(pos), layout)
     rows['pos'], rows['uv'], rows['normal'] = pos, uv, frames
+    if skin is not None:
+        rows['bones'], rows['weights'] = skin.bones, skin.weights
     index_size = 2 if len(pos) <= 0xFFFF else 4
     vblock, iblock = vb['m_nBlockIndex'].v, ib['m_nBlockIndex'].v
     res.blocks[vblock].data = rows.tobytes()
     res.blocks[iblock].data = indices.astype(np.uint16 if index_size == 2 else np.uint32).tobytes()
-    for buffer, count, size in ((vb, len(pos), VERTEX_SIZE), (ib, len(indices), index_size)):
+    for buffer, count, size in ((vb, len(pos), vertex_size), (ib, len(indices), index_size)):
         buffer['m_bMeshoptCompressed'] = s2res.boolean(False)
         buffer['m_bCompressedZSTD'] = s2res.boolean(False)
         buffer['m_bMeshoptIndexSequence'] = s2res.boolean(False)
@@ -526,11 +719,13 @@ def model_file(game, model_path, pos, frames, uv, indices, groups):
     for key, value in (('m_vMinBounds', pos.min(0)), ('m_vMaxBounds', pos.max(0))):
         for node, x in zip(scene_object[key].v, value):
             node.v = float(x)
-    res.set_kv3(mdat_kind, mdat)
     res.block('RERL').data = s2res.reference_list([m for m, _, _ in groups])
 
     data = res.kv3('DATA')
     data.root['m_name'].v = model_path
+    if skin is not None:
+        _skeleton(res, data, mdat, skin, pos)
+    res.set_kv3(mdat_kind, mdat)
     res.set_kv3('DATA', data)
     return s2res.write_resource(res)
 
@@ -545,10 +740,13 @@ def export(obj, depsgraph, game, scale=(1.0, 1.0, 1.0)):
     uniformly. The path changes with the mesh or its materials: the game keeps a loaded model, so an edit needs a
     new name."""
     root = overlay_root(game)
+    skin = skin_of(obj, depsgraph)
     try:
-        pos, frames, uv, indices, mat = mesh_arrays(obj, depsgraph, scale)
+        arrays = mesh_arrays(obj, depsgraph, scale, skin)
     except NoFaces:
         return ''
+    pos, frames, uv, indices, mat = arrays[:5]
+    skin_data = _skin_data(skin, pos, *arrays[5]) if skin else None
     tri_indices = indices.reshape(-1, 3)
     order = np.argsort(mat, kind='stable')
     tri_indices, mat = tri_indices[order], mat[order]
@@ -560,6 +758,35 @@ def export(obj, depsgraph, game, scale=(1.0, 1.0, 1.0)):
         material = slots[slot_index].material if slot_index < len(slots) else None
         groups.append((write_material(game, root, material), first, count))
     indices = tri_indices.reshape(-1)
-    model_path = f'{FOLDER}/{model_name(obj)}_{_short_hash(pos.tobytes(), frames.tobytes(), uv.tobytes(), indices.tobytes(), groups)}.vmdl'
-    _write(root, model_path, model_file(game, model_path, pos, frames, uv, indices, groups))
+    digest = [pos.tobytes(), frames.tobytes(), uv.tobytes(), indices.tobytes(), groups]
+    if skin_data:
+        digest += [SKIN_FORMAT, skin_data.names, skin_data.bones.tobytes(), skin_data.weights.tobytes()]
+    model_path = f'{FOLDER}/{model_name(obj)}_{_short_hash(*digest)}.vmdl'
+    _write(root, model_path, model_file(game, model_path, pos, frames, uv, indices, groups, skin_data))
     return model_path
+
+
+def _skin_data(skin, pos, order, vbones, vweights):
+    """SkinData of a Skin's exported vertices: the bones some vertex uses, binds from the rig's rest, then
+    OBJECT_BONE for the vertices without deform weights."""
+    used = sorted({int(b) for b in np.unique(vbones) if b >= 0}, key=lambda b: order[b])
+    if len(used) + 1 > MAX_SKIN_BONES:
+        raise ValueError(f'weighted to {len(used)} bones, the game takes {MAX_SKIN_BONES - 1}')
+    remap = np.full(len(order) + 1, len(used), np.int32)
+    for k, b in enumerate(used):
+        remap[b] = k
+    bones = remap[vbones]  # -1 (no bone) lands on the last entry: the object bone
+    quantised = np.round(vweights * 255).astype(np.int32)
+    loose = vweights.sum(axis=1) == 0
+    quantised[loose, 0] = 255
+    bones[loose, 0] = len(used)
+    # weights must add up to 255: the rounding error goes to the strongest
+    quantised[:, 0] += 255 - quantised.sum(axis=1)
+    names = [order[b] for b in used] + [OBJECT_BONE]
+    binds = []
+    for b in used:
+        rest = skin.rest[order[b]]
+        rot = TURN @ rest[:3, :3]
+        binds.append((rot / np.linalg.norm(rot, axis=0), TURN @ rest[:3, 3] / UNIT))
+    binds.append((TURN.astype(np.float64), np.zeros(3)))
+    return SkinData(names, binds, bones.astype(np.uint8), quantised.astype(np.uint8))
