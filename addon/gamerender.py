@@ -1140,6 +1140,7 @@ class Link:
         self.setpos_at = 0.0
         self.stream_restarted = 0.0
         self.time_step = 0
+        self.settle_nudges = 0
         self.frames_error = ''  # why the bridge's frame capture didn't start
         self.pawn_at = None
         self.pawn_moved = 0.0
@@ -1798,12 +1799,17 @@ class Link:
         return state
 
     def settle_console(self):
-        """A paused game applies console entity changes only on a server tick, and ticks rarely: tick it a few times."""
+        """A paused game applies console entity changes only on a server tick, and ticks rarely: tick it a few times.
+        The ticks are given out by the frame timer (tick_settle), not here: waiting here made dragging a light or
+        model in a paused game run at a few frames a second."""
         if not (self.paused and self.render_frame is None and not self.thawed_until and self.poses):
             return
-        for _ in range(CONSOLE_NUDGES):
+        self.settle_nudges = CONSOLE_NUDGES
+
+    def tick_settle(self):
+        if self.settle_nudges and self.running:
+            self.settle_nudges -= 1
             self.nudge()
-            time.sleep(0.05)
 
     def nudge(self):
         """One server tick for a paused game: ent_setpos only lands on a tick, and a frozen game ticks rarely."""
@@ -2479,6 +2485,8 @@ def _poll_frames():
 def _poll_frames_once():
     global _shown, _outside_shown, _stream_drawn
     lk = _link
+    if lk:
+        lk.tick_settle()
     frame = lk.frame if lk else None
     changed = bool(lk) and lk.outside != _outside_shown
     if changed:
