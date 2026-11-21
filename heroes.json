@@ -670,6 +670,7 @@
   "face": {
    "part": "Head",
    "mesh": "Head",
+   "builder": "handkeys.py",
    "eyes": "kelvin_explorer_eye"
   },
   "extra_models": {
