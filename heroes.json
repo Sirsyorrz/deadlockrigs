@@ -801,7 +801,8 @@
   "model": "models/heroes_wip/vampirebat/vampirebat.vmdl",
   "face": {
    "part": "head",
-   "mesh": "head"
+   "mesh": "head",
+   "builder": "handkeys.py"
   },
   "props": [
    {
