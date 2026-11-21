@@ -2876,7 +2876,7 @@ class DLR_PT_game_render(bpy.types.Panel):
                     row = col.row()
                     row.label(text=f'{name}: {light.spec[0]}, entity {light.entity}', icon='LIGHT')
                     row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
-                col.operator(DLR_OT_game_add_model.bl_idname, icon='ADD')
+                col.operator('dlr.game_model_browser', icon='ADD')
                 col.operator(DLR_OT_game_add_light.bl_idname, icon='LIGHT_SPOT')
             if context.active_object is not None and context.active_object.type == 'LIGHT':
                 col.prop(context.active_object, 'dlr_game_light')
@@ -2890,7 +2890,7 @@ class DLR_PT_game_render(bpy.types.Panel):
             row = col.row()
             row.operator(DLR_OT_game_start.bl_idname, icon='PLAY')
             row.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
-            col.operator(DLR_OT_game_add_model.bl_idname, icon='ADD')
+            col.operator('dlr.game_model_browser', icon='ADD')
             col.operator(DLR_OT_game_add_light.bl_idname, icon='LIGHT_SPOT')
             if context.active_object is not None and context.active_object.type == 'LIGHT':
                 col.prop(context.active_object, 'dlr_game_light')

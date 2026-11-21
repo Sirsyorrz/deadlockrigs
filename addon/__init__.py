@@ -13,7 +13,7 @@ import threading
 import bpy
 from bpy.app.handlers import persistent
 
-from . import crop, effects, gamerender, look, npcs, particles, riglight, textures, ziplines
+from . import crop, effects, gamerender, look, modelbrowser, npcs, particles, riglight, textures, ziplines
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -766,7 +766,7 @@ CLASSES = (DLR_Preferences, DLR_OT_build, DLR_OT_cancel, DLR_OT_open, DLR_OT_app
            DLR_OT_open_folder, DLR_PT_main, DLR_PT_map)
 
 
-SUBMODULES = (crop, textures, riglight, particles, effects, npcs, ziplines, gamerender)
+SUBMODULES = (crop, textures, riglight, particles, effects, npcs, ziplines, gamerender, modelbrowser)
 
 
 def register():
