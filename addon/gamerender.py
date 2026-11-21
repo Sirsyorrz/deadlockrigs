@@ -2831,8 +2831,6 @@ class DLR_PT_game_render(bpy.types.Panel):
             if lk.poses:
                 col.operator(DLR_OT_game_pause.bl_idname, text='Resume Game' if lk.paused else 'Pause Game',
                              icon='PLAY' if lk.paused else 'PAUSE', depress=lk.paused)
-                _wrapped_label(context, col, 'Visible rigs, game models and lights are in the game (Rendered '
-                                             'shading or F12)')
                 arm = puppet_armature(context.active_object)
                 if arm is not None and arm.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, icon='ARMATURE_DATA')
