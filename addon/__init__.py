@@ -23,7 +23,9 @@ def tools_dir():
     for d in (os.path.join(HERE, 'tools'), os.path.join(os.path.dirname(HERE), 'tools')):
         if os.path.exists(os.path.join(d, 'pipeline.py')):
             return d
-    raise RuntimeError('tools/pipeline.py not found next to the add-on')
+    # the usual cause: the GitHub source zip or the bare addon/ folder installed instead of a release zip
+    raise RuntimeError('Deadlock Rigs is missing its tools folder. Uninstall it and install from '
+                       'sirsyorrz.github.io/deadlockrigs (not the Code / Source code zip)')
 
 
 _heroes = []
@@ -462,7 +464,11 @@ def load_rig(path, slug):
     for c in dst.collections:
         # the rig looks for its clip library next to the open file, which is no longer the rig's own
         for ob in c.all_objects:
+            if ob.type == 'MESH':
+                # the rig's own meshes: the game draws them with the hero, a mesh the user adds to the rig it doesn't
+                ob['dlrig_mesh'] = slug
             if ob.type == 'ARMATURE' and 'dlrig' in ob:
+                ob['dlrig_meshes_marked'] = 1
                 ob['anim_library'] = os.path.join(os.path.dirname(path), f'{slug}_anims.blend')
                 # older rigs don't point to their texts, and a second rig's texts arrive renamed (.001)
                 for t in dst.texts:
