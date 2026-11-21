@@ -1,106 +1,57 @@
 # Deadlock Rigs
 
-A Blender add-on that builds animation rigs of Deadlock heroes, NPCs and maps from your own game install.
+A Blender add-on that builds animation rigs of Deadlock heroes, NPCs and maps from your own game install, and can
+use Deadlock itself as a render engine.
 
 [![Install Deadlock Rigs](https://img.shields.io/badge/Install-Deadlock%20Rigs-E95420?logo=blender&logoColor=white&style=for-the-badge)](https://sirsyorrz.github.io/deadlockrigs/)
 
-![Violet's rig in Blender](docs/violet_rig.png)
-
-## Features
-
-- Every hero, their transformed forms (Silver's werewolf, Calico's cat, Baba's pigeon, Ivy's stone form) and the NPCs
-  (patrons, Guardians, Walkers, Mid-boss, troopers)
-- IK/FK arms and legs, foot roll, torso and head controls, tails, hand poses
-- Face rigs with expressions and lip sync shapes for most heroes
-- Hair and cloth physics
-- Weapons and props, plus the hero's extra models (Bebop's hook, Grey Talon's owl, Paige's dragon...)
-- The game's animations: load any clip onto the rig, or insert it into your own animation
-- Ability and clip particle effects added straight from the animations you load
-- Midtown and the Hideout, lit like the game, with NPCs, ziplines and particles
-
-| | |
-|---|---|
-| ![Violet's face controls](docs/violet_face_controls.png) | ![Vyper's tail](docs/vyper_tail.png) |
-| ![Dynamo's Singularity with its effects](docs/dynamo_effects.png) | ![Midtown in Blender](docs/midtown_street.jpg) |
+![Violet's rig in Blender](docs/img/violet_rig.png)
 
 ## Install
 
 Needs Blender 5.1 or newer and Deadlock installed through Steam. Works on Windows and Linux.
-The easiest way is the [install page](https://sirsyorrz.github.io/deadlockrigs/): drag its button into Blender.
 
-[![Windows](https://img.shields.io/badge/Windows%20x64-0078D4?logo=blender&logoColor=white)](https://sirsyorrz.github.io/deadlockrigs/) [Install for Windows](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-windows_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=windows-x64)
+Open the **[install page](https://sirsyorrz.github.io/deadlockrigs/)** and drag the button for your platform into
+Blender. Blender keeps the add-on up to date from then on.
 
-[![Linux](https://img.shields.io/badge/Linux%20x64-E95420?logo=blender&logoColor=white)](https://sirsyorrz.github.io/deadlockrigs/) [Install for Linux](https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/deadlock_rigs-linux_x64.zip?repository=https://github.com/Sirsyorrz/deadlockrigs/releases/latest/download/index.json&blender_version_min=5.1.0&platforms=linux-x64)
+Then open the sidebar in the 3D View (N) > Deadlock Rigs, pick a hero and press Build Rig.
 
-1. Drag the Install link for your platform (the text, not the badge) into an open Blender window, or click a badge
-   for the [install page](https://sirsyorrz.github.io/deadlockrigs/) and drag its button. The first time,
-   Blender asks to add the Deadlock Rigs repository: press Add Repository, tick Check for Updates on Startup, then
-   drag the link in again and press Install. From then on Blender offers updates in Edit > Preferences > Get
-   Extensions.
-2. Already installed from a zip? Uninstall it in Get Extensions first, then drag the link in. Zips installed from
-   disk don't get updates.
-3. Open the sidebar in the 3D View (N) > Deadlock Rigs, pick a hero and press Build Rig.
+## Rigs
 
-![The Deadlock Rigs panel](docs/addon_panel.png)
+Every hero, their transformed forms and the NPCs, with IK/FK limbs, hair and cloth physics, weapons and props. Load
+the game's animations onto them, with the particle effects the animations play.
 
-The first build downloads Source2Viewer-CLI (about 60 MB) to read the game files. Rigs are saved to
-`Documents/DeadlockRigs/<hero>/`.
+Most heroes also get a face rig: on-face controls for the brows, eyelids, eyes, mouth and jaw, built on
+ARKit-style shape keys, with one-click expressions (smile, angry, surprised...) and lip sync mouth shapes to start
+from. A few heroes have a partial face or none; the [Rigs guide](docs/rigs.md#faces) lists them.
 
-## Using a rig
-
-- The rig's controls are in the sidebar under **Hero Rig**, in Pose Mode.
-- **Export Animations** once per hero to get its game clips, then use **Game Animations** to load them.
-- **Clip Effects** adds the particle effects for the loaded clips: Add Clip Effects for what the animation itself
-  plays, Add Ability Effects for the ability's buffs, domes and auras.
-- Opening a rig file without the add-on: allow "Run Python Scripts" so the panel loads.
-
-## Maps
-
-Midtown and the Hideout, built from your own install so they match your game version. They're lit the way the game
-lights them, with its fog, moving textures, animated props, particles and post-processing.
+**[Rigs guide](docs/rigs.md)**
 
 | | |
 |---|---|
-| ![Midtown, Catalyst](docs/midtown_catalyst.jpg) | ![Midtown, Chinatown](docs/midtown_red.jpg) |
-| ![Midtown, the Hidden King](docs/midtown_king.jpg) | ![Midtown, the Archmother](docs/midtown_archmother.jpg) |
-| ![Midtown, a Walker](docs/midtown_walker.jpg) | ![Midtown, the Mid-boss](docs/midtown_midboss.jpg) |
-| ![Midtown, the park](docs/midtown_park.jpg) | ![The Hideout's fireplace](docs/hideout_fireplace.jpg) |
-| ![The Hideout's hall](docs/hideout_hall.jpg) | ![The Hideout's seance table](docs/hideout_ritual.jpg) |
+| ![Violet's face controls](docs/img/violet_face_controls.png) | ![Dynamo's Singularity with its effects](docs/img/dynamo_effects.png) |
 
-Under **Map** in the Deadlock Rigs panel: Build Map, then Link Map or Append Map to add it to your scene.
+## Maps
 
-- Midtown takes about 20 minutes to build and needs about 12 GB of free RAM. The Hideout takes a couple of minutes.
-- Midtown is big. Use **Crop** (to the camera or to boxes) before rendering.
-- Mods you have installed that change map textures are included. Untick Include Mods for the stock map.
-- With a map in the scene you can also add the game's NPCs and ziplines, and light your rigs from the map.
+Midtown and the Hideout, built from your install and lit like the game, with NPCs, ziplines and particles.
+Midtown is big: it takes a while to build and uses a lot of memory, so crop it down before working in it.
 
-![The Hideout's projector room](docs/hideout_projector.jpg)
+**[Maps guide](docs/maps.md)** (includes memory use and cropping)
 
-## Faces
+![Midtown in Blender](docs/img/midtown_street.jpg)
 
-Most heroes have a full face rig. A few have less:
+## Deadlock Render Engine
 
-- Bebop and Paradox: parts instead of a face (Bebop's jaw and monocle, Paradox's hourglass)
-- Deadman Danny: jaw only
-- Krill and Baba's pigeon: no face yet
-- Dynamo, Seven and Sinclair: no face
+A separate part of the add-on. Instead of rebuilding things in Blender, it starts Deadlock itself and uses the game
+as the renderer: Blender drives the game's camera, and your rigs, game models and lights are drawn and lit by the
+game. Runs as a local offline session (no matchmaking, no VAC).
 
-![Violet's expressions](docs/faces_violet.png)
-![Abrams' expressions](docs/faces_abrams.png)
-![Hand poses](docs/hands.png)
+**[Render engine guide](docs/render-engine.md)**
 
 ## Help
 
 Questions and bug reports: the [DeadlockForge Discord](https://discord.gg/DkwQ2baWfb). For build problems, turn on
 "Keep build files" in the add-on preferences and send the build log (Show Build Log).
-
-## Build from source
-
-Needs Python 3 with numpy and scipy, Blender and Deadlock (both found through Steam).
-
-    python tools/pipeline.py violet             # build one hero
-    python tools/pipeline.py --help             # steps and options
-    python tools/release.py addon               # package the add-on zips into dist/
 
 ## Credits
 
@@ -109,6 +60,8 @@ Needs Python 3 with numpy and scipy, Blender and Deadlock (both found through St
 - Divined, Deadlock Bridge: particle simulation and shading (`tools/deadlock_bridge`, GPL-3.0-or-later).
 - [Cravvnn](https://github.com/cravvnn), [RenderLock](https://github.com/cravvnn/RenderLock): Source 2 lighting in
   Blender.
+- [Deadlock Dolly](https://github.com/cravvnn/deadlock-dolly): the game offsets and camera decoding the render
+  engine's bridge is built on (MIT).
 - [Source 2 Viewer / ValveResourceFormat](https://github.com/ValveResourceFormat/ValveResourceFormat): map export and
   the shaders the map lighting is ported from.
 
