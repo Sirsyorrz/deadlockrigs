@@ -1554,9 +1554,10 @@ class DLRIG_PT_main(bpy.types.Panel):
     def draw(self, context):
         ob = rig(context)
         col = self.layout.column(align=True)
-        row = col.row(align=True)
-        row.prop(context.scene.tool_settings, 'use_keyframe_insert_auto', text='Auto-Key', toggle=True,
+        col.prop(context.scene.tool_settings, 'use_keyframe_insert_auto', text='Auto-Key', toggle=True,
                  icon='RECORD_OFF')
+        # three buttons to a row get cut at the default sidebar width
+        row = col.row(align=True)
         row.operator('dlrig.reset_pose', text='Reset Pose', icon='ARMATURE_DATA')
         if 'idle_pose' in ob:
             row.operator('dlrig.idle_pose', text='Idle Pose', icon='POSE_HLT')

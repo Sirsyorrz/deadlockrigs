@@ -7,6 +7,8 @@ import os
 
 import bpy
 
+from . import uitext
+
 
 def bridge_particles():
     """The bridge's particle module, its game folder and cache set to the add-on's."""
@@ -77,9 +79,9 @@ def draw(layout, context):
         return
     box = layout.box()
     path = holder['dl_effect']
-    box.label(text=path.rsplit('/', 1)[-1], icon='PARTICLE_DATA')
+    uitext.label(context, box, path.rsplit('/', 1)[-1], icon='PARTICLE_DATA', boxed=1)
     if 'dl_start_active' in holder and not holder['dl_start_active']:
-        box.label(text="Started by the map's logic", icon='INFO')
+        uitext.label(context, box, "Started by the map's logic", icon='INFO', boxed=1)
     if holder.get('dl_animated'):
         if holder.get('dl_loop', True):
             box.label(text=f"Loops every {holder['dl_steps'] / holder['dl_rate']:.1f} s", icon='FILE_REFRESH')
@@ -89,7 +91,7 @@ def draw(layout, context):
     else:
         box.label(text='Still', icon='PAUSE')
     if holder.library is not None:
-        box.label(text='In a linked map: append it to rebuild', icon='LINKED')
+        uitext.label(context, box, 'In a linked map: append it to rebuild', icon='LINKED', boxed=1)
         return
     row = box.row(align=True)
     row.prop(holder, '["dl_time"]', text='Time')

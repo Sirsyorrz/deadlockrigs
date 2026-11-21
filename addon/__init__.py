@@ -7,13 +7,13 @@ import os
 import queue
 import subprocess
 import sys
-import textwrap
 import threading
 
 import bpy
 from bpy.app.handlers import persistent
 
-from . import crop, effects, gamerender, look, modelbrowser, npcs, particles, riglight, textures, ziplines
+from . import (crop, effects, gamerender, look, modelbrowser, npcs, particles, riglight, textures, uitext,
+               ziplines)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -205,7 +205,7 @@ class DLR_Preferences(bpy.types.AddonPreferences):
         col.prop(self, 'deadlock_dir')
         col.prop(self, 'exports')
         col.prop(self, 'keep_build_files')
-        col.label(text=f'Build files: {work_dir(context)}', icon='INFO')
+        uitext.label(context, col, f'Build files: {work_dir(context)}', icon='INFO')
 
 
 # ---------------------------------------------------------------- the build job
@@ -661,8 +661,8 @@ class DLR_PT_main(bpy.types.Panel):
         newest = available_update(context)
         if newest:
             box = layout.box()
-            box.label(text=f'Update {newest} available', icon='INFO')
-            box.label(text='Edit > Preferences > Get Extensions')
+            uitext.label(context, box, f'Update {newest} available', icon='INFO', boxed=1)
+            uitext.label(context, box, 'Edit > Preferences > Get Extensions', boxed=1)
         col = layout.column(align=True)
         col.prop(sc, 'dlr_hero', text='')
         busy = _job is not None and not _job.done
@@ -680,7 +680,7 @@ class DLR_PT_main(bpy.types.Panel):
 
         path = rig_path(sc.dlr_hero, context)
         if os.path.exists(path):
-            row = layout.row(align=True)
+            row = uitext.buttons(context, layout, 'Open Rig', 'Append to Scene', align=True)
             row.operator('dlr.open', text='Open Rig', icon='FILE_FOLDER').append = False
             row.operator('dlr.open', text='Append to Scene', icon='APPEND_BLEND').append = True
         layout.operator('dlr.open_folder', icon='FOLDER_REDIRECT')
@@ -692,15 +692,11 @@ def draw_job(layout, context, name):
         box.progress(factor=_job.progress, type='BAR', text=f'{_job.status}  {_job.progress:.0%}')
         box.operator('dlr.cancel', icon='X')
     elif _job.ok:
-        box.label(text=f'{name}: done', icon='CHECKMARK')
+        uitext.label(context, box, f'{name}: done', icon='CHECKMARK', boxed=1)
     else:
-        box.label(text=f'{name}: failed', icon='ERROR')
-        # labels cut long text, so wrap it to the sidebar's width
-        width = max(20, int(context.region.width / (7 * context.preferences.system.ui_scale)))
-        lines = [w for ln in (_job.error or 'see the build log').split('\n')[:4] for w in textwrap.wrap(ln, width)]
-        col = box.column(align=True)
-        for line in lines[:8]:
-            col.label(text=line)
+        uitext.label(context, box, f'{name}: failed', icon='ERROR', boxed=1)
+        error = '\n'.join(line[:300] for line in (_job.error or 'see the build log').split('\n')[:4])
+        uitext.label(context, box, error, boxed=1)
         box.operator('dlr.show_log', icon='TEXT')
 
 
@@ -737,11 +733,11 @@ class DLR_PT_map(bpy.types.Panel):
         text, icon = MAP_STATE_TEXT[state]
         if state == 'mods':
             version = 'off' if prefs(context).map_mods else 'on'
-        layout.label(text=text.format(version), icon=icon)
+        uitext.label(context, layout, text.format(version), icon=icon)
         if _job is not None and _job.kind == 'MAP' and _job.slug == slug:
             draw_job(layout, context, tools_module('mapbuild').MAPS[slug])
         if state != 'missing':
-            row = layout.row(align=True)
+            row = uitext.buttons(context, layout, 'Link Map', 'Append Map', align=True)
             row.operator('dlr.append_map', text='Link Map', icon='LINK_BLEND').link = True
             row.operator('dlr.append_map', text='Append Map', icon='APPEND_BLEND').link = False
         look.draw(layout, context)

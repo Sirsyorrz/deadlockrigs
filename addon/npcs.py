@@ -16,7 +16,7 @@ import bpy
 from mathutils import Euler, Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
-from . import ziplines
+from . import uitext, ziplines
 
 ROOT = 'dlr_npcs'
 # heroes.json "idle" names each NPC's clip; these are tried for the others
@@ -468,18 +468,18 @@ def draw(layout, context):
     ziplines.draw(box, context)
     if _placing['at'] is not None:
         done, total, name = _placing['at']
-        box.label(text=f'Placing {name} ({done + 1}/{total})')
+        uitext.label(context, box, f'Placing {name} ({done + 1}/{total})', boxed=1)
         box.progress(factor=done / total, type='BAR', text=f'{done}/{total}')
     elif pos is not None and _job is not None:
         what = {'NPCS': "Finding the map's NPCs and ziplines", 'RIG': f'Building {hero_name(_job.slug)}',
                 'ANIMS': f"Exporting {hero_name(_job.slug)}'s animations"}.get(_job.kind, _job.slug)
-        box.label(text=f'{what} ({pos[0]}/{pos[1]})')
+        uitext.label(context, box, f'{what} ({pos[0]}/{pos[1]})', boxed=1)
         box.progress(factor=_job.progress, type='BAR', text=f'{_job.status}  {_job.progress:.0%}')
         box.operator('dlr.cancel', icon='X')
     elif sc.dlr_npcs_status == 'failed':
-        box.label(text='Building the NPCs failed', icon='ERROR')
+        uitext.label(context, box, 'Building the NPCs failed', icon='ERROR', boxed=1)
         if _job is not None and _job.error:
-            box.label(text=_job.error[:80])
+            uitext.label(context, box, _job.error[:300], boxed=1)
         box.operator('dlr.show_log', icon='TEXT')
 
 

@@ -20,7 +20,7 @@ import gpu
 from gpu_extras.batch import batch_for_shader
 import numpy as np
 
-from . import gamelaunch, gamerender
+from . import gamelaunch, gamerender, uitext
 
 THUMB_SIZE = 160
 GREY_BATCH = 96
@@ -653,7 +653,7 @@ class DLR_PT_model_browser(bpy.types.Panel):
         col.scale_y = 1.6
         col.operator('dlr.model_browser_import', text=f'Import {name}' if name else 'Select a Model', icon='IMPORT')
         if props.selected:
-            layout.label(text=f'models/{props.selected}.vmdl')
+            uitext.label(context, layout, f'models/{props.selected}.vmdl')
         layout.separator()
         layout.prop(props, 'search', text='', icon='VIEWZOOM')
         layout.prop(props, 'folder', text='')
@@ -664,9 +664,9 @@ class DLR_PT_model_browser(bpy.types.Panel):
         if work and work.error:
             col = layout.column()
             col.alert = True
-            col.label(text=work.error, icon='ERROR')
+            uitext.label(context, col, work.error, icon='ERROR')
         elif work and work.busy:
-            layout.label(text=f'Making thumbnails ({work.busy} to go)', icon='TIME')
+            uitext.label(context, layout, f'Making thumbnails ({work.busy} to go)', icon='TIME')
         col = layout.column(align=True)
         col.enabled = False
         col.label(text='Click: select')

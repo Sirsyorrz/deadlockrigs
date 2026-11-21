@@ -6,6 +6,8 @@ import os
 
 import bpy
 
+from . import uitext
+
 ROOT = 'dlr_ziplines'
 
 
@@ -78,7 +80,7 @@ def draw(box, context):
     row = box.row()
     row.prop(sc, 'dlr_ziplines', text='Ziplines', icon='IPO_EASE_IN_OUT')
     if sc.dlr_ziplines_status == 'failed':
-        box.label(text='Finding the ziplines failed', icon='ERROR')
+        uitext.label(context, box, 'Finding the ziplines failed', icon='ERROR', boxed=1)
 
 
 def register():

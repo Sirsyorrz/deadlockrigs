@@ -37,7 +37,7 @@ import numpy as np
 from gpu_extras.batch import batch_for_shader
 from mathutils import Euler, Matrix, Quaternion, Vector
 
-from . import gamelaunch, gamemodel
+from . import gamelaunch, gamemodel, uitext
 from .riglight import MAP_COLLECTION_KEYS, MAP_OBJECT_KEYS
 
 UNIT = 0.0254
@@ -3337,7 +3337,7 @@ class DLR_PT_game_render(bpy.types.Panel):
             col.label(text=f'Connected (port {lk.port})', icon='LINKED')
         else:
             col.label(text='Not connected', icon='UNLINKED')
-        _wrapped_label(context, col, 'The game controls are in the 3D view sidebar: Deadlock Rigs > Game', icon='INFO')
+        uitext.label(context, col, 'The game controls are in the 3D view sidebar: Deadlock Rigs > Game', icon='INFO')
 
 
 class DLR_PT_game(bpy.types.Panel):
@@ -3354,17 +3354,17 @@ class DLR_PT_game(bpy.types.Panel):
             col.operator(DLR_OT_game_use_engine.bl_idname, icon='RESTRICT_RENDER_OFF')
         if lk and lk.running:
             col.label(text=f'Connected (port {lk.port})', icon='LINKED')
-            col.label(text='Camera: bridge (free camera)' if lk.bridge else
-                      'Camera: console (moves the hero; start the session with --bridge for a free camera)')
+            uitext.label(context, col, 'Camera: bridge (free camera)' if lk.bridge else
+                         'Camera: console (moves the hero; start the session with --bridge for a free camera)')
             if lk.stream:
                 w, h = lk.stream.size
-                col.label(text=f'Streaming the game window ({w}x{h})')
+                uitext.label(context, col, f'Streaming the game window ({w}x{h})')
             elif lk.frame:
-                col.label(text=f'Screenshot mode: frame {lk.frame[2]}, {lk.timing * 1000:.0f} ms')
+                uitext.label(context, col, f'Screenshot mode: frame {lk.frame[2]}, {lk.timing * 1000:.0f} ms')
             if not lk.stream and lk.frames_error:
-                _wrapped_label(context, col, f'No game frames: {lk.frames_error}', icon='ERROR')
+                uitext.label(context, col, f'No game frames: {lk.frames_error}', icon='ERROR')
             if lk.outside:
-                col.label(text='View is outside the play area', icon='ERROR')
+                uitext.label(context, col, 'View is outside the play area', icon='ERROR')
             row = col.row(align=True)
             shown = len(context.scene.dlr_game_world)
             row.popover('DLR_PT_game_world', text=f'Map: {shown}/{len(WORLD_GROUPS)} in the game', icon='WORLD')
@@ -3382,43 +3382,41 @@ class DLR_PT_game(bpy.types.Panel):
                     col.operator(DLR_OT_game_pose_rig.bl_idname, text='Show in Game', icon='MESH_CUBE')
                 if wants_game_light(obj) and obj.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, text='Show in Game', icon='LIGHT')
-                for name, puppet in lk.puppets.items():
-                    row = col.row()
-                    row.label(text=f'{name}: entity {puppet.entity}', icon='OUTLINER_OB_ARMATURE')
-                    row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
-                for name, prop in lk.props.items():
-                    row = col.row()
-                    row.label(text=f'{name}: {os.path.basename(prop.model)}, entity {prop.entity}',
-                              icon='MESH_CUBE')
-                    row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
-                for name, light in lk.lights.items():
-                    row = col.row()
-                    row.label(text=f'{name}: {light.spec[0]}, entity {light.entity}', icon='LIGHT')
+                shown = [(name, f'{name}: entity {puppet.entity}', 'OUTLINER_OB_ARMATURE')
+                         for name, puppet in lk.puppets.items()]
+                shown += [(name, f'{name}: {os.path.basename(prop.model)}, entity {prop.entity}', 'MESH_CUBE')
+                          for name, prop in lk.props.items()]
+                shown += [(name, f'{name}: {light.spec[0]}, entity {light.entity}', 'LIGHT')
+                          for name, light in lk.lights.items()]
+                for name, text, icon in shown:
+                    row = uitext.label(context, col, text, icon=icon, buttons=1)
                     row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
                 col.operator('dlr.game_model_browser', icon='ADD')
                 col.operator(DLR_OT_game_add_light.bl_idname, icon='LIGHT_SPOT')
             _object_toggles(context, col)
-            row = col.row()
+            row = uitext.buttons(context, col, DLR_OT_game_disconnect.bl_label,
+                                 *([DLR_OT_game_quit.bl_label] if _session else []))
             row.operator(DLR_OT_game_disconnect.bl_idname)
             if _session:
                 row.operator(DLR_OT_game_quit.bl_idname, icon='QUIT')
         elif _reload is not None:
-            col.label(text=f'Reloading {_reload["map"]} ({time.time() - _reload["since"]:.0f} s)...', icon='TIME')
+            uitext.label(context, col, f'Reloading {_reload["map"]} ({time.time() - _reload["since"]:.0f} s)...',
+                         icon='TIME')
         elif _session and not _session.error and not _session.ready.is_set():
-            col.label(text=_session.status + '...', icon='TIME')
+            uitext.label(context, col, _session.status + '...', icon='TIME')
         else:
-            row = col.row()
+            row = uitext.buttons(context, col, DLR_OT_game_start.bl_label, DLR_OT_game_connect.bl_label)
             row.operator(DLR_OT_game_start.bl_idname, icon='PLAY')
             row.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
             col.operator('dlr.game_model_browser', icon='ADD')
             col.operator(DLR_OT_game_add_light.bl_idname, icon='LIGHT_SPOT')
             _object_toggles(context, col)
         if _session and _session.error:
-            _wrapped_label(context, col, _session.error, icon='ERROR')
+            uitext.label(context, col, _session.error, icon='ERROR')
         if lk and lk.error:
-            _wrapped_label(context, col, lk.error, icon='ERROR')
+            uitext.label(context, col, lk.error, icon='ERROR')
         if (lk and (lk.error or (not lk.stream and lk.frames_error))) or (_session and _session.error):
-            col.label(text=f'Log: {gamelaunch.log_path()}')
+            uitext.label(context, col, f'Log: {gamelaunch.log_path()}')
 
 
 def _object_toggles(context, col):
@@ -3436,23 +3434,6 @@ def _mesh_toggled(obj, _context):
         _link.declined.discard(obj.name)
     # Sends it (or takes it out) with the next viewport update.
     obj.update_tag()
-
-
-def _wrapped_label(context, layout, text, icon='NONE'):
-    """Panel labels don't wrap; Blender cuts long ones in the middle with an ellipsis."""
-    scale = context.preferences.system.ui_scale
-    # room left after the panel margins and the icon column
-    width = (context.region.width if context.region else 300) - 60 * scale
-    blf.size(0, context.preferences.ui_styles[0].widget.points * scale)
-    lines = []
-    for word in text.split():
-        if lines and blf.dimensions(0, lines[-1] + ' ' + word)[0] <= width:
-            lines[-1] += ' ' + word
-        else:
-            lines.append(word)
-    col = layout.column(align=True)
-    for i, line in enumerate(lines or ['']):
-        col.label(text=line, icon=icon if i == 0 else 'BLANK1' if icon != 'NONE' else 'NONE')
 
 
 def _view_menu(self, context):

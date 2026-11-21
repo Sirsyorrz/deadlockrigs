@@ -6,7 +6,7 @@ import re
 
 import bpy
 
-from . import particles
+from . import particles, uitext
 
 TAG = 'dlr_clip_effect'
 # set on effects added by Add Ability Effects: Add Clip Effects leaves them be
@@ -318,20 +318,19 @@ class DLR_PT_clip_effects(bpy.types.Panel):
         arm = rig_of(context.active_object)
         clips = clips_of(arm)
         if not clips:
-            layout.label(text='Load a Game Animation first', icon='INFO')
+            uitext.label(context, layout, 'Load a Game Animation first', icon='INFO')
         else:
             col = layout.column(align=True)
             for clip, first, last in clips:
                 key = (arm['dlrig'], clip)
                 none = key in _found and not _found[key]
-                col.label(text=f'{int(first)}-{int(round(last))}  {clip}' + ('  (no effects)' if none else ''),
-                          icon='ACTION')
+                text = f'{int(first)}-{int(round(last))}  {clip}' + ('  (no effects)' if none else '')
+                uitext.label(context, col, text, icon='ACTION')
             layout.operator('dlr.clip_effects', icon='PARTICLES')
             layout.operator('dlr.ability_effects', icon='SHADERFX')
         added = sorted({o[TAG] for o in arm.children if o.get(TAG)})
         if added:
-            row = layout.row()
-            row.label(text=f'Added: {", ".join(added)}')
+            row = uitext.label(context, layout, f'Added: {", ".join(added)}', buttons=1)
             row.operator('dlr.remove_clip_effects', text='', icon='X')
 
 

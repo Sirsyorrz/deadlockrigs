@@ -108,8 +108,10 @@ def _watch():
 
 def draw(layout, context):
     col = layout.column(align=True)
-    col.prop(context.scene, 'dlr_map_textures')
-    col.prop(context.scene, 'dlr_render_textures')
+    col.label(text='Textures', icon='TEXTURE')
+    # the full property names don't fit the label column of a default-width sidebar
+    col.prop(context.scene, 'dlr_map_textures', text='Viewport')
+    col.prop(context.scene, 'dlr_render_textures', text='Render')
 
 
 HANDLERS = [('load_post', on_load), ('undo_post', on_undo), ('redo_post', on_undo),
