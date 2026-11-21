@@ -96,18 +96,38 @@ LIGHT_KEY = 'dlr_game_light'  # Object.dlr_game_light: the game draws a light at
 SETUP_COMMON = ('citadel_hud_visible 0', 'citadel_photomode_enabled 1', 'cl_drawhud 0',
                 'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
                 'engine_no_focus_sleep 0', 'jpeg_quality 95')
-# Remove NPCs: troopers (with their zipline crates) and neutral camps stop spawning, and every combat NPC is removed
-# without death effects or gold orbs: troopers, neutrals, guardians, walkers, base guardians, sentries, the mid boss
-# and the Patron (ent_remove_all matches the class exactly; removing them doesn't end the match). The Hideout has none
-# of these; its ghosts, cat and pigeons, and Midtown's ghosts and critters, aren't NPC classes or are kept. notarget
-# keeps anything left from attacking the hidden hero, which follows the camera (not god: a god hero pushed out of the
-# play area is stuck).
-NPC_CLASSES = ('npc_trooper', 'npc_trooper_neutral', 'npc_neutral_sinners_sacrifice', 'npc_trooper_boss',
-               'npc_boss_tier2', 'npc_barrack_boss', 'npc_base_defense_sentry', 'npc_super_neutral', 'npc_boss_tier3',
-               'npc_boss_tier3core')
-NPCS_OFF = ('citadel_trooper_spawn_enabled 0', 'citadel_neutral_spawn_enabled 0',
-            *(f'ent_remove_all {name}' for name in NPC_CLASSES))
-NPCS_ON = ('citadel_trooper_spawn_enabled 1', 'citadel_neutral_spawn_enabled 1')
+# What of the map's life is in the game (the Game panel's Map menu). Each group: id, label, description, entity
+# classes (ent_remove_all matches the class exactly; removing them doesn't end the match and drops no gold), console
+# commands that stop it spawning and that let it spawn again. The Hideout has none of these. Static groups are placed
+# by the map: removed, they only come back with a map reload. Timed ones respawn by themselves, so while they are
+# off their classes are removed again every few seconds.
+WORLD_GROUPS = (
+    ('PATRONS', 'Patrons', 'The Hidden King and the Archmother, with their cores', ('npc_boss_tier3',
+     'npc_boss_tier3core'), (), ()),
+    ('WALKERS', 'Walkers', 'One per lane for each team', ('npc_boss_tier2',), (), ()),
+    ('GUARDIANS', 'Lane Guardians', 'One per lane for each team', ('npc_trooper_boss',), (), ()),
+    ('BASE_GUARDIANS', 'Base Guardians', 'At the base entrances, with the base sentries',
+     ('npc_barrack_boss', 'npc_base_defense_sentry'), (), ()),
+    ('MIDBOSS', 'Mid-boss', 'In its pit under the middle of the map', ('npc_super_neutral',), (), ()),
+    ('TROOPERS', 'Troopers', 'The lane waves', ('npc_trooper',), ('citadel_trooper_spawn_enabled 0',),
+     ('citadel_trooper_spawn_enabled 1',)),
+    ('NEUTRALS', 'Neutral Camps', 'The jungle camps', ('npc_trooper_neutral',),
+     ('citadel_neutral_spawn_enabled 0',), ('citadel_neutral_spawn_enabled 1',)),
+    ('SINNERS', "Sinner's Sacrifice", "The Sinner's Sacrifice machines (they come with the neutral camps)",
+     ('npc_neutral_sinners_sacrifice',), (), ()),
+    ('RIFT', 'Rift', 'The rift that opens mid-match. Off by default: when it spawns, an offline session crashes '
+     '(the game itself, without the add-on too)', ('citadel_item_koth_spawner', 'citadel_koth_cashin'),
+     ('citadel_koth_enabled 0',), ('citadel_koth_enabled 1',)),
+    ('LABELS', 'Floating Labels', "The Hideout's floating Play, Shop, News and other labels",
+     ('point_clientui_world_panel',), (), ()),
+    ('BUFFS', 'Buffs and Pickups', 'Power-up buffs, health and other pickups',
+     ('citadel_item_pickup', 'citadel_item_pickup_rejuv', 'citadel_pickup_modifier', 'citadel_pickup_health'),
+     ('citadel_powerup_spawn_enabled 0', 'citadel_pickup_spawner_enabled 0'),
+     ('citadel_powerup_spawn_enabled 1', 'citadel_pickup_spawner_enabled 1')),
+)
+WORLD_STATIC = {'PATRONS', 'WALKERS', 'GUARDIANS', 'BASE_GUARDIANS', 'MIDBOSS', 'LABELS'}
+WORLD_DEFAULT_OFF = {'RIFT', 'LABELS'}
+WORLD_PURGE_EVERY = 3.0
 NPC_NUDGES = 8
 # Console camera (no bridge): the camera is the hero's own eye.
 SETUP = (
@@ -1183,7 +1203,9 @@ class Link:
         self.frames_error = ''  # why the bridge's frame capture didn't start
         self.pawn_at = None
         self.pawn_moved = 0.0
-        self.no_npcs = False
+        self.world_off = set(WORLD_DEFAULT_OFF)  # WORLD_GROUPS kept out of the game
+        self.world_removed = set()  # static groups removed since the map loaded
+        self.purged_at = 0.0
 
     @property
     def min_vfov(self):
@@ -1295,8 +1317,7 @@ class Link:
         # Read the game's own camera before taking it over (Connect jumps the viewports there).
         self.start_camera = self.game_camera()
         self.con.send(*SETUP_COMMON)
-        if self.no_npcs:
-            self.set_npcs(False)
+        self.set_world(self.world_off, initial=True)
         if self.poses:
             self.remove_leftovers()
             self.remove_leftover_lights()
@@ -1920,12 +1941,25 @@ class Link:
         self.render_frame = None
         self._hold_clock()
 
-    def set_npcs(self, shown):
-        self.no_npcs = not shown
-        self.con.send(*(NPCS_ON if shown else NPCS_OFF))
-        # notarget only toggles; its reply says the new state.
+    def set_world(self, off, initial=False):
+        """Keep the WORLD_GROUPS in off out of the game and let the others back in."""
+        off = set(off)
+        was = set() if initial else self.world_off
+        commands = []
+        for gid, _label, _desc, classes, off_commands, on_commands in WORLD_GROUPS:
+            if gid in off and (initial or gid not in was):
+                commands += [*off_commands, *(f'ent_remove_all {c}' for c in classes)]
+                if gid in WORLD_STATIC:
+                    self.world_removed.add(gid)
+            elif gid not in off and (initial or gid in was):
+                commands += on_commands
+        self.world_off = off
+        self.con.send(*commands)
+        # notarget keeps what is left from attacking the hidden hero, which follows the camera (not god: a god hero
+        # pushed out of the play area is stuck). It only toggles; its reply says the new state.
+        quiet = bool(off - WORLD_DEFAULT_OFF - {'BUFFS'})
         reply = self.con.request('notarget', 'notarget', timeout=2.0)
-        if reply is not None and (reply.split()[-1] == 'ON') == shown:
+        if reply is not None and (reply.split()[-1] == 'ON') != quiet:
             self.con.send('notarget')
         # A paused game takes seconds to show the removal otherwise.
         for _ in range(NPC_NUDGES):
@@ -2014,6 +2048,25 @@ class Link:
         else:
             self._run_shots()
 
+    @property
+    def needs_reload(self):
+        """Static groups turned back on after they were removed: only a map reload brings them."""
+        return bool(self.world_removed - self.world_off)
+
+    def map_name(self):
+        reply = self.con.request('status', 'loaded spawngroup(  1)', timeout=3.0)
+        # 'loaded spawngroup(  1)  : SV:  [1: dl_midtown | main lump | mapload]'
+        if reply and '[1:' in reply:
+            return reply.split('[1:')[1].split('|')[0].strip()
+        return None
+
+    def _purge(self):
+        """Timed groups that are off respawn on their own: remove them again."""
+        classes = [c for gid, _l, _d, cs, _off, _on in WORLD_GROUPS if gid in self.world_off and gid not in WORLD_STATIC
+                   for c in cs]
+        if classes and self.con and self.con.alive:
+            self.con.send(*(f'ent_remove_all {c}' for c in classes))
+
     def _keepalive(self):
         """The bridge gives the camera back to the game after 3 s without packets (Blender closed or crashed). Its
         own thread: a slow capture (a screenshot can take seconds) must not let the camera snap back meanwhile.
@@ -2024,6 +2077,9 @@ class Link:
                 self.thawed_until = 0.0
                 if self.render_frame is None:
                     self._hold_clock()
+            if self.world_off and time.time() - self.purged_at >= WORLD_PURGE_EVERY:
+                self.purged_at = time.time()
+                self._purge()
             bridge = self.bridge
             if bridge and time.time() - last >= 1.0:
                 last = time.time()
@@ -2706,7 +2762,7 @@ def connect(context, port=PORT, setup=(), launched=False):
     if _link:
         _link.stop()
     _link = Link(port, setup, launched)
-    _link.no_npcs = context.scene.dlr_game_no_npcs
+    _link.world_off = world_off(context.scene)
     try:
         _link.start()
     except OSError:
@@ -2820,6 +2876,96 @@ class DLR_OT_game_quit(bpy.types.Operator):
             _link.stop()
             _link = None
         return {'FINISHED'}
+
+
+_reload = None  # the map reload in progress: {port, setup, launched, since, steady, last, map}
+RELOAD_STEADY = 8.0  # as Session: a console client connecting mid-load can hang the game
+RELOAD_TIMEOUT = 120.0
+
+
+def _reload_poll():
+    """Connects again once the reloaded map has drawn steadily for a while."""
+    global _reload
+    r = _reload
+    if r is None:
+        return None
+    views = gamelaunch._bridge_views()
+    now = time.time()
+    if views is not None and views > r['last'] >= 0:
+        r['steady'] = r['steady'] or now
+    else:
+        r['steady'] = None
+    r['last'] = -1 if views is None else views
+    if r['steady'] and now - r['steady'] >= RELOAD_STEADY:
+        _reload = None
+        try:
+            connect(bpy.context, r['port'], r['setup'], launched=r['launched'])
+        except OSError as error:
+            gamelaunch.log(f'map reload: could not connect again: {error}')
+        _redraw_properties()
+        return None
+    if now - r['since'] > RELOAD_TIMEOUT:
+        _reload = None
+        gamelaunch.log('map reload: the game did not come back (Connect when it is up)')
+        _redraw_properties()
+        return None
+    _redraw_properties()
+    return 0.5
+
+
+def _redraw_properties():
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type in {'PROPERTIES', 'VIEW_3D'}:
+                area.tag_redraw()
+
+
+class DLR_OT_game_reload_map(bpy.types.Operator):
+    bl_idname = 'dlr.game_reload_map'
+    bl_label = 'Reload Map'
+    bl_description = ('Load the map again: everything on it comes back as at the start of a match (Patrons, Walkers, '
+                      'Guardians, Mid-boss), then the Map menu\'s choices apply again and rigs, models and lights '
+                      'are spawned again. Takes 10-15 s')
+
+    @classmethod
+    def poll(cls, context):
+        return _link is not None and _link.running and _reload is None
+
+    def execute(self, context):
+        global _link, _reload
+        lk = _link
+        name = lk.map_name()
+        if not name:
+            self.report({'ERROR'}, 'could not tell which map the game has loaded')
+            return {'CANCELLED'}
+        setup = lk.launch_setup
+        if not setup and name != 'dl_hideout':
+            # a map loaded by console starts without a hero; the camera bridge needs one in the game
+            setup = ('jointeam 2', 'selecthero hero_atlas')
+        lk.remove_spawned()
+        lk.con.send(f'map {name}')
+        time.sleep(0.5)
+        lk.stop()
+        _link = None
+        _reload = {'port': lk.port, 'setup': setup, 'launched': lk.launched, 'since': time.time(), 'steady': None,
+                   'last': -1, 'map': name}
+        bpy.app.timers.register(_reload_poll, first_interval=1.0)
+        return {'FINISHED'}
+
+
+class DLR_PT_game_world(bpy.types.Panel):
+    # a popover rather than a menu: a menu closes on the first click, this stays open for picking several
+    bl_label = 'In the Game'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+
+    def draw(self, context):
+        col = self.layout.column(align=True)
+        for gid, label, _desc, *_ in WORLD_GROUPS:
+            col.prop_enum(context.scene, 'dlr_game_world', gid, text=label)
+        lk = _link
+        if lk and lk.needs_reload:
+            self.layout.operator(DLR_OT_game_reload_map.bl_idname, icon='FILE_REFRESH')
 
 
 class DLR_OT_game_disconnect(bpy.types.Operator):
@@ -3007,7 +3153,12 @@ class DLR_PT_game_render(bpy.types.Panel):
                 _wrapped_label(context, col, f'No game frames: {lk.frames_error}', icon='ERROR')
             if lk.outside:
                 col.label(text='View is outside the play area', icon='ERROR')
-            col.prop(context.scene, 'dlr_game_no_npcs')
+            row = col.row(align=True)
+            shown = len(context.scene.dlr_game_world)
+            row.popover('DLR_PT_game_world', text=f'Map: {shown}/{len(WORLD_GROUPS)} in the game', icon='WORLD')
+            row.operator(DLR_OT_game_reload_map.bl_idname, text='', icon='FILE_REFRESH')
+            if lk.needs_reload:
+                col.operator(DLR_OT_game_reload_map.bl_idname, icon='FILE_REFRESH')
             if lk.poses:
                 col.operator(DLR_OT_game_pause.bl_idname, text='Resume Game' if lk.paused else 'Pause Game',
                              icon='PLAY' if lk.paused else 'PAUSE', depress=lk.paused)
@@ -3040,6 +3191,8 @@ class DLR_PT_game_render(bpy.types.Panel):
             row.operator(DLR_OT_game_disconnect.bl_idname)
             if _session:
                 row.operator(DLR_OT_game_quit.bl_idname, icon='QUIT')
+        elif _reload is not None:
+            col.label(text=f'Reloading {_reload["map"]} ({time.time() - _reload["since"]:.0f} s)...', icon='TIME')
         elif _session and not _session.error and not _session.ready.is_set():
             col.label(text=_session.status + '...', icon='TIME')
         else:
@@ -3083,7 +3236,7 @@ def _view_menu(self, context):
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
            DLR_OT_game_pause, DLR_OT_game_add_model, DLR_OT_game_add_light,
            DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_PT_game_render,
-           DLR_OT_game_plate)
+           DLR_OT_game_plate, DLR_OT_game_reload_map, DLR_PT_game_world)
 
 
 # Blender panels list the engines they show for; a custom engine has to add itself. Output settings (format,
@@ -3110,20 +3263,24 @@ def _shared_panels():
             yield panel
 
 
-def _no_npcs_changed(scene, _context):
-    if _link and _link.running and _link.no_npcs != scene.dlr_game_no_npcs:
-        _link.set_npcs(not scene.dlr_game_no_npcs)
+def world_off(scene):
+    return {g[0] for g in WORLD_GROUPS} - set(scene.dlr_game_world)
+
+
+def _world_changed(scene, _context):
+    if _link and _link.running and _link.world_off != world_off(scene):
+        _link.set_world(world_off(scene))
 
 
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
-    bpy.types.Scene.dlr_game_no_npcs = bpy.props.BoolProperty(
-        name='Remove NPCs', update=_no_npcs_changed,
-        description='Stop troopers and neutral camps from spawning and remove every combat NPC (troopers, neutrals, '
-                    'guardians, walkers, base guardians, sentries, mid boss, Patron). Ambient ghosts and animals '
-                    'stay. Sent again on every connect. Turned off, spawning resumes with the next wave; removed '
-                    'NPCs don\'t come back until the map is reloaded')
+    bpy.types.Scene.dlr_game_world = bpy.props.EnumProperty(
+        name='In the Game', options={'ENUM_FLAG'}, update=_world_changed,
+        items=[(gid, label, desc) for gid, label, desc, *_ in WORLD_GROUPS],
+        default={g[0] for g in WORLD_GROUPS} - WORLD_DEFAULT_OFF,
+        description='What of the map\'s life is in the game. Sent again on every connect. Patrons, Walkers, Guardians '
+                    'the Mid-boss and the labels only come back with Reload Map once removed')
     bpy.types.Object.dlr_game_light = bpy.props.BoolProperty(
         name='Light in Game',
         description='The game draws this spot or point light too (Deadlock Game render engine)')
@@ -3163,5 +3320,5 @@ def unregister():
         panel.COMPAT_ENGINES.discard(ENGINE_ID)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
-    del bpy.types.Scene.dlr_game_no_npcs
+    del bpy.types.Scene.dlr_game_world
     del bpy.types.Object.dlr_game_light
