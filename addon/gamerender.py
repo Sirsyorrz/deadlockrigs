@@ -2770,6 +2770,8 @@ def connect(context, port=PORT, setup=(), launched=False):
         raise
     if not bpy.app.timers.is_registered(_poll_frames):
         bpy.app.timers.register(_poll_frames, persistent=True)
+    # the viewport shows the game and rigs, models and lights go in only through the engine
+    context.scene.render.engine = ENGINE_ID
     cam = _link.start_camera
     if cam and context.screen:
         jump_viewports(context, *cam)
@@ -2799,10 +2801,7 @@ def _session_poll():
     if s is None:
         return None
     if s.error or not s.ready.is_set():
-        for window in bpy.context.window_manager.windows:
-            for area in window.screen.areas:
-                if area.type == 'PROPERTIES':
-                    area.tag_redraw()
+        _redraw_properties()
         return None if s.error else 0.5
     try:
         connect(bpy.context, s.port, s.setup_commands(), launched=True)
@@ -2966,6 +2965,18 @@ class DLR_PT_game_world(bpy.types.Panel):
         lk = _link
         if lk and lk.needs_reload:
             self.layout.operator(DLR_OT_game_reload_map.bl_idname, icon='FILE_REFRESH')
+
+
+class DLR_OT_game_use_engine(bpy.types.Operator):
+    bl_idname = 'dlr.game_use_engine'
+    bl_label = 'Show the Game in the Viewport'
+    bl_description = ('Switch the render engine to Deadlock (game): the viewport shows the game, and rigs, models '
+                      'and lights are put in it')
+
+    def execute(self, context):
+        context.scene.render.engine = ENGINE_ID
+        show_game_in_viewports(context)
+        return {'FINISHED'}
 
 
 class DLR_OT_game_disconnect(bpy.types.Operator):
@@ -3142,6 +3153,25 @@ class DLR_PT_game_render(bpy.types.Panel):
         lk = _link
         if lk and lk.running:
             col.label(text=f'Connected (port {lk.port})', icon='LINKED')
+        else:
+            col.label(text='Not connected', icon='UNLINKED')
+        col.label(text='The game controls are in the 3D view sidebar: Deadlock Rigs > Game', icon='INFO')
+
+
+class DLR_PT_game(bpy.types.Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Deadlock Rigs'
+    bl_label = 'Game'
+    bl_parent_id = 'DLR_PT_main'
+
+    def draw(self, context):
+        col = self.layout.column()
+        lk = _link
+        if lk and lk.running and context.scene.render.engine != ENGINE_ID:
+            col.operator(DLR_OT_game_use_engine.bl_idname, icon='RESTRICT_RENDER_OFF')
+        if lk and lk.running:
+            col.label(text=f'Connected (port {lk.port})', icon='LINKED')
             col.label(text='Camera: bridge (free camera)' if lk.bridge else
                       'Camera: console (moves the hero; start the session with --bridge for a free camera)')
             if lk.stream:
@@ -3235,7 +3265,7 @@ def _view_menu(self, context):
 
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
            DLR_OT_game_pause, DLR_OT_game_add_model, DLR_OT_game_add_light,
-           DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_PT_game_render,
+           DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_PT_game_render, DLR_PT_game, DLR_OT_game_use_engine,
            DLR_OT_game_plate, DLR_OT_game_reload_map, DLR_PT_game_world)
 
 
