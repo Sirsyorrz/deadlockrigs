@@ -21,10 +21,7 @@ from . import gamelaunch, gamerender
 
 THUMB_SIZE = 160
 COLUMNS = 8
-PAGE_SIZE = COLUMNS * 20
-# Textured thumbnails cost ~0.3 s a model (all 6537 would be half an hour of every core), so with the whole list
-# shown only its top gets them; a picked page gets them all. Grey ones are made for everything listed.
-TEXTURED_TOP = COLUMNS * 24
+SHOW_STEP = COLUMNS * 20  # models listed at first and added per "Show more"
 GREY_BATCH = 96
 TEXTURED_BATCH = 32
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -66,7 +63,6 @@ class ThumbWorker(threading.Thread):
         self.lock = threading.Lock()
         self.event = threading.Event()
         self.wanted = []
-        self.textured_count = 0
         self.running = True
         self.busy = 0
         self.error = ''
@@ -79,22 +75,19 @@ class ThumbWorker(threading.Thread):
         self.blender_path = bpy.app.binary_path
         thumb_dir()
 
-    def want(self, models, textured_count):
+    def want(self, models):
         with self.lock:
-            if models == self.wanted and textured_count == self.textured_count:
+            if models == self.wanted:
                 return
             self.wanted = list(models)
-            self.textured_count = textured_count
         self.event.set()
         if not bpy.app.timers.is_registered(_redraw):
             bpy.app.timers.register(_redraw, first_interval=0.5)
 
     def pending(self):
         with self.lock:
-            wanted, top = list(self.wanted), self.textured_count
-        return self.running and (any(not _done(thumb_paths(m)[0]) for m in wanted[:top])
-                                 or any(not _done(thumb_paths(m)[0]) and not _done(thumb_paths(m)[1])
-                                        for m in wanted[top:])) and not (
+            wanted = list(self.wanted)
+        return self.running and any(not _done(thumb_paths(m)[0]) for m in wanted) and not (
             self.error and not self.busy)
 
     def run(self):
@@ -103,12 +96,9 @@ class ThumbWorker(threading.Thread):
             self.event.clear()
             while self.running:
                 with self.lock:
-                    wanted, top = list(self.wanted), self.textured_count
+                    wanted = list(self.wanted)
                 grey = [m for m in wanted if not _done(thumb_paths(m)[0]) and not _done(thumb_paths(m)[1])]
-                textured = [m for m in wanted[:top] if not _done(thumb_paths(m)[0])]
-                # textured for the top before grey for the far end of a long list
-                if textured and not any(m in grey for m in wanted[:top]):
-                    grey = []
+                textured = [m for m in wanted if not _done(thumb_paths(m)[0])]
                 # top of the list first: the grey pass is cheap, so it runs ahead in bigger batches
                 todo, textures = (grey[:GREY_BATCH], False) if grey else (textured[:TEXTURED_BATCH], True)
                 if not todo:
@@ -214,15 +204,10 @@ def _update(model):
         except RuntimeError:
             return False
         try:
-            w, h = image.size
-            pixels = np.empty(w * h * 4, np.float32)
+            pixels = np.empty(image.size[0] * image.size[1] * 4, np.float32)
             image.pixels.foreach_get(pixels)
-            if png.endswith('.g.png'):
-                # Grey stand-ins at half size: the whole list can be thousands of them (~25 KB each, not 100).
-                pixels = pixels.reshape(h, w, 4)[::2, ::2].ravel()
-                w, h = (w + 1) // 2, (h + 1) // 2
-            preview.image_size = (w, h)
-            preview.image_pixels_float.foreach_set(np.ascontiguousarray(pixels))
+            preview.image_size = image.size[:]
+            preview.image_pixels_float.foreach_set(pixels)
         finally:
             bpy.data.images.remove(image)
     else:
@@ -269,21 +254,14 @@ def model_items(self, context):
     return _model_items
 
 
-_page_items = {}
-
-
-def page_items(self, context):
-    count = len(results(self.search, self.folder, self.sort))
-    if count not in _page_items:
-        items = [('ALL', f'All {count}', 'Every match in one scrolling list')]
-        items += [(str(i), f'{i * PAGE_SIZE + 1}-{min((i + 1) * PAGE_SIZE, count)}', '')
-                  for i in range(-(-count // PAGE_SIZE))] if count > PAGE_SIZE else []
-        _page_items[count] = items
-    return _page_items[count]
-
-
 def _search_changed(self, context):
-    self.page = 'ALL'
+    self.shown = SHOW_STEP
+
+
+def _show_more(self, context):
+    if self.more:
+        self.more = False
+        self.shown += SHOW_STEP
 
 
 class DLR_OT_game_model_browser(bpy.types.Operator):
@@ -303,9 +281,9 @@ class DLR_OT_game_model_browser(bpy.types.Operator):
         ('NAME', 'Name', 'By file name'),
         ('FOLDER', 'Folder', 'By folder, then name'),
     ), update=_search_changed)
-    page: bpy.props.EnumProperty(name='Page', items=page_items, options={'SKIP_SAVE'},
-                                 description=f'All matches in one list, or {PAGE_SIZE} at a time (a picked page gets '
-                                             'textured thumbnails all the way down)')
+    shown: bpy.props.IntProperty(default=SHOW_STEP, options={'HIDDEN', 'SKIP_SAVE'})
+    more: bpy.props.BoolProperty(name='Show More', update=_show_more, options={'SKIP_SAVE'},
+                                 description='List more models (scroll down for them)')
     selected: bpy.props.EnumProperty(name='Model', items=model_items, options={'SKIP_SAVE'},
                                      description='Select a model, then Import')
 
@@ -330,19 +308,12 @@ class DLR_OT_game_model_browser(bpy.types.Operator):
         row.prop(self, 'search', text='', icon='VIEWZOOM')
         row.prop(self, 'folder', text='')
         row.prop(self, 'sort', text='')
-        row.prop(self, 'page', text='')
         models = results(self.search, self.folder, self.sort)
-        if self.page == 'ALL':
-            shown = models
-            textured = TEXTURED_TOP
-        else:
-            first = int(self.page) * PAGE_SIZE
-            shown = models[first:first + PAGE_SIZE]
-            textured = len(shown)
+        shown = models[:self.shown]
         work = worker()
-        work.want(shown, textured)
+        work.want(shown)
         row = layout.row()
-        row.label(text=f'{len(models)} models' + ('' if self.page == 'ALL' else f', showing {len(shown)}'))
+        row.label(text=f'{len(models)} models' + (f', first {len(shown)} listed' if len(shown) < len(models) else ''))
         sub = row.row()
         sub.alignment = 'RIGHT'
         sub.label(text=f'Selected: {self.selected.rsplit("/", 1)[-1]}' if self.selected != 'NONE'
@@ -358,6 +329,9 @@ class DLR_OT_game_model_browser(bpy.types.Operator):
             cell.template_icon(icon_value=icon(model), scale=5.0)
             cell.prop_enum(self, 'selected', model, text=model.rsplit('/', 1)[-1])
             cell.label(text=model.rsplit('/', 1)[0] if '/' in model else '')
+        if len(shown) < len(models):
+            layout.prop(self, 'more', toggle=True, text=f'Show {min(SHOW_STEP, len(models) - len(shown))} More',
+                        icon='ADD')
 
 
 def _redraw():
