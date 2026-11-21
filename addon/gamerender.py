@@ -519,18 +519,42 @@ def game_models():
     return _model_list[key]
 
 
-def search_game_models(text):
-    """Models whose path holds every word of text, ones whose file name matches first."""
+_hero_aliases = {}
+
+
+def hero_aliases():
+    """Hero name word -> the codenames model paths use ('holliday' -> {'astro'})."""
+    if not _hero_aliases:
+        import importlib
+        try:
+            heroes = importlib.import_module(__package__).heroes()
+        except (ImportError, OSError, RuntimeError, ValueError):
+            heroes = []
+        for hero in heroes:
+            code = hero.get('codename')
+            if not code:
+                continue
+            name = hero['name'].lower()
+            for word in [name.replace(' ', '')] + [w for w in name.split() if len(w) > 3]:
+                if word != code:
+                    _hero_aliases.setdefault(word, set()).add(code)
+    return _hero_aliases
+
+
+def search_game_models(text, limit=MODEL_SEARCH_MAX):
+    """Models whose path holds every word of text (or a hero codename for it), file name matches first."""
     text = text.lower().replace('\\', '/').removesuffix('.vmdl_c').removesuffix('.vmdl').removeprefix('models/')
     words = text.replace('/', ' ').replace('_', ' ').split()
+    aliases = hero_aliases()
+    options = [{w} | aliases.get(w, set()) for w in words]
     hits = []
     for model in game_models():
         flat = model.replace('/', ' ').replace('_', ' ')
-        if all(w in flat for w in words):
+        if all(any(o in flat for o in opts) for opts in options):
             name = model.rsplit('/', 1)[-1].replace('_', ' ')
-            hits.append((not all(w in name for w in words), len(model), model))
+            hits.append((not all(any(o in name for o in opts) for opts in options), len(model), model))
     hits.sort()
-    return [model for _, _, model in hits[:MODEL_SEARCH_MAX]]
+    return [model for _, _, model in hits[:limit]]
 
 
 def scene_prop_models():
