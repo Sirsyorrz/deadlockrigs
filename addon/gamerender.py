@@ -89,6 +89,8 @@ SETPOS_NUDGE = 2.0  # a paused game ticks for a puppet's ent_setpos for this lon
 # A model without bones and no free pose slot moves by console only (ent_setpos/ent_setang, one server tick) and
 # nothing reports when it got there.
 PROP_SETTLE = 0.15
+# A freshly spawned model (a re-exported Mesh in Game) is drawn ~1 s after its entity exists (model load).
+PROP_DRAW_IN = 1.0
 CONSOLE_NUDGES = 8  # server ticks a paused game gets for a console move or removal (a puppet's took ~7)
 PROP_KEY = 'dlr_game_model'  # object property: the game model the game draws at that object
 LIGHT_KEY = 'dlr_game_light'  # Object.dlr_game_light: the game draws a light at this Blender light
@@ -1300,6 +1302,7 @@ class Link:
         self.paused = False  # the user's Pause Game: the clock stays frozen outside renders too
         self.thawed_until = 0.0  # paused, but running until entities near the moved hero have streamed in
         self.setpos_at = 0.0
+        self.spawned_at = 0.0
         self.stream_restarted = 0.0
         self.time_step = 0
         self.settle_nudges = 0
@@ -1658,6 +1661,7 @@ class Link:
             if bound is not None and prop.puppet is None:
                 prop.transform_slot = slot
         self.props[obj.name] = prop
+        self.spawned_at = time.time()
         self._save_spawned()
         return prop
 
@@ -2531,13 +2535,6 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
                    if isinstance(u.id, bpy.types.Object) and u.is_updated_geometry}
         lk = _link
         if lk:
-            if lk.meshes:
-                if any(isinstance(u.id, (bpy.types.Material, bpy.types.Image, bpy.types.NodeTree))
-                       for u in depsgraph.updates):
-                    lk.mesh_changed()
-                else:
-                    lk.mesh_changed(rebuild, {u.id.original.name for u in depsgraph.updates
-                                              if isinstance(u.id, bpy.types.Mesh)})
             lk.sync_puppets(depsgraph)
         puppets = set(lk.puppets) | set(lk.props) if lk else set()
         if lk and puppets and not lk.stream and any(
@@ -2683,7 +2680,7 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         if lk.puppets or lk.props:
             # Entities move through server ticks: wait before the clock stops; later frames move during the step.
             lk.send_poses(depsgraph, settle=2.0 if first or moved else 0.0)
-        time.sleep(lk.streaming())
+        time.sleep(max(lk.streaming(), lk.spawned_at + PROP_DRAW_IN - time.time()))
         lk.advance(frame_number, render.fps / render.fps_base)
         if (lk.puppets or lk.props) and not first:
             lk.send_poses(depsgraph, settle=1.0)
@@ -3566,12 +3563,28 @@ def register():
     bpy.types.VIEW3D_MT_view.append(_view_menu)
     for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
         handlers.append(_render_finished)
+    bpy.app.handlers.depsgraph_update_post.append(_mark_mesh_edits)
 
 
 @atexit.register
 def _quit():
     if _link:
         _link.stop()
+
+
+@bpy.app.handlers.persistent
+def _mark_mesh_edits(_scene, depsgraph):
+    # Here, not in view_update: an F12 render with no game viewport open must still see the edit.
+    lk = _link
+    if not (lk and lk.meshes):
+        return
+    updates = depsgraph.updates
+    if any(isinstance(u.id, (bpy.types.Material, bpy.types.Image, bpy.types.NodeTree)) for u in updates):
+        lk.mesh_changed()
+        return
+    geometry = {u.id.original.name for u in updates if isinstance(u.id, bpy.types.Object) and u.is_updated_geometry}
+    if geometry:
+        lk.mesh_changed(geometry, {u.id.original.name for u in updates if isinstance(u.id, bpy.types.Mesh)})
 
 
 @bpy.app.handlers.persistent
@@ -3585,6 +3598,8 @@ def unregister():
     for handlers in (bpy.app.handlers.render_complete, bpy.app.handlers.render_cancel):
         if _render_finished in handlers:
             handlers.remove(_render_finished)
+    if _mark_mesh_edits in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_mark_mesh_edits)
     if _link:
         _link.stop()
         _link = None
