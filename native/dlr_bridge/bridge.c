@@ -885,6 +885,88 @@ static void update_time(int talking) {
     gTime.game_time = game_time(&now) ? (float)now : -1.0f;
 }
 
+// Load a resource the map's manifest doesn't list, without a map load: the engine's own just-in-time path
+// (engine2 calls it with the name "JustInTimeManifest" when status is 0). IResourceSystem (ResourceSystem013)
+// slots of resourcesystem 6864: 41 BlockingLoadResourceByNameIntoJustInTimeManifest(name, debug name), 51 status by
+// name (0 not in the system, 3 resident). The name is engine2's resource name, filled by its RESOURCE_NAME routine.
+#define RS_JIT_SLOT 41
+#define RS_STATUS_SLOT 51
+static const u8 kJitPrologue[16] = {0x40, 0x53, 0x55, 0x57, 0x48, 0x81, 0xec, 0x80,
+                                    0x00, 0x00, 0x00, 0x48, 0x8b, 0x01, 0x49, 0x8b};
+struct ResourceName {
+    i32 length;     // CBufferString
+    u32 allocated;  // bit 30: the text is inline, bit 31: may move to the heap
+    char text[200];
+    u64 hash[2];
+};
+_Static_assert(sizeof(struct ResourceName) == 0xe0, "engine2 resource name layout");
+typedef uptr(__fastcall *JitLoadFn)(void *, struct ResourceName *, const char *);
+typedef i32(__fastcall *ResourceStatusFn)(void *, struct ResourceName *);
+typedef u8(__fastcall *ResourceNameFn)(struct ResourceName *, const char *);
+typedef void(__fastcall *PurgeFn)(struct ResourceName *, int);
+static volatile u32 gJitRequest;
+static char gJitPath[256];
+static struct {
+    char magic[4];  // "DLRJ"
+    u32 done, available;
+    i32 before, after;
+    u32 pad;
+    u64 handle;
+} gJit = {{'D', 'L', 'R', 'J'}};
+
+static void jit_load(void) {
+    static void *system;
+    static JitLoadFn load;
+    static ResourceStatusFn status;
+    static PurgeFn purge;
+    static ResourceNameFn set_name;
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        HANDLE rs = GetModuleHandleW(L"resourcesystem.dll"), tier0 = GetModuleHandleW(L"tier0.dll");
+        HANDLE engine = GetModuleHandleW(L"engine2.dll");
+        set_name = engine ? (ResourceNameFn)SIGNATURE((uptr)engine, RESOURCE_NAME) : 0;
+        Factory factory = rs ? (Factory)GetProcAddress(rs, "CreateInterface") : 0;
+        uptr table = 0, fn_load = 0, fn_status;
+        system = factory ? factory("ResourceSystem013", 0) : 0;
+        purge = tier0 ? (PurgeFn)GetProcAddress(tier0, "?Purge@CBufferString@@QEAAXH@Z") : 0;
+        if (system && purge && set_name && safe_read((uptr)system, &table, 8) && safe_read(table + RS_JIT_SLOT * 8, &fn_load, 8) &&
+            safe_read(table + RS_STATUS_SLOT * 8, &fn_status, 8) &&
+            bytes_equal((const u8 *)fn_load, kJitPrologue, sizeof(kJitPrologue))) {
+            load = (JitLoadFn)fn_load;
+            status = (ResourceStatusFn)fn_status;
+        } else {
+            char note[128] = "jit load: resource system slots differ (game update?) ";
+            u64 n = slen(note);
+            uptr values[3] = {(uptr)system, system ? table - (uptr)rs : 0, system ? fn_load - (uptr)rs : 0};
+            for (int v = 0; v < 3 && n < sizeof(note) - 18; v++, note[n++] = ' ')
+                for (int shift = 36; shift >= 0; shift -= 4)
+                    note[n++] = "0123456789abcdef"[(values[v] >> shift) & 15];
+            note[n - 1] = 0;
+            log_line(note);
+        }
+        gJit.available = load != 0;
+    }
+    u32 request = gJitRequest;
+    if (request == gJit.done)
+        return;
+    gJit.handle = 0;
+    gJit.before = gJit.after = -1;
+    if (load) {
+        static struct ResourceName name;
+        memset(&name, 0, sizeof(name));
+        name.allocated = 0xc0000000u | sizeof(name.text);
+        int query = gJitPath[0] == '?';  // status only
+        set_name(&name, gJitPath + query);
+        gJit.before = status(system, &name);
+        gJit.handle = gJit.before == 3 || query ? gJit.before == 3 : load(system, &name, "JustInTimeManifest");
+        gJit.after = status(system, &name);
+        purge(&name, 0);
+        log_line(gJitPath);
+    }
+    gJit.done = request;
+}
+
 static void __fastcall setup_hook(void *self, uptr opaque) {
     uptr caller = (uptr)__builtin_return_address(0);
     gOriginal(self, opaque);
@@ -901,6 +983,7 @@ static void __fastcall setup_hook(void *self, uptr opaque) {
     i64 time_now;
     QueryPerformanceCounter(&time_now);
     update_time(time_now - gLastPacket <= RELEASE_AFTER * gFrequency);
+    jit_load();
     if (time_now - gLastPacket <= RELEASE_AFTER * gFrequency)
         place_transforms();
 
@@ -1106,6 +1189,17 @@ static DWORD WINAPI net_thread(void *arg) {
             }
             depth_status();
             sendto(s, (const char *)&gDepthStatus, sizeof(gDepthStatus), 0, &from, from_len);
+            continue;
+        }
+        if (n == 264 && bytes_equal(packet, (const u8 *)"DLRJ", 4)) {
+            // request u32 (a new value = load once), resource path[256] -> gJit after the main thread ran it
+            u32 request = *(const u32 *)(packet + 4);
+            if (request != gJitRequest && request != gJit.done) {
+                memcpy(gJitPath, packet + 8, 255);
+                gJitPath[255] = 0;
+                __atomic_store_n(&gJitRequest, request, __ATOMIC_RELEASE);
+            }
+            sendto(s, (const char *)&gJit, sizeof(gJit), 0, &from, from_len);
             continue;
         }
         if (n == 68 && bytes_equal(packet, (const u8 *)"DLRL", 4)) {

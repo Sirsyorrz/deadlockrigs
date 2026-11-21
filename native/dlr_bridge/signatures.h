@@ -50,3 +50,8 @@ static const u8 kSigADD_RESOURCE[] = {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 
 static const u8 kSigADD_RESOURCEMask[] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0};
 #define SIG_ADD_RESOURCE_DELTA 0
 #define SIG_ADD_RESOURCE_KIND 0
+
+static const u8 kSigRESOURCE_NAME[] = {0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x30, 0x8b, 0x41, 0x04, 0x48, 0x8d, 0x79, 0x08, 0x48, 0x8b, 0xd9, 0xa9, 0xff, 0xff, 0xff, 0x3f};
+static const u8 kSigRESOURCE_NAMEMask[] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+#define SIG_RESOURCE_NAME_DELTA 0
+#define SIG_RESOURCE_NAME_KIND 0

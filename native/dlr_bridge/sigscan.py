@@ -17,7 +17,7 @@ import pefile
 
 GAME = os.path.expanduser('~/.local/share/Steam/steamapps/common/Deadlock/game')
 MODULES = {'client': f'{GAME}/citadel/bin/win64/client.dll', 'tier0': f'{GAME}/bin/win64/tier0.dll',
-           'server': f'{GAME}/citadel/bin/win64/server.dll'}
+           'server': f'{GAME}/citadel/bin/win64/server.dll', 'engine2': f'{GAME}/bin/win64/engine2.dll'}
 
 # name, module, kind, rva (client 6864 / tier0 of the same date)
 #   func: signature at the address; ret: the return address of the call just before it; ref: a global, found
@@ -37,6 +37,9 @@ TARGETS = [
     # with Modlock's patterns, data/game_signatures.txtpb "game-rules.manifest-builder" / "game-rules.add-resource")
     ('MANIFEST', 'server', 'func', 0x9f2960),
     ('ADD_RESOURCE', 'server', 'func', 0x1f4bbf0),
+    # Fills a resource name (CBufferString with a 200-byte inline buffer, then two hashes at +0xd0/+0xd8) from a path:
+    # what IResourceSystem's by-name calls take (engine2 builds one before its just-in-time load)
+    ('RESOURCE_NAME', 'engine2', 'func', 0x3eb740),
 ]
 MIN_LEN, MAX_LEN, MARGIN = 16, 96, 8
 
