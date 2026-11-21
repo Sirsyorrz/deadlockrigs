@@ -38,6 +38,7 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Euler, Matrix, Quaternion, Vector
 
 from . import gamelaunch, gamemodel
+from .riglight import MAP_COLLECTION_KEYS, MAP_OBJECT_KEYS
 
 UNIT = 0.0254
 GAME_FROM_BLENDER = Matrix.Diagonal((1 / UNIT, 1 / UNIT, 1 / UNIT, 1)) @ Matrix.Rotation(math.pi / 2, 4, 'Z')
@@ -91,7 +92,7 @@ PROP_SETTLE = 0.15
 CONSOLE_NUDGES = 8  # server ticks a paused game gets for a console move or removal (a puppet's took ~7)
 PROP_KEY = 'dlr_game_model'  # object property: the game model the game draws at that object
 LIGHT_KEY = 'dlr_game_light'  # Object.dlr_game_light: the game draws a light at this Blender light
-MESH_KEY = 'dlr_game_mesh'  # Object.dlr_game_mesh: the game draws this object's mesh (exported as a model)
+MESH_KEY = 'dlr_game_mesh'  # Object.dlr_game_mesh (on by default): the game draws this object's mesh as a model
 MESH_TYPES = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}
 # A changed mesh is exported again once it has been still this long: an edit or a drag would otherwise make a model
 # (and a new entity) per step.
@@ -539,15 +540,51 @@ def game_model_path(text):
     return path if path.startswith('models/') else 'models/' + path
 
 
-def wants_game_mesh(obj):
-    return obj is not None and obj.type in MESH_TYPES and getattr(obj, MESH_KEY, False)
+def map_part_objects(scene):
+    """Objects of a built map, a cropped copy of it or its NPCs (riglight.other_objects' rule)."""
+    found = set()
+    for c in scene.collection.children_recursive:
+        if any(k in c for k in MAP_COLLECTION_KEYS):
+            found.update(o.name for o in c.all_objects)
+    return found
+
+
+def _in_map_collection(obj):
+    scene = bpy.context.scene
+    parents = {}
+    for c in [scene.collection, *scene.collection.children_recursive]:
+        for child in c.children:
+            parents.setdefault(child.name, []).append(c)
+    stack, seen = list(obj.users_collection), set()
+    while stack:
+        c = stack.pop()
+        if c.name in seen:
+            continue
+        seen.add(c.name)
+        if any(k in c for k in MAP_COLLECTION_KEYS):
+            return True
+        stack.extend(parents.get(c.name, ()))
+    return False
+
+
+def wants_game_mesh(obj, map_parts=None):
+    """Meshes are in the game by default, except what the game draws already (the built map with its masks, crops
+    and NPCs, Deadlock rigs' bodies, objects that name a game model). map_parts: map_part_objects(), when known."""
+    if obj is None or obj.type not in MESH_TYPES or not getattr(obj, MESH_KEY, True):
+        return False
+    if obj.get(PROP_KEY) or _is_map_object(obj) or any(k in obj for k in MAP_OBJECT_KEYS):
+        return False
+    if obj.name in map_parts if map_parts is not None else _in_map_collection(obj):
+        return False
+    arm = puppet_armature(obj)
+    return arm is None or not arm.get('dlrig')
 
 
 def prop_model(obj):
     """The game model an object stands for (its dlr_game_model property, or its exported mesh), or ''."""
-    if wants_game_mesh(obj):
-        mesh = _link.meshes.get(obj.name) if _link else None
-        return mesh.model if mesh else ''
+    mesh = _link.meshes.get(obj.name) if _link and obj is not None else None
+    if mesh is not None:
+        return mesh.model
     value = obj.get(PROP_KEY) if obj is not None else None
     return game_model_path(value) if isinstance(value, str) else ''
 
@@ -1575,7 +1612,7 @@ class Link:
 
     def _bind_prop(self, obj, model, entity):
         prop = GameProp(obj.name, entity, model)
-        prop.unscaled = wants_game_mesh(obj)
+        prop.unscaled = obj.name in self.meshes
         slot = self._free_slot()
         if slot is not None:
             bound = self.poses.pose(slot, model, entity=entity, active=False)
@@ -1862,9 +1899,11 @@ class Link:
         now = time.time()
         game = None
         wanted = set()
+        map_parts = map_part_objects(depsgraph.scene)
         for obj in depsgraph.objects:
             orig = obj.original
-            if not wants_game_mesh(orig) or orig.name in self.declined or not orig.visible_get():
+            if (obj.type not in MESH_TYPES or orig.name in self.declined or not orig.visible_get()
+                    or not wants_game_mesh(orig, map_parts)):
                 continue
             wanted.add(orig.name)
             scale = tuple(round(s, 5) for s in obj.matrix_world.to_scale())
@@ -3479,9 +3518,10 @@ def register():
         name='Light in Game',
         description='The game draws this spot or point light too (Deadlock Game render engine)')
     bpy.types.Object.dlr_game_mesh = bpy.props.BoolProperty(
-        name='Mesh in Game', update=_mesh_toggled,
+        name='Mesh in Game', default=True, update=_mesh_toggled,
         description='The game draws this object\'s mesh too, with its materials\' base colour or image (Deadlock '
-                    'Game render engine). No collision; edits are sent once the mesh has been still for a moment')
+                    'Game render engine). On for every mesh; untick to keep one out. No collision; edits are sent '
+                    'once the mesh has been still for a moment')
     for panel in _shared_panels():
         panel.COMPAT_ENGINES.add(ENGINE_ID)
     if not bpy.app.timers.is_registered(_poll_frames):

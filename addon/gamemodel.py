@@ -26,6 +26,10 @@ MAX_TEXTURE = 2048
 _templates = {}
 
 
+class NoFaces(ValueError):
+    pass
+
+
 def overlay_root(game):
     return os.path.join(game, *gamelaunch.OVERLAY.split('/'))
 
@@ -70,7 +74,7 @@ def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
         tris = mesh.loop_triangles
         nt = len(tris)
         if not nt:
-            raise ValueError(f'{obj.name} has no faces')
+            raise NoFaces(f'{obj.name} has no faces')
         loops = np.empty(nt * 3, np.int32)
         tris.foreach_get('loops', loops)
         mat = np.empty(nt, np.int32)
@@ -249,10 +253,13 @@ def model_name(obj):
 
 def export(obj, depsgraph, game, scale=(1.0, 1.0, 1.0)):
     """Write an object's mesh as a game model into the session overlay; its path ('models/dlrigs/custom/x.vmdl').
-    scale is baked in (an entity only scales uniformly). The path changes with the mesh or its materials: the game
+    '' when it has no faces. scale is baked in (an entity only scales uniformly). The path changes with the mesh or its materials: the game
     keeps a loaded model, so an edit needs a new name."""
     root = overlay_root(game)
-    pos, normals, uv, indices, mat = mesh_arrays(obj, depsgraph, scale)
+    try:
+        pos, normals, uv, indices, mat = mesh_arrays(obj, depsgraph, scale)
+    except NoFaces:
+        return ''
     tri_indices = indices.reshape(-1, 3)
     order = np.argsort(mat, kind='stable')
     tri_indices, mat = tri_indices[order], mat[order]

@@ -29,9 +29,9 @@ to a normal game launch.
   one to take it out, **Pose in Game** to bring it back.
 - **Add Game Model**: opens a thumbnail browser of the game's models. The chosen model is placed at the 3D cursor as
   an empty; move, rotate and scale the empty and the game follows.
-- **Mesh in Game**: on a selected mesh (or curve, text...) the game draws your own mesh too, with each material's
-  base colour or base colour image, lit by the map. Edits are sent once the mesh has been still for a
-  moment. No collision, roughness, normal maps or rigs yet.
+- **Meshes**: your own meshes (and curves, text...) are in the game too, with each material's base colour or base
+  colour image, lit by the map. Untick **Mesh in Game** on one to keep it out. Edits are sent once the mesh has been
+  still for a moment. No collision, roughness, normal maps or rigging yet.
 - **Add Game Light**: a spot light the game draws, shadows included. Any spot or point light with **Light in Game**
   on works the same way.
 - **Map**: choose what of the map is in the game (Patrons, Walkers, Guardians, Mid-boss, troopers, neutral camps and
