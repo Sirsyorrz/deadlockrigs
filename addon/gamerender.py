@@ -1376,7 +1376,14 @@ class Link:
         if not self.poses:
             raise ConnectionError('game models need the bridge (start the session with --bridge)')
         model = prop_model(obj)
-        entity = self._spawn(model, override=True)
+        try:
+            entity = self._spawn(model, override=True)
+        except TimeoutError:
+            if model in _session_precache():
+                raise
+            # ent_create of a model the map didn't load makes an ERROR model under another model name.
+            raise TimeoutError(f'{os.path.basename(model)} isn\'t loaded in this game session: quit Deadlock and '
+                               'start it again from Blender (it loads every game model in the file)') from None
         prop = GameProp(obj.name, entity, model)
         slot = self._free_slot()
         if slot is not None:
