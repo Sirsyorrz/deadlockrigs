@@ -37,6 +37,8 @@ Weights 0..1 per vertex, by name in `"regions"` or inline:
 (`keys.open_mouth`) run first, so the keys see the split lips and the bag (material `mouth_bag`). Lock the bag's upper
 side with the upper lip and give its lower side to the jaw (`{"bag": ...}` regions in the jaw harmonic).
 `"bag_floor"` (z, mm) flattens the bag's bottom there, for one that would come out under the chin (Lady Geist's).
+`"bag_wrap"`: the bag opens straight up and down behind the lips instead of straight back, for teeth that reach the
+lip line and would end up outside it (Paige's).
 `"lip_mid"` (a point, mm): the lip line's middle, when another crease (under the lower lip, Lash's) is as wide and
 deep and the split would take it instead.
 `"lip_path"` (points, mm): the split line itself, corner to middle to corner, for a low-poly crease the search
