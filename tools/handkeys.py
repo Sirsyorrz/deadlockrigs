@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import facegeo as fg  # noqa: E402
 from facebones import FaceBones  # noqa: E402
 from hero import ROOT, Hero  # noqa: E402
+import keys as keys_mod  # noqa: E402
 from keys import (fib_sphere, harmonic, open_mouth, ray_cast, rot_axis, smoothstep, sphere_fit,  # noqa: E402
                   tongue_profile, tongue_tube)
 
@@ -37,8 +38,10 @@ def mirror_axis(v):
 
 
 class Face:
-    def __init__(self, h: fg.Head, spec: dict, arrays: dict):
+    def __init__(self, h: fg.Head, spec: dict, arrays: dict, painted=None):
         self.h, self.spec = h, spec
+        # heroes.json face "painted_eye" (keys.PAINTED's layout): the eye is texture on the skin, no eyeball
+        self.painted = painted
         self.p = h.wco
         self.nw = len(self.p)
         self.origin = h.bones['head']
@@ -74,6 +77,11 @@ class Face:
         for s in self.ball:
             q = h.wco[self.ball[s]]
             self.eye_c[s] = sphere_fit(q)
+        if painted is not None:
+            for s in 'LR':
+                if s not in self.ball:
+                    x = painted[2] * (1 if s == 'L' else -1)
+                    self.eye_c[s] = (self.surface(x, painted[3]), painted[1])
         self.cache = {}
         self.lids = {}
         a = h.wgraph.copy()
@@ -81,11 +89,68 @@ class Face:
         self.adj = a
         self.deg = np.asarray(a.sum(1)).ravel()
 
+    def surface(self, x, z):
+        """The front skin's point at (x, z), seen from the front."""
+        tris = self.h.wco[self.h.weld[self.h.tris]]
+        tris = tris[self.skin[self.h.weld[self.h.tris[:, 0]]]]
+        y0 = self.p[:, 1].min() - 0.05
+        t, _ = ray_cast(np.array([[x, y0, z]]), np.array([[0.0, 1.0, 0.0]]), tris, 1.0)
+        if np.isfinite(t[0]):
+            return np.array([x, y0 + t[0], z])
+        # a ray along a shared edge of a coarse head misses both triangles: the front-most skin vertex nearby
+        i = np.where(self.skin)[0]
+        d = np.hypot(self.p[i, 0] - x, self.p[i, 2] - z)
+        near = i[d < max(0.004, np.sort(d)[2])]
+        return np.array([x, self.p[near, 1].min(), z])
+
+    # painted eyes: an ellipse in the front view (half width, half height, tilted outer corner up)
+
+    def is_painted(self, s):
+        return self.painted is not None and s not in self.ball
+
+    def painted_axes(self, s):
+        """The patch's long axis (pointing out from the nose) and the one across it (up), in (x, z)."""
+        t, sx = np.radians(self.painted[4]), 1 if s == 'L' else -1
+        return np.array((sx * np.cos(t), np.sin(t))), np.array((-sx * np.sin(t), np.cos(t)))
+
+    def painted_uv(self, s, pts):
+        c = self.eye_c[s][0]
+        along, across = self.painted_axes(s)
+        d = np.c_[pts[:, 0] - c[0], pts[:, 2] - c[2]]
+        return d @ along, d @ across
+
+    def painted_rho(self, s):
+        """Per welded vertex: radius in the patch's ellipse, 1 on its edge; inf off the front skin."""
+        u, v = self.painted_uv(s, self.p)
+        rho = np.hypot(u / self.painted[0], v / self.painted[1])
+        on = self.skin & (self.p[:, 1] < self.eye_c[s][0][1] + 0.025)
+        return np.where(on, rho, np.inf)
+
+    def painted_slide(self, s, du, dv):
+        """Gaze on a painted eye: the inside of the patch (the iris) slides du, dv of its half axes, the rim staying
+        put so the white bunches up on the side it looks to (keys.painted_look). It slides in the patch's own plane:
+        snapping each point back onto the skin (keys.py) drags the creases sculpted into the eye (Haze's) out of
+        shape."""
+        along, across = self.painted_axes(s)
+        rho = self.painted_rho(s)
+        w = 1 - smoothstep(0.3, 1.0, rho)
+        q = self.p[rho < 1.2]
+        n = np.linalg.svd(q - q.mean(0))[2][2]
+        sx, sz = du * self.painted[0] * along + dv * self.painted[1] * across
+        step = np.array([sx, -(n[0] * sx + n[2] * sz) / n[1], sz])
+        return np.outer(w, step)
+
     # lids: each eye's opening, measured by casting rays out of the eyeball past the skin
 
     def lid_frame(self, s):
         """(gaze g, lid axis m, up u): +deg about m closes the upper lid (u turns towards g)."""
         if s in self.lids:
+            return self.lids[s]
+        if self.is_painted(s):
+            along, across = self.painted_axes(s)
+            m = np.array([along[0], 0, along[1]]) * (1 if s == 'L' else -1)
+            u = np.array([across[0], 0, across[1]])
+            self.lids[s] = (np.array([0, -1.0, 0]), m, u, None)
             return self.lids[s]
         cfg = self.spec.get('eyes', {})
         g = np.array(cfg.get('gaze', [0, -1, 0]), float)
@@ -123,6 +188,15 @@ class Face:
 
     def lid_point(self, s, t, part, out=1.0):
         """A point on a lid's margin: t 0 at the inner corner, 1 at the outer; out scales the eye's radius."""
+        if self.is_painted(s):
+            # the patch's rim, on the skin
+            ru, rv = self.painted[:2]
+            a = (2 * t - 1) * ru * out
+            b = rv * out * np.sqrt(max(0.0, 1 - (a / (ru * out)) ** 2)) * (1 if part == 'upper' else -1)
+            along, across = self.painted_axes(s)
+            c = self.eye_c[s][0]
+            xz = c[[0, 2]] + a * along + b * across
+            return self.surface(xz[0], xz[1])
         g, m, u, (mids, hi, lo) = self.lid_frame(s)
         c, r = self.eye_c[s]
         # t runs from the corner nearer the middle of the face
@@ -134,7 +208,11 @@ class Face:
         return c + d * r * out
 
     def lid_angles(self, s, pts):
-        """Per point: (angle along the lid axis, elevation over the opening's middle line, gap there), degrees."""
+        """Per point: (angle along the lid axis, elevation over the opening's middle line, gap there), degrees.
+        Painted eyes: mm along and across the patch, and its height."""
+        if self.is_painted(s):
+            a, b = self.painted_uv(s, pts)
+            return a * 1000, b * 1000, np.full(len(pts), 2000 * self.painted[1])
         g, m, u, (mids, hi, lo) = self.lid_frame(s)
         c = self.eye_c[s][0]
         d = pts - c
@@ -301,6 +379,8 @@ class Face:
         elif kind == 'lid':
             # turn about the eye by a fraction of the gap where each vertex sits: close 1 shuts the opening
             s_ = sub(o['eye'], side)
+            if self.is_painted(s_):
+                return self.painted_lid(s_, o, w, t)
             _, m, _, _ = self.lid_frame(s_)
             _, _, gap = self.lid_angles(s_, p)
             if o.get('cards') == 'skin':
@@ -323,6 +403,19 @@ class Face:
         elif kind == 'push':
             out = self.h.wnrm * (w * o['by'] / 1000 * t)[:, None]
         return out
+
+    def painted_lid(self, s, o, w, t):
+        """A painted lid squashes the patch across: upper close f takes its top edge f of the way to the bottom edge
+        (the bottom edge stays), lower the other way, so upper 0.8 + lower 0.2 meet at 0.6 of the half height
+        below the middle as keys.py's blink. Fades out over 1..1.9 patch radii."""
+        rv = self.painted[1]
+        _, v = self.painted_uv(s, self.p)
+        _, across = self.painted_axes(s)
+        fade = 1 - smoothstep(1.0, 1.9, self.painted_rho(s))
+        f = o['close']
+        dv = -f * (v + rv) if o.get('part', 'upper') == 'upper' else f * (rv - v)
+        dv = dv * fade * w * t
+        return np.outer(dv, [across[0], 0, across[1]])
 
     def key(self, name, t=1.0):
         """A key's offsets: the spec's ops for it (sided keys come from their {S} template)."""
@@ -353,9 +446,19 @@ class Face:
 
     # eyes
 
+    def painted_look(self, s, cfg):
+        """The four look keys by painted_slide (slide: the iris's travel in half axes, out and up)."""
+        ou, uv = cfg.get('slide', [0.38, 0.3])
+        looks = {'eyeLookUp': (0, uv), 'eyeLookDown': (0, -uv), 'eyeLookOut': (ou, 0), 'eyeLookIn': (-ou, 0)}
+        # linear, so no in-betweens or corrections for looks in two directions
+        return {key + SIDES[s]: self.painted_slide(s, du, dv) for key, (du, dv) in looks.items()}
+
     def eye_keys(self, cfg):
         out = {}
         for s, sx in (('L', 1), ('R', -1)):
+            if self.is_painted(s):
+                out.update(self.painted_look(s, cfg))
+                continue
             if s not in self.ball:
                 continue
             ball = self.ball[s]
@@ -580,12 +683,17 @@ def main():
     hero = Hero(args[0])
     spec = json.load(open(os.path.join(ROOT, 'faces', hero.slug + '.json')))
     arrays = dict(np.load(os.path.join(hero.data, 'head.npz')))
+    painted = None
+    if 'painted_eye' in arrays:
+        painted = tuple(float(v) for v in arrays.pop('painted_eye'))
+        # open_mouth's probe Rig places the eyes from it too
+        keys_mod.PAINTED = painted
     n_head, cut, split, bag_mesh = len(arrays['co']), None, None, None
     if spec.get('open'):
         arrays, h, n_head, cut, split, bag_mesh = open_mouth(arrays)
     else:
         h = fg.from_arrays(arrays)
-    face = Face(h, spec, arrays)
+    face = Face(h, spec, arrays, painted)
     keys = face.build()
     if 'tongue' in spec:
         for k in ('tongueOut', 'tongueOut_mid'):

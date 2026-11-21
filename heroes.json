@@ -485,6 +485,7 @@
    ]
   },
   "face": {
+   "builder": "handkeys.py",
    "part": "Head",
    "mesh": "Head",
    "eyes": [
@@ -494,10 +495,10 @@
    ],
    "painted_eye": [
     0.021,
-    0.0085,
+    0.0095,
     0.04,
     2.14,
-    12
+    15
    ]
   },
   "extra_models": {

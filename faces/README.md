@@ -73,6 +73,12 @@ otherwise poke through. Keep `r` away from the lips, or an inner lip can glue to
 angles `up`, `down`, `in`, `out` (degrees), `iris` (default true). The eye looks, their in-betweens and the iris keys
 come from these.
 
+Painted eyes (heroes.json face `painted_eye`: half width, half height, centre x, z, tilt; no eyeball, Haze's): `eye_{s}`
+is the patch centre on the skin, a `lid` move squashes the patch across (upper `close` f takes its top edge f of the way
+to the bottom edge, fading out over 1..1.9 patch radii, so give it a region over the whole eye, not one half), a `lid`
+region splits it along its long axis (soft in mm), lid points sit on its rim. `eyes` `slide` [out, up]: the look keys
+slide the patch's inside that share of its half axes in its own plane (no in-betweens).
+
 ## controls
 
 `"controls"`: where the face controls sit. `landmarks` (`lid`, `lidlow`, `brow`, `cheek`, `corner`, `lipup`,
