@@ -1564,7 +1564,7 @@ def cut_lips(d, h, rig):
     return out, {'src': src, 'off': off, 'rewire': np.array(rewire)}
 
 
-def add_bag(d, h, rig, rings=10):
+def add_bag(d, h, rig, rings=10, split=False):
     """A mouth bag for a head whose mouth is a hole into nothing (Venator's): a tube from the lips' open edge back
     past the teeth, widening to hold them, closed at the back. Returns d with the bag appended (its first ring sits
     on the edge, so it welds to the lips) and the bag's (co, tris)."""
@@ -1585,6 +1585,11 @@ def add_bag(d, h, rig, rings=10):
     chain = np.zeros(n, bool)
     chain[a:b + 1] = True
     upper_chain = v[chain, 2].mean() > v[~chain, 2].mean()
+    if split:
+        # a split line's two copies sit within a fraction of a mm and cross over (Haze's): tell them by the skin
+        # each joins
+        nb_z = [p[np.setdiff1d(h.wgraph[loop[m]].indices, loop), 2].mean() for m in (chain, ~chain)]
+        upper_chain = nb_z[0] > nb_z[1]
     is_up = chain if upper_chain else ~chain
     is_up[[i_l, i_r]] = True
     phi = np.arccos(np.clip(v[:, 0] / hx, -1, 1)) * np.where(is_up, 1, -1)
@@ -1662,7 +1667,7 @@ def open_mouth(arrays):
         probe = Rig(h)
         print('split the lips along', len(split['src']), 'vertices')
     if probe.hole is not None:
-        arrays, bco, btris = add_bag(arrays, h, probe)
+        arrays, bco, btris = add_bag(arrays, h, probe, split=split is not None)
         arrays.pop('lip_loop', None)
         # build.py skins the bag like the nearest head vertex
         _, near = cKDTree(arrays['co'][:n_head]).query(bco)
