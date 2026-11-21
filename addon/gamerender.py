@@ -1336,6 +1336,12 @@ class Link:
             bridge.close()
         else:
             self.poses = PoseChannel()
+        if self.bridge is None and not self.launched:
+            # The console camera rewrites the user's own camera and HUD settings: only in a game Blender started.
+            self.con.close()
+            self.con = None
+            raise ConnectionRefusedError('this Deadlock was not started from Blender (no camera bridge): quit it '
+                                         'and use Start Deadlock')
         self._save_cvars()
         # Read the game's own camera before taking it over (Connect jumps the viewports there).
         self.start_camera = self.game_camera()
@@ -2807,6 +2813,9 @@ class DLR_OT_game_connect(bpy.types.Operator):
     def execute(self, context):
         try:
             connect(context, self.port)
+        except ConnectionRefusedError as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
         except OSError as error:
             self.report({'ERROR'}, f'no game console on port {self.port}: {error}')
             return {'CANCELLED'}
