@@ -181,10 +181,14 @@ def find_s2v(given=None, cache=None):
     os.makedirs(target, exist_ok=True)
     zpath = target + '.zip'
     try:
-        urllib.request.urlretrieve(url, zpath)
+        download(url, zpath)
     except OSError as e:
-        if shutil.which('dotnet'):
-            return build_s2v(target)
+        log(f'download failed: {e}')
+        if shutil.which('dotnet') and shutil.which('git'):
+            try:
+                return build_s2v(target)
+            except (OSError, subprocess.CalledProcessError) as be:
+                log(f'source build failed: {be}')
         raise BuildError(f'could not download Source2Viewer-CLI from {url} ({e}). Check your internet connection and '
                          'try again') from e
     with zipfile.ZipFile(zpath) as z:
@@ -194,6 +198,23 @@ def find_s2v(given=None, cache=None):
         raise BuildError(f'{url} has no {exe("Source2Viewer-CLI")}')
     os.chmod(cli, os.stat(cli).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return cli
+
+
+def download(url, path):
+    try:
+        urllib.request.urlretrieve(url, path)
+        return
+    except OSError as e:
+        first = e
+    # Python's own TLS can fail where the OS stack works (missing certs, proxies, antivirus interception);
+    # Windows 10+ ships curl.exe on Schannel
+    curl = shutil.which('curl')
+    if not curl:
+        raise first
+    log(f'urllib download failed ({first}), retrying with curl')
+    r = subprocess.run([curl, '-fsSL', '--retry', '2', '-o', path, url], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise OSError(f'{first}; curl: {r.stderr.strip() or r.returncode}')
 
 
 def build_s2v(target):
