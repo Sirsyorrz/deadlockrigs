@@ -18,7 +18,6 @@ FOLDER = 'models/dlrigs/custom'
 # A static prop and a pbr material without masks or translucency: the shapes our files copy.
 MODEL_TEMPLATE = 'models/props/barrel_03.vmdl_c'
 MATERIAL_TEMPLATE = 'models/props_city/materials/bench01a.vmat_c'
-NORMAL_TEXTURE = 'materials/default/default_normal_tga_7be61377.vtex'
 VERTEX_SIZE = 20  # position f32 x3, uv f16 x2, packed normal
 VERTEX_FIELDS = {('POSITION', 0): 0, ('TEXCOORD', 0): 12, ('NORMAL', 0): 16}
 MAX_TEXTURE = 2048
@@ -130,36 +129,104 @@ def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
     return pos[first], normals[first], uv[first], index.reshape(-1).astype(np.uint32), mat
 
 
+def _image_floats(image):
+    """An image's stored values as (h, w, 4) float32, top row first."""
+    w, h = image.size
+    px = np.empty(w * h * 4, np.float32)
+    image.pixels.foreach_get(px)
+    return px.reshape(h, w, 4)[::-1]
+
+
+def _shrink(px):
+    while max(px.shape[:2]) > MAX_TEXTURE:
+        px = s2res._half_size(px)
+    return px
+
+
+def _linked_image(socket):
+    """(image, channel) feeding a socket straight from an Image Texture, or through a Separate Color node;
+    channel None means the colour (or the alpha for an Alpha output)."""
+    if not socket.is_linked:
+        return None
+    link = socket.links[0]
+    node, output = link.from_node, link.from_socket.name
+    channel = None
+    if node.type == 'SEPARATE_COLOR' and node.inputs[0].is_linked:
+        channel = {'Red': 0, 'Green': 1, 'Blue': 2}.get(output)
+        output = node.inputs[0].links[0].from_socket.name
+        node = node.inputs[0].links[0].from_node
+    if node.type != 'TEX_IMAGE' or node.image is None or node.image.size[0] <= 0:
+        return None
+    if channel is None and output == 'Alpha':
+        channel = 3
+    return node.image, channel
+
+
+def _resample(px, shape):
+    """Nearest-neighbour resize of an (h, w, ...) array to (h2, w2)."""
+    h, w = px.shape[:2]
+    rows = (np.arange(shape[0]) * h // shape[0]).clip(0, h - 1)
+    cols = (np.arange(shape[1]) * w // shape[1]).clip(0, w - 1)
+    return px[rows][:, cols]
+
+
+def _scalar_map(bsdf, name):
+    """A Principled input as one value, or as an (h, w) float image when an image drives it."""
+    socket = bsdf.inputs[name]
+    linked = _linked_image(socket)
+    if linked is None:
+        return float(socket.default_value)
+    image, channel = linked
+    px = _shrink(_image_floats(image))
+    if channel is None:
+        return px[..., :3].mean(axis=2)
+    return px[..., channel]
+
+
 def material_inputs(material):
-    """(base colour RGBA image as (h, w, 4) uint8 top row first, or None; base colour RGBA 0..1 in sRGB)."""
-    color = (0.8, 0.8, 0.8, 1.0)
+    """(base colour RGBA 0..1 sRGB as an (h, w, 4) float image or a 4-tuple, roughness, metalness), each map a
+    float or an (h, w) float image."""
     if material is None:
-        return None, color
+        return (0.8, 0.8, 0.8, 1.0), 0.5, 0.0
     color = tuple(material.diffuse_color)
     tree = material.node_tree if material.use_nodes else None
     bsdf = next((n for n in tree.nodes if n.type == 'BSDF_PRINCIPLED'), None) if tree else None
     if bsdf is None:
-        return None, tuple(_linear_to_srgb(np.array(color[:3]))) + (color[3],)
-    socket = bsdf.inputs['Base Color']
-    if socket.is_linked:
-        node = socket.links[0].from_node
-        if node.type == 'TEX_IMAGE' and node.image is not None and node.image.size[0] > 0:
-            return image_pixels(node.image), color
-    color = tuple(socket.default_value)
-    return None, tuple(_linear_to_srgb(np.array(color[:3]))) + (color[3],)
+        return (tuple(_linear_to_srgb(np.array(color[:3]))) + (color[3],), float(material.roughness),
+                float(material.metallic))
+    roughness, metalness = _scalar_map(bsdf, 'Roughness'), _scalar_map(bsdf, 'Metallic')
+    linked = _linked_image(bsdf.inputs['Base Color'])
+    if linked is not None and linked[1] is None:
+        image = linked[0]
+        px = _shrink(_image_floats(image))
+        if image.is_float:
+            px[..., :3] = _linear_to_srgb(px[..., :3])
+        return px, roughness, metalness
+    value = tuple(bsdf.inputs['Base Color'].default_value)
+    return tuple(_linear_to_srgb(np.array(value[:3]))) + (value[3],), roughness, metalness
 
 
-def image_pixels(image):
-    w, h = image.size
-    px = np.empty(w * h * 4, np.float32)
-    image.pixels.foreach_get(px)
-    px = px.reshape(h, w, 4)[::-1]
-    if image.is_float:
-        px[..., :3] = _linear_to_srgb(px[..., :3])
-    px = np.clip(np.round(px * 255), 0, 255).astype(np.uint8)
-    while max(px.shape[:2]) > MAX_TEXTURE:
-        px = np.clip(np.round(s2res._half_size(px.astype(np.float32))), 0, 255).astype(np.uint8)
-    return px
+def _to_bytes(px):
+    return np.clip(np.round(np.asarray(px, np.float32) * 255), 0, 255).astype(np.uint8)
+
+
+def material_textures(material):
+    """(colour RGBA, normal-roughness RGBA) uint8 images for pbr.vfx. Opaque pbr reads metalness from the colour
+    alpha; g_tNormalRoughness is a hemi-octahedral normal in RG (flat: 0.5 0.5) and roughness in B."""
+    color, roughness, metalness = material_inputs(material)
+    maps = [m for m in (color, metalness) if not isinstance(m, (tuple, float))]
+    shape = max((m.shape[:2] for m in maps), key=lambda s: s[0] * s[1], default=(4, 4))
+    if isinstance(color, tuple):
+        rgba = np.empty(shape + (4,), np.float32)
+        rgba[:] = color
+    else:
+        rgba = _resample(color, shape).copy()
+    rgba[..., 3] = metalness if isinstance(metalness, float) else _resample(metalness, shape)
+    rough_shape = (4, 4) if isinstance(roughness, float) else roughness.shape[:2]
+    normal = np.empty(rough_shape + (4,), np.float32)
+    normal[:] = (0.5, 0.5, 0.5, 1.0)
+    normal[..., 2] = roughness
+    return _to_bytes(rgba), _to_bytes(normal)
 
 
 def _short_hash(*parts):
@@ -181,18 +248,15 @@ def _write(root, path, data):
 
 
 def write_material(game, root, material):
-    """A material's vmat_c (and texture), named for its contents: 'models/dlrigs/custom/mat_<hash>.vmat'."""
-    pixels, color = material_inputs(material)
-    if pixels is None:
-        pixels = np.empty((4, 4, 4), np.uint8)
-        pixels[:] = np.clip(np.round(np.array(color) * 255), 0, 255).astype(np.uint8)
-    tex_path = f'{FOLDER}/tex_{_short_hash(pixels.shape, pixels.tobytes())}.vtex'
-    _write(root, tex_path, s2res.texture(pixels))
+    """A material's vmat_c (and textures), named for its contents: 'models/dlrigs/custom/mat_<hash>.vmat'."""
+    textures = {}
+    for param, pixels in zip(('g_tColor', 'g_tNormalRoughness'), material_textures(material)):
+        textures[param] = f'{FOLDER}/tex_{_short_hash(pixels.shape, pixels.tobytes())}.vtex'
+        _write(root, textures[param], s2res.texture(pixels))
 
     res = _template(game, MATERIAL_TEMPLATE)
     res.drop('RED2')
     doc = res.kv3('DATA')
-    textures = {'g_tColor': tex_path, 'g_tNormalRoughness': NORMAL_TEXTURE}
     for param in doc.root['m_textureParams'].v:
         name = param['m_name'].v
         if name in textures:
