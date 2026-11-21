@@ -525,6 +525,8 @@ class Face:
                 out[k] *= keep[:, None]
         if 'stick' in self.spec.get('bag', {}):
             self.stick(out, self.spec['bag'])
+        for cfg in self.spec.get('ride', []):
+            self.ride(out, cfg)
         for k, v in self.eye_keys(self.spec.get('eyes', {})).items():
             out[k] = out[k] + v if k in out else v
         return {k: v[self.h.weld].astype(np.float32) for k, v in out.items()}
@@ -565,6 +567,22 @@ class Face:
         src = face[j]
         for k in out:
             out[k][inner] += (out[k][src] - out[k][inner]) * w[:, None]
+
+    def ride(self, out, cfg):
+        """Loose pieces in cfg's region take the mean offsets of the nearest skin in "on", smoothed over the piece:
+        a solid moustache with the upper lip inside it (Lash's) must move with that lip or the lip pokes through."""
+        w = self.region(cfg['region'])
+        idx = np.where((w > 0) & ~self.skin & ~self.balls)[0]
+        on = np.where((self.region(cfg['on']) > 0.5) & self.skin)[0]
+        _, j = cKDTree(self.p[on]).query(self.p[idx], k=cfg.get('near', 8))
+        src = on[j]
+        a = self.adj[idx][:, idx]
+        deg = np.maximum(np.asarray(a.sum(1)).ravel(), 1)[:, None]
+        for k in out:
+            v = out[k][src].mean(1)
+            for _ in range(cfg.get('smooth', 4)):
+                v = 0.5 * v + 0.5 * (a @ v) / deg
+            out[k][idx] += (v - out[k][idx]) * w[idx, None]
 
     def bag_cap(self, at):
         """The skin's hole nearest at (mm): a bag open at the back shows the body behind it through an open mouth.
@@ -688,6 +706,8 @@ def main():
         painted = tuple(float(v) for v in arrays.pop('painted_eye'))
         # open_mouth's probe Rig places the eyes from it too
         keys_mod.PAINTED = painted
+    if 'lip_mid' in spec:
+        keys_mod.LIP_MID = arrays['bone_head'] + np.asarray(spec['lip_mid'], float) / 1000
     n_head, cut, split, bag_mesh = len(arrays['co']), None, None, None
     if spec.get('open'):
         floor = spec.get('bag_floor')

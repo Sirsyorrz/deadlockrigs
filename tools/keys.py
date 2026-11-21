@@ -44,6 +44,8 @@ MIRROR = False
 # heroes.json face "card_follow": points (m) on loose pieces that ride the skin whatever their size (Lash's
 # moustache is wider than the size that tells lashes and brows from hair)
 CARD_FOLLOW = np.zeros((0, 3))
+# handkeys "lip_mid": a point (m) on the lip line's middle, when a crease under the lower lip is as wide (Lash's)
+LIP_MID = None
 
 
 def smoothstep(a, b, x):
@@ -530,6 +532,8 @@ class Rig:
         wg = coo_matrix((np.sqrt((d * d).sum(1))[keep] * cost[keep], (g.row[keep], g.col[keep])),
                         shape=(self.nw, self.nw)).tocsr()
         mids = np.where(band & (np.abs(p[:, 0]) < 0.003 * s) & (val < -150))[0]
+        if LIP_MID is not None:
+            mids = mids[np.abs(p[mids, 2] - LIP_MID[2]) < 0.004 * s]
         mids = mids[np.argsort(p[mids, 2])]
         # one candidate per crease: the deepest of each run of middle vertices close in height
         runs = np.split(mids, np.where(np.diff(p[mids, 2]) > 0.004 * s)[0] + 1) if len(mids) else []
@@ -1588,9 +1592,12 @@ def add_bag(d, h, rig, rings=10, split=False, floor=None):
     upper_chain = v[chain, 2].mean() > v[~chain, 2].mean()
     if split:
         # a split line's two copies sit within a fraction of a mm and cross over (Haze's): tell them by the skin
-        # each joins
-        nb_z = [p[np.setdiff1d(h.wgraph[loop[m]].indices, loop), 2].mean() for m in (chain, ~chain)]
-        upper_chain = nb_z[0] > nb_z[1]
+        # each joins, above or below each edge vertex (the plain heights of the skin past Lash's corners outweighed
+        # his short lips)
+        def rise(m):
+            return np.mean([p[nb, 2].mean() - p[i, 2] for i in loop[m]
+                            if len(nb := np.setdiff1d(h.wgraph[i].indices, loop))])
+        upper_chain = rise(chain) > rise(~chain)
     is_up = chain if upper_chain else ~chain
     is_up[[i_l, i_r]] = True
     phi = np.arccos(np.clip(v[:, 0] / hx, -1, 1)) * np.where(is_up, 1, -1)

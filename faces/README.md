@@ -37,6 +37,8 @@ Weights 0..1 per vertex, by name in `"regions"` or inline:
 (`keys.open_mouth`) run first, so the keys see the split lips and the bag (material `mouth_bag`). Lock the bag's upper
 side with the upper lip and give its lower side to the jaw (`{"bag": ...}` regions in the jaw harmonic).
 `"bag_floor"` (z, mm) flattens the bag's bottom there, for one that would come out under the chin (Lady Geist's).
+`"lip_mid"` (a point, mm): the lip line's middle, when another crease (under the lower lip, Lash's) is as wide and
+deep and the split would take it instead.
 
 ## keys
 
@@ -52,6 +54,10 @@ side with the upper lip and give its lower side to the jaw (`{"bag": ...}` regio
 | `{"key": name, "times": k}` | another key's moves |
 
 Extra fields: `"mask": region` multiplies one move, `"sym": true` repeats it mirrored in a key without `{S}`.
+
+`"ride"`: `[{"region": r, "on": skin region, "near": 8, "smooth": 4}]`: loose pieces in `r` (a solid moustache
+with the upper lip inside it, Lash's) take the mean offsets of the nearest `near` skin vertices in `on` in every key,
+smoothed over the piece, so the lip never pokes through.
 
 `"mid"`: keys that get an in-between (`<key>_mid`), so turns stay round half way. `"hold"`: a region no key moves.
 
