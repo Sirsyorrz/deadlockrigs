@@ -617,6 +617,7 @@ LIGHT_WATTS = 4 * math.pi ** 2 * (UNIT * LIGHT_REFERENCE) ** 2
 # A spot becomes a barn light whose eye is the lamp: the opening sits this far in front of it.
 BARN_NEAR = 4.0
 LIGHT_NAME = 'dlrlight'  # targetname prefix of the lights Blender spawns
+PROP_NAME = 'dlrprop'  # and of its game models (Add Game Model)
 GAME_LIGHT_TYPES = ('SPOT', 'POINT')
 
 
@@ -684,8 +685,10 @@ class LateSpawn:
     """A spawn that timed out: a prop (what = model, extra = entities of it before) or a light (what = targetname,
     extra = its (classname, keys))."""
 
-    def __init__(self, kind, what, extra):
-        self.kind, self.what, self.extra = kind, what, extra
+    def __init__(self, kind, what, extra, name=None):
+        self.kind, self.what, self.extra, self.name = kind, what, extra, name
+        self.entity = None  # a prop the server has made but the client hasn't got (yet)
+        self.origin = None  # where it was last sent to, meanwhile
         self.until = time.time() + 60.0
         self.next_check = 0.0
 
@@ -1153,6 +1156,7 @@ class Link:
         self.props = {}  # object name -> GameProp
         self.lights = {}  # object name -> GameLight
         self.light_count = 0
+        self.prop_count = 0
         self.declined = set()  # rigs the user took out of the game, or that failed to spawn
         self.late = {}  # object name -> LateSpawn: timed out, but the game may still create it
         self.render_frame = None  # last frame rendered while the game clock is frozen
@@ -1398,12 +1402,21 @@ class Link:
         used = {p.slot for p in self.puppets.values()} | {p.slot for p in self.props.values()} | {PAWN_SLOT}
         return next((i for i in range(POSE_SLOTS) if i not in used), None)
 
-    def _spawn(self, model, override=False, late_for=None):
+    def _spawn(self, model, override=False, late_for=None, origin=None):
         """Create a prop_dynamic of the model; its entity index. override: prop_dynamic_override, which also takes
-        models whose prop data says physics only (breakables: prop_dynamic_create silently makes nothing)."""
+        models whose prop data says physics only (breakables: prop_dynamic_create silently makes nothing), named
+        so the server can be asked for it, at origin (game units)."""
         before = self.poses.entities(model)
+        name = None
         if override:
-            self.con.send(f'ent_create prop_dynamic_override {{"model" "{model}"}}')
+            self.prop_count += 1
+            name = f'{PROP_NAME}{os.getpid()}_{self.prop_count}'
+            keys = f'"model" "{model}" "targetname" "{name}"'
+            if origin is not None:
+                # Without an origin it lands where the hero looks, which can be far outside the area the game
+                # sends to the client: the bridge (client side) then never sees it.
+                keys += ' "origin" "{:.2f} {:.2f} {:.2f}"'.format(*origin)
+            self.con.send(f'ent_create prop_dynamic_override {{{keys}}}')
         else:
             # prop_dynamic_create prepends models/ itself.
             self.con.send(f'prop_dynamic_create {model[len("models/"):] if model.startswith("models/") else model}')
@@ -1416,7 +1429,14 @@ class Link:
             if new:
                 return max(new)
         if late_for:
-            self.late[late_for] = LateSpawn('prop', model, before)
+            late = self.late[late_for] = LateSpawn('prop', model, before, name)
+            late.entity = next((e for e, _, n in self.find_entities(name, 0.4) if n == name), None) if name else None
+            if late.entity is not None:
+                # The server made it, the client hasn't got it: it is outside the area the game draws (far from
+                # the camera). It is taken on whenever it arrives.
+                late.until = float('inf')
+                raise TimeoutError(f'{os.path.basename(model)} is too far from the game camera to show yet: it '
+                                   'appears once the camera gets near it')
             raise TimeoutError(f'the game is slow to create {os.path.basename(model)}: it is added if it shows up '
                                'in the next minute')
         raise TimeoutError(f'the game did not spawn {model}')
@@ -1426,7 +1446,8 @@ class Link:
         if not self.poses:
             raise ConnectionError('game models need the bridge (start the session with --bridge)')
         model = prop_model(obj)
-        return self._bind_prop(obj, model, self._spawn(model, override=True, late_for=obj.name))
+        origin = GAME_FROM_BLENDER @ obj.matrix_world.translation
+        return self._bind_prop(obj, model, self._spawn(model, override=True, late_for=obj.name, origin=origin))
 
     def _bind_prop(self, obj, model, entity):
         prop = GameProp(obj.name, entity, model)
@@ -1545,9 +1566,28 @@ class Link:
             if now < late.next_check:
                 continue
             late.next_check = now + 1.0
-            if late.kind == 'prop':
+            obj = bpy.data.objects.get(obj_name)
+            if late.entity is not None and not (keep and obj is not None and obj.visible_get()
+                                                and prop_model(obj) == late.what):
+                self.con.send(f'ent_remove {late.entity}')
+                del self.late[obj_name]
+                continue
+            if late.kind == 'prop' and late.entity is not None:
+                present = late.entity in self.poses.entities(late.what)
+                new = [late.entity] if present else []
+                origin = tuple(round(v, 1) for v in GAME_FROM_BLENDER @ obj.matrix_world.translation)
+                if not present and origin != late.origin:
+                    # keep it at the empty, so it is there when the camera gets near the empty
+                    self.con.send('ent_setpos {} {} {} {}'.format(late.entity, *origin))
+                    late.origin = origin
+            elif late.kind == 'prop':
                 known = {p.entity for p in self.props.values()}
                 new = sorted(self.poses.entities(late.what) - late.extra - known)
+                if not new and late.name:
+                    late.entity = next((e for e, _, n in self.find_entities(late.name, 0.3) if n == late.name),
+                                       None)
+                    if late.entity is not None:
+                        late.until = float('inf')
             else:
                 with self.con.lines_lock:
                     self.con.lines.clear()
@@ -1557,7 +1597,6 @@ class Link:
                     del self.late[obj_name]
                 continue
             del self.late[obj_name]
-            obj = bpy.data.objects.get(obj_name)
             taken = (keep and obj is not None and obj.visible_get() and obj_name not in self.props
                      and obj_name not in self.lights)
             if taken and late.kind == 'prop' and prop_model(obj) == late.what:
@@ -1589,9 +1628,12 @@ class Link:
             self.settle_console()
 
     def remove_leftover_lights(self):
-        """Lights an earlier Blender spawned and never removed."""
+        """Lights and game models an earlier Blender spawned and never removed."""
         for entity, classname, name in self.find_entities(LIGHT_NAME):
             if name.startswith(LIGHT_NAME) and classname.startswith('light_'):
+                self.con.send(f'ent_remove {entity}')
+        for entity, classname, name in self.find_entities(PROP_NAME):
+            if name.startswith(PROP_NAME) and classname.startswith('prop_dynamic'):
                 self.con.send(f'ent_remove {entity}')
 
     def _sync_lights(self, depsgraph):
