@@ -18,6 +18,7 @@ Everything is under **Deadlock Rigs > Game** in the 3D View sidebar.
 3. **Quit Deadlock** when you're done. Your game settings are put back.
 
 **Connect to Deadlock** joins a session that's already running (it has to have been started with `-insecure`).
+Disconnect puts back the camera and HUD settings the add-on changed.
 
 The game runs as a local offline session with `-insecure`: no matchmaking and no VAC. The add-on refuses to connect
 to a normal game launch.

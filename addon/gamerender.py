@@ -139,6 +139,10 @@ SETUP = (
     'citadel_camera_override_z_worst_case_offset 0', 'citadel_hud_visible 0', 'cl_hud_telemetry_frametime_show 0',
     'cl_hud_telemetry_ping_show 0', 'engine_no_focus_sleep 0', 'jpeg_quality 95',
 )
+# The cvars SETUP_COMMON, SETUP and View.commands() change; Link.stop() puts back the values they had before.
+RESTORED_CVARS = tuple(dict.fromkeys(c.split()[0] for c in SETUP_COMMON + SETUP + ('citadel_camera_override_fov',)
+                                     if c.split()[0] != 'noclip'))
+SAVED_CVARS = os.path.expanduser('~/.cache/dlr-game/cvars.json')
 
 _HEADER = struct.Struct('!4sHIH')
 
@@ -231,6 +235,23 @@ class Netcon:
                         return line.strip()
             time.sleep(0.02)
         return None
+
+    def read_cvars(self, names, timeout=2.0):
+        """{name: value} of the cvars the game answers for ('name = value'); unknown or hidden ones are left out."""
+        with self.lines_lock:
+            self.lines.clear()
+        self.send(*names)
+        values = {}
+        end = time.time() + timeout
+        while time.time() < end and len(values) < len(names):
+            time.sleep(0.05)
+            with self.lines_lock:
+                lines = list(self.lines)
+            for line in lines:
+                name, sep, value = line.strip().partition(' = ')
+                if sep and name in names:
+                    values[name] = value.strip()
+        return values
 
     def send(self, *commands):
         self.ready.wait(5.0)
@@ -1204,6 +1225,7 @@ class Link:
         self.pawn_at = None
         self.pawn_moved = 0.0
         self.world_off = set(WORLD_DEFAULT_OFF)  # WORLD_GROUPS kept out of the game
+        self.saved_cvars = {}  # RESTORED_CVARS as they were before the link changed them
         self.world_removed = set()  # static groups removed since the map loaded
         self.purged_at = 0.0
 
@@ -1314,6 +1336,7 @@ class Link:
             bridge.close()
         else:
             self.poses = PoseChannel()
+        self._save_cvars()
         # Read the game's own camera before taking it over (Connect jumps the viewports there).
         self.start_camera = self.game_camera()
         self.con.send(*SETUP_COMMON)
@@ -1378,6 +1401,40 @@ class Link:
         if self.frames_error and game_dir():
             gamelaunch.log('bridge log:\n' + gamelaunch.bridge_log(game_dir()).strip())
 
+    def _save_cvars(self):
+        """Note the game's values of the cvars the link changes, so stop() can put them back. Several are archived:
+        the game saves them on exit, and the user's next normal launch would keep the console camera and hidden
+        HUD. Values noted by a link that never got to stop (Blender closed or crashed) are kept: they are the
+        user's, the game's current ones may be the link's own."""
+        try:
+            with open(SAVED_CVARS, encoding='utf-8') as f:
+                saved = json.load(f)
+            if saved:
+                self.saved_cvars = saved
+                return
+        except (OSError, ValueError):
+            pass
+        self.saved_cvars = self.con.read_cvars(RESTORED_CVARS)
+        try:
+            os.makedirs(os.path.dirname(SAVED_CVARS), exist_ok=True)
+            with open(SAVED_CVARS, 'w', encoding='utf-8') as f:
+                json.dump(self.saved_cvars, f)
+        except OSError as error:
+            gamelaunch.log(f'cvars not saved: {error}')
+
+    def restore_cvars(self):
+        if not (self.saved_cvars and self.con and self.con.alive):
+            return
+        try:
+            self.con.send(*(f'{name} {value}' for name, value in self.saved_cvars.items()))
+        except OSError:
+            return
+        self.saved_cvars = {}
+        try:
+            os.remove(SAVED_CVARS)
+        except OSError:
+            pass
+
     def stop(self):
         self.running = False
         self.event.set()
@@ -1396,8 +1453,10 @@ class Link:
         self.paused = False
         self.thawed_until = 0.0
         self.release_time()
-        if had_puppets and self.con:
-            # Closing the console right after sending can drop the ent_remove commands.
+        restoring = bool(self.saved_cvars)
+        self.restore_cvars()
+        if (had_puppets or restoring) and self.con:
+            # Closing the console right after sending can drop the commands.
             time.sleep(0.3)
         if self.poses:
             self.poses.close()
@@ -2868,6 +2927,7 @@ class DLR_OT_game_quit(bpy.types.Operator):
             con = _link.con
             _link.running = False
             _link.remove_spawned()
+            _link.restore_cvars()
         if _session:
             _session.stop(con)
             _session = None
