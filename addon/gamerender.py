@@ -715,8 +715,6 @@ class GameProp:
 # is ignored when spawned).
 LIGHT_REFERENCE = 100.0
 LIGHT_WATTS = 4 * math.pi ** 2 * (UNIT * LIGHT_REFERENCE) ** 2
-# A spot becomes a barn light whose eye is the lamp: the opening sits this far in front of it.
-BARN_NEAR = 4.0
 LIGHT_NAME = 'dlrlight'  # targetname prefix of the lights Blender spawns
 PROP_NAME = 'dlrprop'  # and of its game models (Add Game Model)
 GAME_LIGHT_TYPES = ('SPOT', 'POINT')
@@ -734,12 +732,12 @@ def _linear_to_srgb(c):
 
 def light_entity(obj):
     """The game light an evaluated Blender light stands for: (classname, keyvalues, origin, angles), positions in
-    game units, angles (pitch, yaw, roll). Spots become light_barn, points light_omni2 (an omni2's outer_angle
-    defaults to a narrow cone, hence the 180s). Range: the light's custom distance, else where it has faded to 1/256
-    of its brightness at 100 units."""
+    game units, angles (pitch, yaw, roll). Both become light_omni2, a spot's with its cone (an omni2's outer_angle
+    is a half angle and defaults to a narrow cone, hence a point's 180s). Range: the light's custom distance, else
+    where it has faded to 1/256 of its brightness at 100 units."""
     light = obj.data
     world = GAME_FROM_BLENDER @ obj.matrix_world
-    eye, rot, scale = world.decompose()
+    eye, rot, _ = world.decompose()
     rot = rot.to_matrix()
     # Blender lamps shine down their -Z with +Y up; game lights along +X with +Z up (+Y to the left).
     forward, left, up = rot @ Vector((0, 0, -1)), rot @ Vector((-1, 0, 0)), rot @ Vector((0, 1, 0))
@@ -762,22 +760,18 @@ def light_entity(obj):
             'directlight': '2', 'enabled': '1', 'castshadows': '1' if light.use_shadow else '0',
             'range': f'{reach:.1f}', 'skirt': '0.1', 'fog': '0'}
     radius = light.shadow_soft_size / UNIT
+    size = max(2 * radius, 0.1)
+    keys['size_params'] = f'{size:.2f} {size:.2f} {size:.2f}'
     if light.type == 'SPOT':
-        tan_half = math.tan(min(light.spot_size, math.radians(170)) / 2)
-        depth = max(abs(scale.z), 1e-6)
-        half = [BARN_NEAR * tan_half * abs(s) / depth for s in (scale.x, scale.y)]
-        # the barn's intensity is given at the opening, a spot's at the lamp
-        linear /= ((BARN_NEAR + LIGHT_REFERENCE) / LIGHT_REFERENCE) ** 2
-        soft = min(max(light.spot_blend, 0.0), 1.0)
-        keys.update({'size_params': f'{half[0]:.4f} {half[1]:.4f} {1 / BARN_NEAR:.4f}', 'shape': '1',
-                     'soft_x': f'{soft:.3f}', 'soft_y': f'{soft:.3f}', 'skirt_near': '0',
-                     'luminaire_size': f'{max(2 * radius, 0.1):.2f}', 'luminaire_shape': '1'})
-        classname, origin = 'light_barn', eye + BARN_NEAR * forward
+        # An omni2 cone, not a light_barn: a spawned barn that casts shadows and isn't aimed straight down lights
+        # only the half of its pool behind the lamp (castshadows 2 keeps the pool but loses object shadows).
+        # The cone is round: a spot scaled unevenly stays round in the game.
+        half = math.degrees(min(light.spot_size, math.pi)) / 2
+        keys.update({'outer_angle': f'{half:.3f}',
+                     'inner_angle': f'{half * (1 - min(max(light.spot_blend, 0.0), 1.0)):.3f}'})
     else:
-        size = max(2 * radius, 0.1)
-        keys.update({'size_params': f'{size:.2f} {size:.2f} {size:.2f}', 'inner_angle': '180',
-                     'outer_angle': '180'})
-        classname, origin = 'light_omni2', eye
+        keys.update({'inner_angle': '180', 'outer_angle': '180'})
+    classname, origin = 'light_omni2', eye
     keys['brightness'] = f'{math.log2(linear):.4f}'
     return classname, keys, tuple(origin), angles
 
