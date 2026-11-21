@@ -918,6 +918,8 @@ class BridgeFrames:
         self.pinged = 0.0
         self.last_status = None
         self.lock = threading.Lock()
+        # The render job, the viewport timer and the stream thread all read the map: _open and stop close it.
+        self.map_lock = threading.RLock()
 
     def request(self, want=True):
         packet = struct.pack('<4sI256s', b'DLRF', 1 if want else 0, self.game_path.encode()[:255])
@@ -946,12 +948,14 @@ class BridgeFrames:
             raise OSError('the bridge frame file is unreadable')
 
     def _open(self):
-        if self.map is not None:
-            self.map.close()
-        with open(self.path, 'rb') as f:
-            self.map_size = os.fstat(f.fileno()).st_size
-            self.map = mmap.mmap(f.fileno(), self.map_size, prot=mmap.PROT_READ) if sys.platform != 'win32' \
-                else mmap.mmap(f.fileno(), self.map_size, access=mmap.ACCESS_READ)
+        with self.map_lock:
+            if self.map is not None:
+                self.map.close()
+                self.map = None
+            with open(self.path, 'rb') as f:
+                self.map_size = os.fstat(f.fileno()).st_size
+                self.map = mmap.mmap(f.fileno(), self.map_size, prot=mmap.PROT_READ) \
+                    if sys.platform != 'win32' else mmap.mmap(f.fileno(), self.map_size, access=mmap.ACCESS_READ)
 
     def _header(self):
         if struct.unpack_from('<Q', self.map, 16)[0] != self.map_size:
@@ -967,7 +971,10 @@ class BridgeFrames:
             return 0
         if time.time() - self.pinged > 1.0:
             self._ping()
-        _, header = self._header()
+        with self.map_lock:
+            if self.map is None:
+                return 0
+            _, header = self._header()
         return header[8] if header else 0
 
     def _ping(self):
@@ -978,6 +985,12 @@ class BridgeFrames:
 
     def read(self):
         """(bytes, arrival time, present number, tags) of the newest frame, copied out consistently."""
+        with self.map_lock:
+            if self.map is None:
+                return None
+            return self._read()
+
+    def _read(self):
         for _ in range(50):
             index, header = self._header()
             if header is None:
@@ -1062,9 +1075,10 @@ class BridgeFrames:
             self.request(False)
         except OSError:
             pass
-        if self.map is not None:
-            self.map.close()
-            self.map = None
+        with self.map_lock:
+            if self.map is not None:
+                self.map.close()
+                self.map = None
         self.sock.close()
 
 
@@ -1854,8 +1868,11 @@ class Link:
             if isinstance(self.stream, BridgeFrames):
                 # Tagged frames: the first one drawn with this camera (and the clock step, while rendering).
                 step = self.time_step if self.render_frame is not None else None
-                latest = self.stream.wait(
-                    lambda tags: tags['camera'] == seq and (step is None or tags['step'] >= step))
+                stream = self.stream
+                shows_view = lambda tags: tags['camera'] == seq and (step is None or tags['step'] >= step)
+                latest = stream.wait(shows_view)
+                if latest is None and isinstance(self.stream, BridgeFrames) and self.stream is not stream:
+                    latest = self.stream.wait(shows_view)  # the stream thread restarted the frames meanwhile
                 if latest is None:
                     raise TimeoutError('no game frame with the camera from the bridge')
             else:
