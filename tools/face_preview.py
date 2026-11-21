@@ -56,6 +56,22 @@ for name in keys.files:
 for name in filter(None, os.environ.get('HIDE', '').split(',')):
     bpy.data.objects[name].hide_render = True
 
+# HIDE_REGION=hair: drops the head's own faces in that region of data/regions.npz (Mina's hair is in the head mesh)
+if os.environ.get('HIDE_REGION'):
+    import bmesh
+    r = np.load(os.path.join(hero.data, 'regions.npz'))[os.environ['HIDE_REGION']][:n]
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.verts.ensure_lookup_table()
+    gone = np.zeros(n, bool)
+    gone[:len(r)] = r > 0.5
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if gone[v.index]], context='VERTS')
+    bm.to_mesh(me)
+    bm.free()
+    kept = np.where(~gone)[0]
+else:
+    kept = np.arange(n)
+
 scene.render.engine = 'BLENDER_EEVEE'
 scene.render.resolution_x = scene.render.resolution_y = 640
 scene.view_settings.view_transform = 'Standard'
@@ -110,6 +126,7 @@ def shoot(label, values=None, region=None):
         w = np.zeros(n, np.float32)
         r = regs[region][:n]
         w[:len(r)] = r
+        w = w[kept]
         c = np.stack([w, 0.15 + 0 * w, 1 - w, np.ones_like(w)], 1).astype(np.float32)
         col.data.foreach_set('color', c.ravel())
         me.update()

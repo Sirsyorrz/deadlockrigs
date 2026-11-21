@@ -130,3 +130,6 @@ corner (0) to the outer (1). A tweak's control rides the skin through the shape 
 
 `face_preview.py` reads `data/keys.npz` straight onto the base build, so after the first `pipeline.py <hero> data
 base` only `handkeys.py` needs rerunning between tries.
+
+Hair that is part of the head mesh (Mina's) can't be hidden by object: give it a region (`"hair"`, no key uses it) and
+render with `HIDE_REGION=hair`, which drops those faces from the preview (needs `--regions`).
