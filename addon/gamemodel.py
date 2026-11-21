@@ -49,9 +49,7 @@ def _linear_to_srgb(c):
     return np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
 
 
-def pack_normals(n):
-    """CompressedTangentFrame: octahedral normal in 10+10 bits, tangent angle 0, bitangent sign +."""
-    n = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+def _octahedral_bits(n):
     p = n / np.maximum(np.abs(n).sum(axis=1, keepdims=True), 1e-12)
     x, y, z = p[:, 0].copy(), p[:, 1].copy(), p[:, 2]
     neg = z < 0
@@ -60,7 +58,31 @@ def pack_normals(n):
     x, y = np.where(neg, fx, x), np.where(neg, fy, y)
     xb = np.clip(np.round((x * 0.5 + 0.5) * 1023), 0, 1023).astype(np.uint32)
     yb = np.clip(np.round((y * 0.5 + 0.5) * 1023), 0, 1023).astype(np.uint32)
-    return (yb << 22) | (xb << 12) | np.uint32(1)
+    return xb, yb
+
+
+def _unoctahedral(xb, yb):
+    """The normal the game decodes from the bits (DecompressNormalTangent2)."""
+    x, y = xb / 1023.0 * 2 - 1, yb / 1023.0 * 2 - 1
+    z = 1 - np.abs(x) - np.abs(y)
+    fold = np.clip(-z, 0, 1)
+    x = x + np.where(x >= 0, -fold, fold)
+    y = y + np.where(y >= 0, -fold, fold)
+    n = np.stack([x, y, z], axis=1)
+    return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+
+
+def pack_frames(n, t, w):
+    """CompressedTangentFrame: octahedral normal in 10+10 bits, then the tangent as an 11-bit turn about the normal
+    from a reference the game derives from the normal alone, then the bitangent sign (bitangent = w cross(n, t))."""
+    xb, yb = _octahedral_bits(n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12))
+    m = _unoctahedral(xb, yb)
+    s = np.where(m[:, 2] >= 0, 1.0, -1.0)
+    rcp = 1 / (s + m[:, 2])
+    ref = np.stack([1 - s * m[:, 0] ** 2 * rcp, -s * m[:, 0] * m[:, 1] * rcp, -s * m[:, 0]], axis=1)
+    angle = np.arctan2(np.einsum('ij,ij->i', t, np.cross(m, ref)), np.einsum('ij,ij->i', t, ref))
+    tb = np.round(np.mod(angle, 2 * np.pi) / (2 * np.pi) * 2047).astype(np.uint32) % 2047
+    return (yb << 22) | (xb << 12) | (tb << 1) | (w > 0).astype(np.uint32)
 
 
 def _two_sided(obj, nslots):
@@ -70,40 +92,83 @@ def _two_sided(obj, nslots):
                      for i in range(nslots)], bool)
 
 
+def _has_ngons(mesh):
+    totals = np.empty(len(mesh.polygons), np.int32)
+    mesh.polygons.foreach_get('loop_total', totals)
+    return bool(np.any(totals > 4))
+
+
+def _ngons_triangulated(mesh):
+    """A copy of the mesh with its ngons cut into triangles (tangents are only computed for tris and quads)."""
+    import bmesh
+    import bpy
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 4])
+        out = bpy.data.meshes.new('dlr_triangulated')
+        bm.to_mesh(out)
+    finally:
+        bm.free()
+    return out
+
+
+def _corner_arrays(mesh):
+    mesh.calc_loop_triangles()
+    tris = mesh.loop_triangles
+    nt = len(tris)
+    loops = np.empty(nt * 3, np.int32)
+    tris.foreach_get('loops', loops)
+    mat = np.empty(nt, np.int32)
+    tris.foreach_get('material_index', mat)
+    nl = len(mesh.loops)
+    edge_of_loop = np.empty(nl, np.int32)
+    mesh.loops.foreach_get('edge_index', edge_of_loop)
+    is_open = bool(np.any(np.bincount(edge_of_loop, minlength=len(mesh.edges)) == 1))
+    vert_of_loop = np.empty(nl, np.int32)
+    mesh.loops.foreach_get('vertex_index', vert_of_loop)
+    co = np.empty(len(mesh.vertices) * 3, np.float32)
+    mesh.vertices.foreach_get('co', co)
+    normals = np.empty(nl * 3, np.float32)
+    mesh.corner_normals.foreach_get('vector', normals)
+    uv = np.zeros((nl, 2), np.float32)
+    tangents = np.zeros((nl, 3), np.float32)
+    bitangents = np.zeros((nl, 3), np.float32)
+    layer = mesh.uv_layers.active
+    if layer is not None and nt:
+        flat = np.empty(nl * 2, np.float32)
+        layer.uv.foreach_get('vector', flat)
+        uv = flat.reshape(-1, 2)
+        mesh.calc_tangents(uvmap=layer.name)
+        mesh.loops.foreach_get('tangent', tangents.reshape(-1))
+        mesh.loops.foreach_get('bitangent', bitangents.reshape(-1))
+        mesh.free_tangents()
+    return (loops, mat, is_open, vert_of_loop, co.reshape(-1, 3), normals.reshape(-1, 3), uv, tangents,
+            bitangents)
+
+
 def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
-    """(positions in game units, normals, uvs, triangles, material index per triangle) of an object's evaluated mesh
-    in its own space with scale applied, axes turned to the game's (x forward), one vertex per distinct corner.
-    A negative scale mirrors it. The game culls back faces: an open mesh (some edge with one face) gets each
-    triangle twice, the copy facing the other way, unless its material has Backface Culling on."""
+    """(positions in game units, packed tangent frames, uvs, triangles, material index per triangle) of an object's
+    evaluated mesh in its own space with scale applied, axes turned to the game's (x forward), one vertex per
+    distinct corner. A negative scale mirrors it. The game culls back faces: an open mesh (some edge with one face)
+    gets each triangle twice, the copy facing the other way, unless its material has Backface Culling on.
+    Tangents (for normal maps) are Blender's, from the active uv map."""
     evaluated = obj.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh()
+    triangulated = None
     try:
-        mesh.calc_loop_triangles()
-        tris = mesh.loop_triangles
-        nt = len(tris)
-        if not nt:
-            raise NoFaces(f'{obj.name} has no faces')
-        loops = np.empty(nt * 3, np.int32)
-        tris.foreach_get('loops', loops)
-        mat = np.empty(nt, np.int32)
-        tris.foreach_get('material_index', mat)
-        edge_of_loop = np.empty(len(mesh.loops), np.int32)
-        mesh.loops.foreach_get('edge_index', edge_of_loop)
-        is_open = bool(np.any(np.bincount(edge_of_loop, minlength=len(mesh.edges)) == 1))
-        vert_of_loop = np.empty(len(mesh.loops), np.int32)
-        mesh.loops.foreach_get('vertex_index', vert_of_loop)
-        co = np.empty(len(mesh.vertices) * 3, np.float32)
-        mesh.vertices.foreach_get('co', co)
-        normals = np.empty(len(mesh.loops) * 3, np.float32)
-        mesh.corner_normals.foreach_get('vector', normals)
-        uv = np.zeros((len(mesh.loops), 2), np.float32)
-        layer = mesh.uv_layers.active
-        if layer is not None:
-            flat = np.empty(len(mesh.loops) * 2, np.float32)
-            layer.uv.foreach_get('vector', flat)
-            uv = flat.reshape(-1, 2)
+        if mesh.uv_layers.active is not None and _has_ngons(mesh):
+            triangulated = _ngons_triangulated(mesh)
+        loops, mat, is_open, vert_of_loop, co, normals, uv, tangents, bitangents = _corner_arrays(
+            triangulated or mesh)
     finally:
+        if triangulated is not None:
+            import bpy
+            bpy.data.meshes.remove(triangulated)
         evaluated.to_mesh_clear()
+    nt = len(mat)
+    if not nt:
+        raise NoFaces(f'{obj.name} has no faces')
     scale = np.array(scale, np.float32)
     scale = np.copysign(np.maximum(np.abs(scale), 1e-6), scale)
     if np.prod(scale) < 0:
@@ -115,18 +180,24 @@ def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
         mat = np.concatenate([mat, mat[both[::3]]])
     sign = np.ones(len(loops), np.float32)
     sign[nt * 3:] = -1
-    co = co.reshape(-1, 3)[vert_of_loop[loops]] * scale
-    normals = normals.reshape(-1, 3)[loops] / scale * sign[:, None]
+    co = co[vert_of_loop[loops]] * scale
+    normals = normals[loops] / scale * sign[:, None]
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+    # tangent and bitangent lie along the surface: they scale like positions
+    tangents, bitangents = tangents[loops] * scale, bitangents[loops] * scale
     uv = uv[loops] * [1, -1] + [0, 1]  # the game's v runs down from the top of the image
     # Blender +y is game +x (GAME_FROM_BLENDER turns 90 degrees about z).
     turn = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], np.float32)
     pos = co @ turn.T / UNIT
-    normals = normals @ turn.T
-    # Corners alike in position, normal and uv share a vertex.
-    rows = np.concatenate([np.round(pos, 4), np.round(normals, 4), np.round(uv, 5)], axis=1)
+    normals, tangents, bitangents = normals @ turn.T, tangents @ turn.T, bitangents @ turn.T
+    tangents -= normals * np.einsum('ij,ij->i', tangents, normals)[:, None]
+    # The game's bitangent is w cross(n, t); w picks Blender's, so Blender's tangent-space normals carry over.
+    w = np.where(np.einsum('ij,ij->i', np.cross(normals, tangents), bitangents) < 0, -1.0, 1.0)
+    frames = pack_frames(normals, tangents, w)
+    # Corners alike in position, frame and uv share a vertex.
+    rows = np.concatenate([np.round(pos, 4), frames[:, None].astype(np.float64), np.round(uv, 5)], axis=1)
     _, first, index = np.unique(rows, axis=0, return_index=True, return_inverse=True)
-    return pos[first], normals[first], uv[first], index.reshape(-1).astype(np.uint32), mat
+    return pos[first], frames[first], uv[first], index.reshape(-1).astype(np.uint32), mat
 
 
 def _image_floats(image):
@@ -183,27 +254,46 @@ def _scalar_map(bsdf, name):
     return px[..., channel]
 
 
+def _normal_map(bsdf):
+    """The tangent-space normals (h, w, 3) of a Normal Map node (Tangent Space, strength applied) with an image
+    feeding the Principled Normal, or None."""
+    socket = bsdf.inputs['Normal']
+    if not socket.is_linked:
+        return None
+    node = socket.links[0].from_node
+    if node.type != 'NORMAL_MAP' or node.space != 'TANGENT':
+        return None
+    linked = _linked_image(node.inputs['Color'])
+    if linked is None or linked[1] is not None:
+        return None
+    n = _shrink(_image_floats(linked[0]))[..., :3] * 2 - 1
+    strength = max(float(node.inputs['Strength'].default_value), 0.0)
+    n = n * strength + np.array([0, 0, 1 - strength], np.float32)
+    return n / np.maximum(np.linalg.norm(n, axis=2, keepdims=True), 1e-12)
+
+
 def material_inputs(material):
-    """(base colour RGBA 0..1 sRGB as an (h, w, 4) float image or a 4-tuple, roughness, metalness), each map a
-    float or an (h, w) float image."""
+    """(base colour RGBA 0..1 sRGB as an (h, w, 4) float image or a 4-tuple, roughness, metalness, normal map or
+    None), roughness and metalness a float or an (h, w) float image."""
     if material is None:
-        return (0.8, 0.8, 0.8, 1.0), 0.5, 0.0
+        return (0.8, 0.8, 0.8, 1.0), 0.5, 0.0, None
     color = tuple(material.diffuse_color)
     tree = material.node_tree if material.use_nodes else None
     bsdf = next((n for n in tree.nodes if n.type == 'BSDF_PRINCIPLED'), None) if tree else None
     if bsdf is None:
         return (tuple(_linear_to_srgb(np.array(color[:3]))) + (color[3],), float(material.roughness),
-                float(material.metallic))
+                float(material.metallic), None)
     roughness, metalness = _scalar_map(bsdf, 'Roughness'), _scalar_map(bsdf, 'Metallic')
+    normal = _normal_map(bsdf)
     linked = _linked_image(bsdf.inputs['Base Color'])
     if linked is not None and linked[1] is None:
         image = linked[0]
         px = _shrink(_image_floats(image))
         if image.is_float:
             px[..., :3] = _linear_to_srgb(px[..., :3])
-        return px, roughness, metalness
+        return px, roughness, metalness, normal
     value = tuple(bsdf.inputs['Base Color'].default_value)
-    return tuple(_linear_to_srgb(np.array(value[:3]))) + (value[3],), roughness, metalness
+    return tuple(_linear_to_srgb(np.array(value[:3]))) + (value[3],), roughness, metalness, normal
 
 
 def _to_bytes(px):
@@ -212,8 +302,8 @@ def _to_bytes(px):
 
 def material_textures(material):
     """(colour RGBA, normal-roughness RGBA) uint8 images for pbr.vfx. Opaque pbr reads metalness from the colour
-    alpha; g_tNormalRoughness is a hemi-octahedral normal in RG (flat: 0.5 0.5) and roughness in B."""
-    color, roughness, metalness = material_inputs(material)
+    alpha; g_tNormalRoughness is a hemi-octahedral tangent-space normal in RG and roughness in B."""
+    color, roughness, metalness, normal = material_inputs(material)
     maps = [m for m in (color, metalness) if not isinstance(m, (tuple, float))]
     shape = max((m.shape[:2] for m in maps), key=lambda s: s[0] * s[1], default=(4, 4))
     if isinstance(color, tuple):
@@ -222,11 +312,23 @@ def material_textures(material):
     else:
         rgba = _resample(color, shape).copy()
     rgba[..., 3] = metalness if isinstance(metalness, float) else _resample(metalness, shape)
-    rough_shape = (4, 4) if isinstance(roughness, float) else roughness.shape[:2]
-    normal = np.empty(rough_shape + (4,), np.float32)
-    normal[:] = (0.5, 0.5, 0.5, 1.0)
-    normal[..., 2] = roughness
-    return _to_bytes(rgba), _to_bytes(normal)
+    maps = [m for m in (normal, roughness) if not isinstance(m, (float, type(None)))]
+    shape = max((m.shape[:2] for m in maps), key=lambda s: s[0] * s[1], default=(4, 4))
+    nr = np.empty(shape + (4,), np.float32)
+    nr[:] = (128 / 255, 128 / 255, 0.5, 1.0)
+    if normal is not None:
+        nr[..., :2] = _hemi_octahedral(_resample(normal, shape))
+    nr[..., 2] = roughness if isinstance(roughness, float) else _resample(roughness, shape)
+    return _to_bytes(rgba), _to_bytes(nr)
+
+
+def _hemi_octahedral(n):
+    """RG of tangent-space normals for pbr's DecodeHemiOctahedronNormal, which flips y after decoding and centres
+    on 128/255."""
+    x, y, z = n[..., 0], -n[..., 1], np.maximum(n[..., 2], 0)
+    total = np.maximum(np.abs(x) + np.abs(y) + z, 1e-12)
+    px, py = x / total, y / total
+    return np.stack([(px + py) / 2, (px - py) / 2], axis=-1) + 128 / 255
 
 
 def _short_hash(*parts):
@@ -274,7 +376,7 @@ def _set_int(obj, key, value):
     obj[key] = s2res.integer(value)
 
 
-def model_file(game, model_path, pos, normals, uv, indices, groups):
+def model_file(game, model_path, pos, frames, uv, indices, groups):
     """The vmdl_c bytes of a static, collision-free model. groups: [(material path, first index, index count)]."""
     res = _template(game, MODEL_TEMPLATE)
     res.drop('RED2')
@@ -294,7 +396,7 @@ def model_file(game, model_path, pos, normals, uv, indices, groups):
     vb['m_inputLayoutFields'].v = fields
 
     rows = np.zeros(len(pos), [('pos', '<f4', 3), ('uv', '<f2', 2), ('normal', '<u4')])
-    rows['pos'], rows['uv'], rows['normal'] = pos, uv, pack_normals(normals)
+    rows['pos'], rows['uv'], rows['normal'] = pos, uv, frames
     index_size = 2 if len(pos) <= 0xFFFF else 4
     vblock, iblock = vb['m_nBlockIndex'].v, ib['m_nBlockIndex'].v
     res.blocks[vblock].data = rows.tobytes()
@@ -344,7 +446,7 @@ def export(obj, depsgraph, game, scale=(1.0, 1.0, 1.0)):
     new name."""
     root = overlay_root(game)
     try:
-        pos, normals, uv, indices, mat = mesh_arrays(obj, depsgraph, scale)
+        pos, frames, uv, indices, mat = mesh_arrays(obj, depsgraph, scale)
     except NoFaces:
         return ''
     tri_indices = indices.reshape(-1, 3)
@@ -358,6 +460,6 @@ def export(obj, depsgraph, game, scale=(1.0, 1.0, 1.0)):
         material = slots[slot_index].material if slot_index < len(slots) else None
         groups.append((write_material(game, root, material), first, count))
     indices = tri_indices.reshape(-1)
-    model_path = f'{FOLDER}/{model_name(obj)}_{_short_hash(pos.tobytes(), normals.tobytes(), uv.tobytes(), indices.tobytes(), groups)}.vmdl'
-    _write(root, model_path, model_file(game, model_path, pos, normals, uv, indices, groups))
+    model_path = f'{FOLDER}/{model_name(obj)}_{_short_hash(pos.tobytes(), frames.tobytes(), uv.tobytes(), indices.tobytes(), groups)}.vmdl'
+    _write(root, model_path, model_file(game, model_path, pos, frames, uv, indices, groups))
     return model_path
