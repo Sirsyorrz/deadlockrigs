@@ -2288,23 +2288,7 @@ def hide_with(o, prop):
         assert d.is_simple_expression, d.expression
 
 
-def group_hides_all(obs):
-    """Has some bodygroup a choice that hides all of these meshes (Abrams' gun, Apollo's sword_hidden)? Read from
-    their hide drivers: Rat King's ammo isn't in his gun's group but its driver hides it with the gun."""
-    fcs = [o.animation_data and o.animation_data.drivers.find('hide_viewport') for o in obs]
-    if not all(fcs):
-        return False
-    for g, choices in BODY_GROUPS:
-        for c in range(len(choices)):
-            values = {f'["bodygroup_{k}"]': arm[f'bodygroup_{k}'] for k, _ in BODY_GROUPS}
-            values[f'["bodygroup_{g}"]'] = c
-            if all(eval(fc.driver.expression, {}, {v.name: values[v.targets[0].data_path]
-                                                   for v in fc.driver.variables}) for fc in fcs):
-                return True
-    return False
-
-
-# Parts toggles for what no bodygroup switches: the weapon, held props and heroes.json "parts" (bones whose pieces
+# Parts toggles: the weapon, held props and heroes.json "parts" (bones whose pieces
 # are the part: Billy's bat, Infernus' hat). A part with its own meshes (Rem's pillow) hides by show_part_<key>; one
 # inside the body mesh (Billy's bottle) by its bones' scale, as the game's clips do, so clips that show it still do
 # (rig['part_bones'])
@@ -2312,11 +2296,13 @@ OWN_MESHES = [o for o in bpy.data.objects if o.type == 'MESH' and not o.name.sta
               and not o.get('dlrig_extra') and o.find_armature() == arm]
 PART_TOGGLES, PART_BONES = {}, {}
 # under weaponPivot, or skinned straight to a hand socket (Haze's pistols on weapon_hand_L/R, Kelvin's weapon_bone_R,
-# Vindicta's weapon_bone)
-GUN_ROOT = re.compile(r'weaponPivot|weapon_?(hand_[LR]|bone(_[LR])?)', re.I)
+# Vindicta's weapon_bone, Pocket's gun_base)
+GUN_ROOT = re.compile(r'weaponPivot|weapon_?(hand_[LR]|bone(_[LR])?)|gun_base', re.I)
 GUN_BONES = {d for b in B if GUN_ROOT.fullmatch(b.name) for d in descendants(b.name)}
 GUNS = [o for o in OWN_MESHES if skinned_to(o, GUN_BONES)]
-if GUNS and not group_hides_all(GUNS):
+# also when a bodygroup choice hides the gun: those choices change more (Viscous inflated, Celeste reload_paused,
+# Yamato both_sheathed), and every hero gets the same toggle
+if GUNS:
     PART_TOGGLES['weapon'] = 'Weapon'
     for o in GUNS:
         hide_with(o, 'show_part_weapon')
@@ -2345,6 +2331,16 @@ for part in hero.cfg.get('parts', []):
     for o in obs:
         hide_with(o, f'show_part_{key}')
     print('part', key, PART_TOGGLES[key], [o.name for o in obs] or PART_BONES[key])
+# a weapon inside the body mesh (Mina, the Doorman, Mo & Krill's rider): its bones' scale hides it, unless a part
+# already does (Paige's books are her weapon)
+WEAPON_BONE = next((b for b in ('weapon', 'rider_weapon_hand_R') if b in B), None)
+if 'weapon' not in PART_TOGGLES and WEAPON_BONE:
+    held = set(descendants(WEAPON_BONE))
+    if not held & {b for bones in PART_BONES.values() for b in bones} and any(
+            dominant_verts(o, held) > 50 for o in OWN_MESHES):
+        PART_TOGGLES['weapon'] = 'Weapon'
+        PART_BONES['weapon'] = [WEAPON_BONE]
+        print('part weapon', [WEAPON_BONE])
 for key, label in PART_TOGGLES.items():
     if key not in PART_BONES:
         arm[f'show_part_{key}'] = 1
