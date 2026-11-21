@@ -192,7 +192,9 @@ class Netcon:
                         self.ready.set()
                     with self.lines_lock:
                         self.lines.extend(text.splitlines())
-                        del self.lines[:-400]
+                        # Midtown can print hundreds of lines a second (shadow atlas, prediction): keep enough that a
+                        # reply isn't pushed out before it is read.
+                        del self.lines[:-4000]
         self.alive = False
         self.ready.set()
 
@@ -678,6 +680,16 @@ def light_entity(obj):
     return classname, keys, tuple(origin), angles
 
 
+class LateSpawn:
+    """A spawn that timed out: a prop (what = model, extra = entities of it before) or a light (what = targetname,
+    extra = its (classname, keys))."""
+
+    def __init__(self, kind, what, extra):
+        self.kind, self.what, self.extra = kind, what, extra
+        self.until = time.time() + 60.0
+        self.next_check = 0.0
+
+
 class GameLight:
     """A runtime light entity kept at a Blender light. Moves go by console (ent_setpos/ent_setang, a server tick
     later); any other change (energy, colour, cone, shadows) spawns it again."""
@@ -1142,6 +1154,7 @@ class Link:
         self.lights = {}  # object name -> GameLight
         self.light_count = 0
         self.declined = set()  # rigs the user took out of the game, or that failed to spawn
+        self.late = {}  # object name -> LateSpawn: timed out, but the game may still create it
         self.render_frame = None  # last frame rendered while the game clock is frozen
         self.paused = False  # the user's Pause Game: the clock stays frozen outside renders too
         self.thawed_until = 0.0  # paused, but running until entities near the moved hero have streamed in
@@ -1385,7 +1398,7 @@ class Link:
         used = {p.slot for p in self.puppets.values()} | {p.slot for p in self.props.values()} | {PAWN_SLOT}
         return next((i for i in range(POSE_SLOTS) if i not in used), None)
 
-    def _spawn(self, model, override=False):
+    def _spawn(self, model, override=False, late_for=None):
         """Create a prop_dynamic of the model; its entity index. override: prop_dynamic_override, which also takes
         models whose prop data says physics only (breakables: prop_dynamic_create silently makes nothing)."""
         before = self.poses.entities(model)
@@ -1402,6 +1415,10 @@ class Link:
             new = self.poses.entities(model) - before
             if new:
                 return max(new)
+        if late_for:
+            self.late[late_for] = LateSpawn('prop', model, before)
+            raise TimeoutError(f'the game is slow to create {os.path.basename(model)}: it is added if it shows up '
+                               'in the next minute')
         raise TimeoutError(f'the game did not spawn {model}')
 
     def add_prop(self, obj):
@@ -1409,14 +1426,9 @@ class Link:
         if not self.poses:
             raise ConnectionError('game models need the bridge (start the session with --bridge)')
         model = prop_model(obj)
-        try:
-            entity = self._spawn(model, override=True)
-        except TimeoutError:
-            if model in _session_precache():
-                raise
-            # ent_create of a model the map didn't load makes an ERROR model under another model name.
-            raise TimeoutError(f'{os.path.basename(model)} isn\'t loaded in this game session: quit Deadlock and '
-                               'start it again from Blender (it loads every game model in the file)') from None
+        return self._bind_prop(obj, model, self._spawn(model, override=True, late_for=obj.name))
+
+    def _bind_prop(self, obj, model, entity):
         prop = GameProp(obj.name, entity, model)
         slot = self._free_slot()
         if slot is not None:
@@ -1449,6 +1461,11 @@ class Link:
         self._save_spawned()
 
     def remove_spawned(self):
+        if self.late and self.poses and self.con and self.con.alive:
+            for late in self.late.values():
+                late.next_check = 0.0
+            self._check_late(None, keep=False)
+        self.late.clear()
         for puppet in list(self.puppets.values()):
             self.remove_puppet(puppet)
         for prop in list(self.props.values()):
@@ -1466,6 +1483,10 @@ class Link:
             self.con.lines.clear()
         self.con.send(f'ent_find {text}')
         time.sleep(wait)
+        return self._found_entities()
+
+    def _found_entities(self):
+        """The ent_find replies among the console lines kept since they were last cleared."""
         with self.con.lines_lock:
             lines = list(self.con.lines)
         found = []
@@ -1486,22 +1507,80 @@ class Link:
         name = f'{LIGHT_NAME}{os.getpid()}_{self.light_count}'
         values = {'targetname': name, 'origin': '{:.3f} {:.3f} {:.3f}'.format(*origin),
                   'angles': '{:.3f} {:.3f} {:.3f}'.format(*angles), **keys}
+        with self.con.lines_lock:
+            self.con.lines.clear()
         self.con.send(f'ent_create {classname} {{' + ' '.join(f'"{k}" "{v}"' for k, v in values.items()) + '}')
         end = time.time() + 5.0
+        asked = 0.0
         while time.time() < end:
             # A paused game only creates it on a server tick.
             self.nudge()
-            found = [e for e, _, n in self.find_entities(name, 0.2) if n == name]
+            # A busy game can take longer than one poll to answer: ask again now and then, but keep the lines
+            # (clearing them for each ask threw away late answers, and the light then leaked).
+            if time.time() - asked > 0.5:
+                self.con.send(f'ent_find {name}')
+                asked = time.time()
+            time.sleep(0.1)
+            found = [e for e, _, n in self._found_entities() if n == name]
             if found:
-                light = GameLight(obj.name, found[0], name, (classname, keys))
-                # A barn as spawned lights only a small hot spot without its shadow until it is moved once (even
-                # to where it already is).
-                self.con.send(*light.commands(origin, angles))
-                self.setpos_at = time.time()
-                self.settle_console()
-                self.lights[obj.name] = light
-                return light
-        raise TimeoutError(f'the game did not spawn {classname}')
+                return self._bind_light(obj, found[0], name, (classname, keys), origin, angles)
+        self.late[obj.name] = LateSpawn('light', name, (classname, keys))
+        raise TimeoutError('the game is slow to create the light: it is added if it shows up in the next minute')
+
+    def _bind_light(self, obj, entity, name, spec, origin, angles):
+        light = GameLight(obj.name, entity, name, spec)
+        # A barn as spawned lights only a small hot spot without its shadow until it is moved once (even to where
+        # it already is).
+        self.con.send(*light.commands(origin, angles))
+        self.setpos_at = time.time()
+        self.settle_console()
+        self.lights[obj.name] = light
+        return light
+
+    def _check_late(self, depsgraph, keep=True):
+        """Spawns that timed out: take them on when they show up (or remove them, if their object has changed or
+        keep is off), so nothing the game made late is left behind."""
+        now = time.time()
+        for obj_name, late in list(self.late.items()):
+            if now < late.next_check:
+                continue
+            late.next_check = now + 1.0
+            if late.kind == 'prop':
+                known = {p.entity for p in self.props.values()}
+                new = sorted(self.poses.entities(late.what) - late.extra - known)
+            else:
+                with self.con.lines_lock:
+                    self.con.lines.clear()
+                new = [e for e, _, n in self.find_entities(late.what, 0.3) if n == late.what]
+            if not new:
+                if now > late.until or not keep:
+                    del self.late[obj_name]
+                continue
+            del self.late[obj_name]
+            obj = bpy.data.objects.get(obj_name)
+            taken = (keep and obj is not None and obj.visible_get() and obj_name not in self.props
+                     and obj_name not in self.lights)
+            if taken and late.kind == 'prop' and prop_model(obj) == late.what:
+                self._bind_prop(obj, late.what, new[-1])
+                new = new[:-1]
+            elif taken and late.kind == 'light' and wants_game_light(obj):
+                classname, keys, origin, angles = light_entity(obj.evaluated_get(depsgraph))
+                if (classname, keys) == late.extra:
+                    self._bind_light(obj, new[-1], late.what, late.extra, origin, angles)
+                    new = new[:-1]
+            else:
+                taken = False
+            for entity in new:
+                self.con.send(f'ent_remove {entity}')
+            if keep and obj is not None and not taken:
+                # changed since: spawned again as it is now
+                self.declined.discard(obj_name)
+                obj.update_tag()
+            if taken:
+                self.declined.discard(obj_name)
+                if self.error.startswith(obj_name + ':'):
+                    self.error = ''
+                obj.update_tag()
 
     def remove_light(self, light):
         self.lights.pop(light.obj_name, None)
@@ -1603,6 +1682,8 @@ class Link:
         """Every visible Deadlock rig in the scene is posed in the game (rigs taken out stay out)."""
         if not (self.running and self.poses):
             return
+        if self.late:
+            self._check_late(depsgraph)
         for obj in depsgraph.objects:
             arm = obj.original
             if (obj.type != 'ARMATURE' or not arm.get('dlrig') or arm.name in self.puppets
@@ -2767,9 +2848,7 @@ class DLR_OT_game_add_model(bpy.types.Operator):
     bl_idname = 'dlr.game_add_model'
     bl_label = 'Add Game Model'
     bl_description = ('Add an empty at the 3D cursor that the game draws a model at (any vmdl in the game files, '
-                      'e.g. props/barrel_03). Move, turn and scale the empty; posing rigs isn\'t needed. Models '
-                      'the map doesn\'t use show as ERROR until Deadlock is started again from Blender (Start '
-                      'Deadlock loads every game model in the file). Any object with a dlr_game_model property works '
+                      'e.g. props/barrel_03). Move, turn and scale the empty; posing rigs isn\'t needed. Any object with a dlr_game_model property works '
                       'the same way')
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -2796,9 +2875,6 @@ class DLR_OT_game_add_model(bpy.types.Operator):
             other.select_set(False)
         obj.select_set(True)
         context.view_layer.objects.active = obj
-        if _link and _link.running and path not in _session_precache():
-            self.report({'WARNING'}, f'{path}: if the game shows ERROR, quit Deadlock and start it again from '
-                                     'Blender (it loads the file\'s game models at start)')
         return {'FINISHED'}
 
 
@@ -2824,10 +2900,6 @@ class DLR_OT_game_add_light(bpy.types.Operator):
         obj.select_set(True)
         context.view_layer.objects.active = obj
         return {'FINISHED'}
-
-
-def _session_precache():
-    return set(_session.precache) if _session else set()
 
 
 class DLR_OT_game_pause(bpy.types.Operator):
