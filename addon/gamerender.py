@@ -37,7 +37,7 @@ import numpy as np
 from gpu_extras.batch import batch_for_shader
 from mathutils import Euler, Matrix, Quaternion, Vector
 
-from . import gamelaunch
+from . import gamelaunch, gamemodel
 
 UNIT = 0.0254
 GAME_FROM_BLENDER = Matrix.Diagonal((1 / UNIT, 1 / UNIT, 1 / UNIT, 1)) @ Matrix.Rotation(math.pi / 2, 4, 'Z')
@@ -91,6 +91,11 @@ PROP_SETTLE = 0.15
 CONSOLE_NUDGES = 8  # server ticks a paused game gets for a console move or removal (a puppet's took ~7)
 PROP_KEY = 'dlr_game_model'  # object property: the game model the game draws at that object
 LIGHT_KEY = 'dlr_game_light'  # Object.dlr_game_light: the game draws a light at this Blender light
+MESH_KEY = 'dlr_game_mesh'  # Object.dlr_game_mesh: the game draws this object's mesh (exported as a model)
+MESH_TYPES = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}
+# A changed mesh is exported again once it has been still this long: an edit or a drag would otherwise make a model
+# (and a new entity) per step.
+MESH_SETTLE = 0.4
 # citadel_hud_visible 0 alone leaves the own health bar (shown once the hero leaves the Hideout's main room) and the
 # health bars over units: photomode hides both, cl_drawhud 0 (cheat) the rest of the HUD layer.
 SETUP_COMMON = ('citadel_hud_visible 0', 'citadel_photomode_enabled 1', 'cl_drawhud 0',
@@ -534,8 +539,15 @@ def game_model_path(text):
     return path if path.startswith('models/') else 'models/' + path
 
 
+def wants_game_mesh(obj):
+    return obj is not None and obj.type in MESH_TYPES and getattr(obj, MESH_KEY, False)
+
+
 def prop_model(obj):
-    """The game model an object stands for (its dlr_game_model property), or ''."""
+    """The game model an object stands for (its dlr_game_model property, or its exported mesh), or ''."""
+    if wants_game_mesh(obj):
+        mesh = _link.meshes.get(obj.name) if _link else None
+        return mesh.model if mesh else ''
     value = obj.get(PROP_KEY) if obj is not None else None
     return game_model_path(value) if isinstance(value, str) else ''
 
@@ -604,6 +616,14 @@ def scene_prop_models():
     return sorted({m for m in (prop_model(obj) for obj in bpy.data.objects) if m})
 
 
+class GameMesh:
+    """An object's own mesh, exported as a game model (gamemodel.export) and drawn by a GameProp."""
+
+    def __init__(self, model, scale):
+        self.model, self.scale = model, scale
+        self.changed_at = None  # when the mesh, its materials or its scale last changed, until exported again
+
+
 class GameProp:
     """A game model entity kept at a Blender object's transform (scale included). Models with bones take a pose slot
     and are posed rigidly like a puppet (exact, no server tick). Models without bones move by console too (bounds,
@@ -615,6 +635,7 @@ class GameProp:
         self.transform_slot = None
         self.sent = None  # (pos, angles, scale) last sent by console
         self.origin = None
+        self.unscaled = False  # an exported mesh: its scale is in the model, the entity isn't scaled
 
     @property
     def slot(self):
@@ -622,13 +643,15 @@ class GameProp:
 
     def transform(self, obj):
         """The object's game world transform as one pose entry: pos xyz, uniform scale, quat xyzw."""
-        loc, rot, scale = (GAME_FROM_BLENDER @ obj.matrix_world @ BLENDER_FROM_GAME).decompose()
+        loc, rot, scale = (GAME_FROM_BLENDER @ self.world(obj) @ BLENDER_FROM_GAME).decompose()
         return struct.pack('<8f', *loc, (scale.x + scale.y + scale.z) / 3, rot.x, rot.y, rot.z, rot.w)
 
-    @staticmethod
-    def placement(obj):
+    def world(self, obj):
+        return obj.matrix_world.normalized() if self.unscaled else obj.matrix_world
+
+    def placement(self, obj):
         """Game position, angles (pitch, yaw, roll in degrees) and uniform scale of an evaluated object."""
-        m = GAME_FROM_BLENDER @ obj.matrix_world @ BLENDER_FROM_GAME
+        m = GAME_FROM_BLENDER @ self.world(obj) @ BLENDER_FROM_GAME
         loc, rot, scale = m.decompose()
         # Source angles: R = Rz(yaw) Ry(pitch) Rx(roll), Blender's XYZ euler order.
         roll, pitch, yaw = rot.to_euler('XYZ')
@@ -1209,6 +1232,7 @@ class Link:
         self.poses = None
         self.puppets = {}  # armature name -> Puppet
         self.props = {}  # object name -> GameProp
+        self.meshes = {}  # object name -> GameMesh: objects whose own mesh is in the game
         self.lights = {}  # object name -> GameLight
         self.light_count = 0
         self.prop_count = 0
@@ -1551,6 +1575,7 @@ class Link:
 
     def _bind_prop(self, obj, model, entity):
         prop = GameProp(obj.name, entity, model)
+        prop.unscaled = wants_game_mesh(obj)
         slot = self._free_slot()
         if slot is not None:
             bound = self.poses.pose(slot, model, entity=entity, active=False)
@@ -1820,8 +1845,51 @@ class Link:
                 pass
         self._save_spawned()
 
-    def sync_puppets(self, depsgraph):
+    def mesh_changed(self, names=None):
+        """Export these game meshes (all with None: a material or image changed) again once they are still."""
+        now = time.time()
+        for name, mesh in self.meshes.items():
+            if names is None or name in names:
+                mesh.changed_at = now
+
+    def meshes_settled(self):
+        """Some changed game mesh has been still long enough to export."""
+        now = time.time()
+        return any(m.changed_at is not None and now - m.changed_at >= MESH_SETTLE for m in self.meshes.values())
+
+    def _sync_meshes(self, depsgraph, settle):
+        """Export the game meshes that are new, or changed and still for settle seconds."""
+        now = time.time()
+        game = None
+        wanted = set()
+        for obj in depsgraph.objects:
+            orig = obj.original
+            if not wants_game_mesh(orig) or orig.name in self.declined or not orig.visible_get():
+                continue
+            wanted.add(orig.name)
+            scale = tuple(round(s, 5) for s in obj.matrix_world.to_scale())
+            mesh = self.meshes.get(orig.name)
+            if mesh is not None:
+                if scale != mesh.scale:
+                    mesh.scale, mesh.changed_at = scale, now
+                if mesh.changed_at is None or now - mesh.changed_at < settle:
+                    continue
+            game = game or game_dir()
+            try:
+                model = gamemodel.export(orig, depsgraph, game, scale)
+            except (OSError, ValueError, KeyError) as error:
+                self.declined.add(orig.name)
+                self.error = f'{orig.name}: {error}'
+                continue
+            self.meshes[orig.name] = GameMesh(model, scale)
+        # Hidden, taken out or gone: exported afresh if it comes back (the files of an unchanged mesh are kept).
+        for name in set(self.meshes) - wanted:
+            del self.meshes[name]
+
+    def sync_puppets(self, depsgraph, mesh_settle=MESH_SETTLE):
         """Every visible Deadlock rig in the scene is posed in the game (rigs taken out stay out)."""
+        if self.running and self.poses:
+            self._sync_meshes(depsgraph, mesh_settle)
         if not (self.running and self.poses):
             return
         if self.late:
@@ -2373,6 +2441,12 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
                    if isinstance(u.id, bpy.types.Object) and u.is_updated_geometry}
         lk = _link
         if lk:
+            if lk.meshes:
+                if any(isinstance(u.id, (bpy.types.Material, bpy.types.Image, bpy.types.NodeTree))
+                       for u in depsgraph.updates):
+                    lk.mesh_changed()
+                else:
+                    lk.mesh_changed(rebuild)
             lk.sync_puppets(depsgraph)
         puppets = set(lk.puppets) | set(lk.props) if lk else set()
         if lk and puppets and not lk.stream and any(
@@ -2514,7 +2588,7 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
         frame_number = scene.frame_current + scene.frame_subframe
         first = lk.render_frame is None
         moved = lk.follow_render(view.pos)
-        lk.sync_puppets(depsgraph)
+        lk.sync_puppets(depsgraph, mesh_settle=0.0)
         if lk.puppets or lk.props:
             # Entities move through server ticks: wait before the clock stops; later frames move during the step.
             lk.send_poses(depsgraph, settle=2.0 if first or moved else 0.0)
@@ -2760,6 +2834,12 @@ def _poll_frames_once():
     lk = _link
     if lk:
         lk.tick_settle()
+        if lk.meshes_settled():
+            # Nothing else may update the view once the edit stops.
+            lk.sync_puppets(bpy.context.evaluated_depsgraph_get())
+            if lk.puppets or lk.props:
+                lk.send_poses(bpy.context.evaluated_depsgraph_get())
+            lk.reshoot()
     frame = lk.frame if lk else None
     changed = bool(lk) and lk.outside != _outside_shown
     if changed:
@@ -3072,7 +3152,7 @@ class DLR_OT_game_pose_rig(bpy.types.Operator):
         if _link is None or not _link.running or _link.poses is None:
             return False
         obj = context.active_object
-        if prop_model(obj):
+        if prop_model(obj) or wants_game_mesh(obj):
             return obj.name not in _link.props
         if wants_game_light(obj):
             return obj.name not in _link.lights
@@ -3081,7 +3161,7 @@ class DLR_OT_game_pose_rig(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        if prop_model(obj) or wants_game_light(obj):
+        if prop_model(obj) or wants_game_mesh(obj) or wants_game_light(obj):
             _link.declined.discard(obj.name)
             # Spawned with the next viewport or render update.
             obj.update_tag()
@@ -3265,7 +3345,7 @@ class DLR_PT_game(bpy.types.Panel):
                 if arm is not None and arm.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, icon='ARMATURE_DATA')
                 obj = context.active_object
-                if prop_model(obj) and obj.name in lk.declined:
+                if (prop_model(obj) or wants_game_mesh(obj)) and obj.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, text='Show in Game', icon='MESH_CUBE')
                 if wants_game_light(obj) and obj.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, text='Show in Game', icon='LIGHT')
@@ -3284,8 +3364,7 @@ class DLR_PT_game(bpy.types.Panel):
                     row.operator(DLR_OT_game_unpose_rig.bl_idname, text='', icon='X').armature = name
                 col.operator('dlr.game_model_browser', icon='ADD')
                 col.operator(DLR_OT_game_add_light.bl_idname, icon='LIGHT_SPOT')
-            if context.active_object is not None and context.active_object.type == 'LIGHT':
-                col.prop(context.active_object, 'dlr_game_light')
+            _object_toggles(context, col)
             row = col.row()
             row.operator(DLR_OT_game_disconnect.bl_idname)
             if _session:
@@ -3300,14 +3379,30 @@ class DLR_PT_game(bpy.types.Panel):
             row.operator(DLR_OT_game_connect.bl_idname, icon='UNLINKED')
             col.operator('dlr.game_model_browser', icon='ADD')
             col.operator(DLR_OT_game_add_light.bl_idname, icon='LIGHT_SPOT')
-            if context.active_object is not None and context.active_object.type == 'LIGHT':
-                col.prop(context.active_object, 'dlr_game_light')
+            _object_toggles(context, col)
         if _session and _session.error:
             _wrapped_label(context, col, _session.error, icon='ERROR')
         if lk and lk.error:
             _wrapped_label(context, col, lk.error, icon='ERROR')
         if (lk and (lk.error or (not lk.stream and lk.frames_error))) or (_session and _session.error):
             col.label(text=f'Log: {gamelaunch.log_path()}')
+
+
+def _object_toggles(context, col):
+    obj = context.active_object
+    if obj is None:
+        return
+    if obj.type == 'LIGHT':
+        col.prop(obj, LIGHT_KEY)
+    elif obj.type in MESH_TYPES:
+        col.prop(obj, MESH_KEY)
+
+
+def _mesh_toggled(obj, _context):
+    if _link:
+        _link.declined.discard(obj.name)
+    # Sends it (or takes it out) with the next viewport update.
+    obj.update_tag()
 
 
 def _wrapped_label(context, layout, text, icon='NONE'):
@@ -3383,6 +3478,10 @@ def register():
     bpy.types.Object.dlr_game_light = bpy.props.BoolProperty(
         name='Light in Game',
         description='The game draws this spot or point light too (Deadlock Game render engine)')
+    bpy.types.Object.dlr_game_mesh = bpy.props.BoolProperty(
+        name='Mesh in Game', update=_mesh_toggled,
+        description='The game draws this object\'s mesh too, with its materials\' base colour or image (Deadlock '
+                    'Game render engine). No collision; edits are sent once the mesh has been still for a moment')
     for panel in _shared_panels():
         panel.COMPAT_ENGINES.add(ENGINE_ID)
     if not bpy.app.timers.is_registered(_poll_frames):
@@ -3421,3 +3520,4 @@ def unregister():
         bpy.utils.unregister_class(c)
     del bpy.types.Scene.dlr_game_world
     del bpy.types.Object.dlr_game_light
+    del bpy.types.Object.dlr_game_mesh

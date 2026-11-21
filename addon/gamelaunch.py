@@ -304,6 +304,8 @@ class Session:
                 os.remove(path)
             except OSError:
                 pass
+        # Meshes sent from Blender (gamemodel): a new file per edit, only of use to the session that made them.
+        shutil.rmtree(os.path.join(self.game, *OVERLAY.split('/'), 'models', 'dlrigs'), ignore_errors=True)
 
     def client_status_path(self):
         return os.path.join(self.game, *OVERLAY.split('/'), 'pak01_dir.vpk')
