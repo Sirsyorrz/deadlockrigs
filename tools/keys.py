@@ -46,6 +46,9 @@ MIRROR = False
 CARD_FOLLOW = np.zeros((0, 3))
 # handkeys "lip_mid": a point (m) on the lip line's middle, when a crease under the lower lip is as wide (Lash's)
 LIP_MID = None
+# handkeys "lip_path": points (m) from one corner through the middle to the other, for a low-poly crease too shallow
+# at a corner for the search (Mo's): the split follows the skin's shortest path through the nearest vertices
+LIP_PATH = None
 
 
 def smoothstep(a, b, x):
@@ -514,6 +517,8 @@ class Rig:
         A broad groove (Infernus' parted lips) is flat at the bottom; failing a crease, recess also counts how far
         each vertex sits behind the skin around it."""
         h, s, p, nrm = self.h, self.s, self.h.wco, self.h.wnrm
+        if LIP_PATH is not None:
+            return self._lip_path()
         g = h.wgraph.tocoo()
         d = p[g.col] - p[g.row]
         # curvature along each edge, most concave per vertex (1/m, times s so heads compare)
@@ -583,6 +588,27 @@ class Rig:
         print('lip line', len(path), 'verts, x', round(p[ends[1], 0], 4), '..', round(p[ends[0], 0], 4),
               'z', round(p[m, 2], 4))
         return path, below
+
+    def _lip_path(self):
+        h, p = self.h, self.h.wco
+        _, via = cKDTree(p).query(LIP_PATH)
+        nb = h.wgraph.tocsr()
+        path = [int(via[0])]
+        for a, b in zip(via[:-1], via[1:]):
+            if b in nb.indices[nb.indptr[a]:nb.indptr[a + 1]]:
+                path.append(int(b))
+                continue
+            _, pred = dijkstra(h.wgraph, directed=False, indices=a, return_predecessors=True)
+            seg = [int(b)]
+            while seg[-1] != a:
+                seg.append(int(pred[seg[-1]]))
+            path += seg[::-1][1:]
+        path = np.array(path)
+        m = path[np.abs(p[path, 0]).argmin()]
+        cand = nb.indices[nb.indptr[m]:nb.indptr[m + 1]]
+        cand = cand[~np.isin(cand, path)]
+        print('lip line', len(path), 'verts from lip_path')
+        return path, cand[p[cand, 2].argmin()]
 
     def mouth_hole(self, win):
         """The skin's open edge between the lips, ordered around, when the mouth is a hole into the head with no

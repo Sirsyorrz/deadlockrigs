@@ -873,6 +873,7 @@
    "part": "Head",
    "mesh": "Head",
    "bone": "rider_head",
+   "builder": "handkeys.py",
    "eyes": [
     0.036,
     -0.7001,

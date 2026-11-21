@@ -708,6 +708,8 @@ def main():
         keys_mod.PAINTED = painted
     if 'lip_mid' in spec:
         keys_mod.LIP_MID = arrays['bone_head'] + np.asarray(spec['lip_mid'], float) / 1000
+    if 'lip_path' in spec:
+        keys_mod.LIP_PATH = arrays['bone_head'] + np.asarray(spec['lip_path'], float) / 1000
     n_head, cut, split, bag_mesh = len(arrays['co']), None, None, None
     if spec.get('open'):
         floor = spec.get('bag_floor')

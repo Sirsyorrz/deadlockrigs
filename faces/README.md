@@ -39,6 +39,9 @@ side with the upper lip and give its lower side to the jaw (`{"bag": ...}` regio
 `"bag_floor"` (z, mm) flattens the bag's bottom there, for one that would come out under the chin (Lady Geist's).
 `"lip_mid"` (a point, mm): the lip line's middle, when another crease (under the lower lip, Lash's) is as wide and
 deep and the split would take it instead.
+`"lip_path"` (points, mm): the split line itself, corner to middle to corner, for a low-poly crease the search
+stops short on (Mo's right corner). Consecutive points on vertices that share an edge stay a single edge; others are
+joined by the shortest path over the skin.
 
 ## keys
 
