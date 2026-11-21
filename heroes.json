@@ -1041,7 +1041,8 @@
     0.044,
     -0.12,
     2.17
-   ]
+   ],
+   "builder": "handkeys.py"
   },
   "extra_models": {
    "Frog": {
