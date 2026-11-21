@@ -588,6 +588,7 @@
   "face": {
    "part": "Head",
    "mesh": "Head",
+   "builder": "handkeys.py",
    "eyes": [
     0.046,
     -0.133,
