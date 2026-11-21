@@ -641,12 +641,20 @@ def light_entity(obj):
     forward, left, up = rot @ Vector((0, 0, -1)), rot @ Vector((-1, 0, 0)), rot @ Vector((0, 1, 0))
     roll, pitch, yaw = Matrix((forward, left, up)).transposed().to_euler('XYZ')
     angles = (math.degrees(pitch), math.degrees(yaw), math.degrees(roll))
-    linear = max(light.energy, 1e-6) / LIGHT_WATTS
+    linear = max(light.energy, 1e-6) * 2 ** light.exposure / LIGHT_WATTS
+    color = Vector(light.color)
+    if light.use_temperature:
+        color *= Vector(light.temperature_color)
+    # The game colour is 0-255: what a warm temperature pushes past 1 goes into the brightness instead.
+    peak = max(max(color), 1e-6)
+    if peak > 1:
+        color /= peak
+        linear *= peak
     if light.use_custom_distance:
         reach = light.cutoff_distance / UNIT
     else:
         reach = min(max(LIGHT_REFERENCE * math.sqrt(256 * linear), 64.0), 16384.0)
-    keys = {'color': ' '.join(str(round(255 * _linear_to_srgb(c))) for c in light.color), 'colormode': '0',
+    keys = {'color': ' '.join(str(round(255 * _linear_to_srgb(c))) for c in color), 'colormode': '0',
             'directlight': '2', 'enabled': '1', 'castshadows': '1' if light.use_shadow else '0',
             'range': f'{reach:.1f}', 'skirt': '0.1', 'fog': '0'}
     radius = light.shadow_soft_size / UNIT
@@ -2724,7 +2732,9 @@ class DLR_OT_game_pose_rig(bpy.types.Operator):
 class DLR_OT_game_unpose_rig(bpy.types.Operator):
     bl_idname = 'dlr.game_unpose_rig'
     bl_label = 'Remove from Game'
-    bl_description = 'Remove the rig\'s hero from the game'
+    bl_description = ('Remove it from the game. A game model\'s empty (Add Game Model) is deleted from the scene too; '
+                      'rigs and lights stay in Blender')
+    bl_options = {'REGISTER', 'UNDO'}
 
     armature: bpy.props.StringProperty()
 
@@ -2946,12 +2956,22 @@ CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_
 SHARED_PANEL_CONTEXTS = {'output', 'data'}
 
 
+# The Workbench light panel only has the light type; EEVEE's have colour, power, radius, shadow and the spot cone,
+# everything a game light is made from.
+LIGHT_PANELS_SKIPPED = {'DATA_PT_light', 'NODE_DATA_PT_light'}
+LIGHT_PANELS_EEVEE = ('DATA_PT_EEVEE_light', 'DATA_PT_EEVEE_light_distance', 'DATA_PT_EEVEE_light_shadow')
+
+
 def _shared_panels():
     for name in dir(bpy.types):
         panel = getattr(bpy.types, name)
         engines = getattr(panel, 'COMPAT_ENGINES', None)
-        if (isinstance(engines, set) and 'BLENDER_RENDER' in engines
+        if (isinstance(engines, set) and 'BLENDER_RENDER' in engines and name not in LIGHT_PANELS_SKIPPED
                 and getattr(panel, 'bl_context', None) in SHARED_PANEL_CONTEXTS):
+            yield panel
+    for name in LIGHT_PANELS_EEVEE:
+        panel = getattr(bpy.types, name, None)
+        if panel is not None and isinstance(getattr(panel, 'COMPAT_ENGINES', None), set):
             yield panel
 
 
