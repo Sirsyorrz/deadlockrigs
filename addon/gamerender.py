@@ -98,8 +98,10 @@ MESH_TYPES = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}
 # (and a new entity) per step.
 MESH_SETTLE = 0.4
 # citadel_hud_visible 0 alone leaves the own health bar (shown once the hero leaves the Hideout's main room) and the
-# health bars over units: photomode hides both, cl_drawhud 0 (cheat) the rest of the HUD layer.
+# health bars over units: photomode hides both, cl_drawhud 0 (cheat) the rest of the HUD layer. The game fades heroes
+# near the camera (a long lens up close loses the hero); the near opacities at 1 turn that off (Dolly's opacity fix).
 SETUP_COMMON = ('citadel_hud_visible 0', 'citadel_photomode_enabled 1', 'cl_drawhud 0',
+                'citadel_camera_fade_viewed_near_opacity 1', 'citadel_camera_fade_other_near_opacity 1',
                 'cl_hud_telemetry_frametime_show 0', 'cl_hud_telemetry_ping_show 0',
                 'engine_no_focus_sleep 0', 'jpeg_quality 95')
 # What of the map's life is in the game (the Game panel's Map menu). Each group: id, label, description, entity
