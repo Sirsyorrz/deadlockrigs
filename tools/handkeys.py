@@ -714,7 +714,7 @@ def main():
     if spec.get('open'):
         floor = spec.get('bag_floor')
         floor = None if floor is None else float(arrays['bone_head'][2]) + floor / 1000
-        arrays, h, n_head, cut, split, bag_mesh = open_mouth(arrays, floor)
+        arrays, h, n_head, cut, split, bag_mesh = open_mouth(arrays, floor, spec.get('bag_wrap', False))
     else:
         h = fg.from_arrays(arrays)
     face = Face(h, spec, arrays, painted)

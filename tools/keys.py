@@ -1594,11 +1594,12 @@ def cut_lips(d, h, rig):
     return out, {'src': src, 'off': off, 'rewire': np.array(rewire)}
 
 
-def add_bag(d, h, rig, rings=10, split=False, floor=None):
+def add_bag(d, h, rig, rings=10, split=False, floor=None, wrap=False):
     """A mouth bag for a head whose mouth is a hole into nothing (Venator's): a tube from the lips' open edge back
     past the teeth, widening to hold them, closed at the back. Returns d with the bag appended (its first ring sits
     on the edge, so it welds to the lips) and the bag's (co, tris). floor: lowest z, for a bag whose round bottom
-    would come out under the chin (Lady Geist's, deepened by her tongue's root)."""
+    would come out under the chin (Lady Geist's, deepened by her tongue's root). wrap: open up and down straight
+    behind the lips, for teeth reaching up to the lip line that a straight-back start would bury (Paige's)."""
     s, p = rig.s, h.wco
     loop = rig.hole
     v = p[loop]
@@ -1624,13 +1625,24 @@ def add_bag(d, h, rig, rings=10, split=False, floor=None):
             return np.mean([p[nb, 2].mean() - p[i, 2] for i in loop[m]
                             if len(nb := np.setdiff1d(h.wgraph[i].indices, loop))])
         upper_chain = rise(chain) > rise(~chain)
+    else:
+        # crossed lips (Paige's, opened by dropping the faces between them) leave the lower lip's edge above the
+        # upper's in the middle, which outweighs the plain heights: the chain whose outer skin leads to the philtrum
+        no_bag = not hasattr(rig, 'bag')
+        if no_bag:
+            rig.bag = np.zeros(rig.nw, bool)
+        skin = rig._upper_by_skin(loop, (v[i_l, 2] + v[i_r, 2]) / 2)
+        if no_bag:
+            del rig.bag
+        if skin is not None and skin[chain].mean() != skin[~chain].mean():
+            upper_chain = skin[chain].mean() > skin[~chain].mean()
     is_up = chain if upper_chain else ~chain
     is_up[[i_l, i_r]] = True
     phi = np.arccos(np.clip(v[:, 0] / hx, -1, 1)) * np.where(is_up, 1, -1)
     ell = np.c_[rx * np.cos(phi), rz * np.sin(phi) + zc]
     # lips split along a line (Grey Talon's) leave a slit with no height: open up and down straight away, or the
     # front of the bag is flat
-    slit = abs(v[is_up, 2].mean() - v[~is_up, 2].mean()) < 0.003 * s
+    slit = wrap or abs(v[is_up, 2].mean() - v[~is_up, 2].mean()) < 0.003 * s
     ring_pts = []
     for k in range(rings + 1):
         t = k / rings
@@ -1677,7 +1689,7 @@ def add_bag(d, h, rig, rings=10, split=False, floor=None):
     return out, co, tris
 
 
-def open_mouth(arrays, floor=None):
+def open_mouth(arrays, floor=None, wrap=False):
     """Opens sculpted closed lips (drops the faces joining them, or splits them along the lip line) and builds a
     mouth bag on a mouth that is a hole into nothing. Returns (arrays, h, n_head, cut, split, bag_mesh): n_head
     counts the head's vertices with the split's copies, before the bag's; the game weights (w_*) cover them all."""
@@ -1703,7 +1715,7 @@ def open_mouth(arrays, floor=None):
         probe = Rig(h)
         print('split the lips along', len(split['src']), 'vertices')
     if probe.hole is not None:
-        arrays, bco, btris = add_bag(arrays, h, probe, split=split is not None, floor=floor)
+        arrays, bco, btris = add_bag(arrays, h, probe, split=split is not None, floor=floor, wrap=wrap)
         arrays.pop('lip_loop', None)
         # build.py skins the bag like the nearest head vertex
         _, near = cKDTree(arrays['co'][:n_head]).query(bco)
