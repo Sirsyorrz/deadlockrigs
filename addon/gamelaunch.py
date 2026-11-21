@@ -4,7 +4,7 @@
 The bridge goes in through one extra gameinfo.gi search path that exists only while the game loads: the original
 file is restored byte-exact as soon as the game's console is up, so a normal Steam launch never sees it. The game
 saves archived cvars (HUD, camera) and its window mode on exit; the user's cfgs are copied before the launch and put
-back after the session quits.
+back after the session quits, by Blender or, when Blender is gone by then, by a detached watcher process.
 """
 import hashlib
 import json
@@ -34,6 +34,9 @@ CLIENT_STATUS_EDIT = (b'.StatusEntry.ShowStatus{opacity: 1.0;}', b'.StatusEntry.
 # Launch to console: ~60 s, plus a stall of ~95 s that some launches sit through after "Game started".
 READY_DRAWING = 8.0  # seconds of steady drawing before the first console client
 CONSOLE_TIMEOUT = 300
+# The watcher restores once the game has been gone this long (Proton can drop the process briefly while starting).
+WATCH_GONE = 10.0
+WATCH_POLL = 2.0
 
 
 def state_dir():
@@ -42,6 +45,17 @@ def state_dir():
     else:
         base = os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache')
     return os.path.join(base, 'dlr-game', 'session')
+
+
+def _claim(path):
+    """Rename path to a name only this caller has, or None when it's gone (Blender and the watcher can both be
+    restoring the same session)."""
+    claimed = f'{path}.claim{os.getpid()}.{threading.get_ident()}'
+    try:
+        os.rename(path, claimed)
+    except FileNotFoundError:
+        return None
+    return claimed
 
 
 def log_path():
@@ -203,9 +217,10 @@ class Session:
         return nl.join(out)
 
     def restore_gameinfo(self):
-        if not os.path.exists(self.backup):
+        backup = _claim(self.backup)
+        if not backup:
             return
-        original = open(self.backup, 'rb').read()
+        original = open(backup, 'rb').read()
         current = open(self.gameinfo, 'rb').read()
         if current != original:
             if MARK.encode() in current:
@@ -213,8 +228,8 @@ class Session:
                     f.write(original)
             else:
                 # Steam verify or a mod manager rewrote it after our edit: theirs wins, keep ours aside.
-                shutil.copyfile(self.backup, f'{self.backup}.{int(time.time())}')
-        os.remove(self.backup)
+                shutil.copyfile(backup, f'{self.backup}.{int(time.time())}')
+        os.remove(backup)
 
     # user cfgs ------------------------------------------------------------------------------------------------
     def _user_cfgs(self):
@@ -248,16 +263,17 @@ class Session:
             json.dump(index, f)
 
     def restore_cfgs(self):
-        index_path = os.path.join(self.cfg_backup, 'index.json')
-        if not os.path.exists(index_path):
+        index_path = _claim(os.path.join(self.cfg_backup, 'index.json'))
+        if not index_path:
             return
-        index = json.load(open(index_path))
+        with open(index_path) as f:
+            index = json.load(f)
         for path, name in index.items():
             shutil.copy2(os.path.join(self.cfg_backup, os.path.basename(name)), path)
         for path in self._user_cfgs():
             if path not in index:
                 os.remove(path)
-        shutil.rmtree(self.cfg_backup)
+        shutil.rmtree(self.cfg_backup, ignore_errors=True)
 
     def _session_video(self):
         """The session's render size, put back with the other cfgs. A window is the render size but can't be
@@ -376,6 +392,7 @@ class Session:
             self.restore_cfgs()
             self.remove_bridge()
             raise
+        self.start_watcher()
         self.status = 'Starting Deadlock'
         threading.Thread(target=self._wait, daemon=True).start()
 
@@ -423,6 +440,30 @@ class Session:
             self.restore_gameinfo()
             self.done.set()
 
+    def token_path(self):
+        return os.path.join(self.state, 'session_id')
+
+    def start_watcher(self):
+        """A process outside Blender that restores everything when the game quits, so closing Blender first (or
+        Blender crashing) doesn't leave the session's window mode and cvars in the user's next normal launch."""
+        token = f'{os.getpid()}-{time.time():.0f}'
+        with open(self.token_path(), 'w') as f:
+            f.write(token)
+        python = sys.executable
+        if not python or 'python' not in os.path.basename(python).lower():
+            log('restore watcher not started: no Python executable')
+            return
+        args = [python, '-I', os.path.abspath(__file__), '--watch', self.game, token]
+        try:
+            if os.name == 'nt':
+                subprocess.Popen(args, creationflags=0x00000008 | 0x00000200 | 0x08000000,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(args, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        except OSError as error:
+            log(f'restore watcher not started: {error}')
+
     def stop(self, con=None):
         """Quit the game (through the given console client: the game serves only one) and put the cfgs back."""
         try:
@@ -440,6 +481,40 @@ class Session:
         if not game_running(self.game):
             self.restore_cfgs()
             self.remove_bridge()
+
+
+def watch(game, token):
+    """The detached watcher: waits for the session's game to come and go, then undoes the session. Gives up
+    without touching anything once a newer session has started (its token replaced ours)."""
+    session = Session(game, 0)
+
+    def current():
+        try:
+            with open(session.token_path()) as f:
+                return f.read() == token
+        except OSError:
+            return False
+
+    give_up = time.time() + CONSOLE_TIMEOUT + 60
+    seen, gone_since = False, None
+    while current():
+        if game_running(game):
+            seen, gone_since = True, None
+        elif seen or time.time() > give_up:
+            gone_since = gone_since or time.time()
+            if time.time() - gone_since >= WATCH_GONE:
+                break
+        time.sleep(WATCH_POLL)
+    else:
+        return
+    if game_running(game) or not current():
+        return
+    restoring = os.path.exists(os.path.join(session.cfg_backup, 'index.json'))
+    session.restore_gameinfo()
+    session.restore_cfgs()
+    session.remove_bridge()
+    if restoring:
+        log('watcher: the game quit without Blender, settings restored')
 
 
 def _search_paths_block(lines):
@@ -606,3 +681,7 @@ def launch_steam(args):
         os.write(fd, _steam_pipe_line(args).encode())
     finally:
         os.close(fd)
+
+
+if __name__ == "__main__" and len(sys.argv) == 4 and sys.argv[1] == "--watch":
+    watch(sys.argv[2], sys.argv[3])
