@@ -1455,6 +1455,10 @@ class Link:
             self.remove_prop(prop)
         for light in list(self.lights.values()):
             self.remove_light(light)
+        # Called on the way out, when no frame timer may tick a paused game any more: give it the ticks here.
+        while self.settle_nudges:
+            self.tick_settle()
+            time.sleep(0.05)
 
     def find_entities(self, text, wait=0.4):
         """ent_find: [(entity index, classname, targetname)] of entities whose class or name holds text."""
@@ -1815,7 +1819,7 @@ class Link:
         self.settle_nudges = CONSOLE_NUDGES
 
     def tick_settle(self):
-        if self.settle_nudges and self.running:
+        if self.settle_nudges:
             self.settle_nudges -= 1
             self.nudge()
 
