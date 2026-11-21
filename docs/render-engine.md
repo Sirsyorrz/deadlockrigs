@@ -29,9 +29,11 @@ to a normal game launch.
   one to take it out, **Pose in Game** to bring it back.
 - **Add Game Model**: opens a thumbnail browser of the game's models. The chosen model is placed at the 3D cursor as
   an empty; move, rotate and scale the empty and the game follows.
-- **Meshes**: your own meshes (and curves, text...) are in the game too, with each material's base colour or base
-  colour image, lit by the map. Untick **Mesh in Game** on one to keep it out. Edits are sent once the mesh has been
-  still for a moment. No collision, roughness, normal maps or rigging yet.
+- **Meshes**: your own meshes (and curves, text...) are in the game too, lit and shadowed by the map. From each
+  Principled BSDF the game takes base colour, roughness, metallic, a tangent-space Normal Map, alpha (cut out when
+  the alpha image is only on or off, see-through otherwise) and emission; each as a value or an Image Texture
+  (directly or through Separate Color). An emission image glows in the base colour. Untick **Mesh in Game** on one
+  to keep it out. Edits are sent once the mesh has been still for a moment. No collision or rigging yet.
 - **Add Game Light**: a spot light the game draws, shadows included. Any spot or point light with **Light in Game**
   on works the same way.
 - **Map**: choose what of the map is in the game (Patrons, Walkers, Guardians, Mid-boss, troopers, neutral camps and

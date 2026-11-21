@@ -8,6 +8,7 @@ import hashlib
 import os
 import re
 import struct
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -272,54 +273,107 @@ def _normal_map(bsdf):
     return n / np.maximum(np.linalg.norm(n, axis=2, keepdims=True), 1e-12)
 
 
-def material_inputs(material):
-    """(base colour RGBA 0..1 sRGB as an (h, w, 4) float image or a 4-tuple, roughness, metalness, normal map or
-    None), roughness and metalness a float or an (h, w) float image."""
+@dataclass
+class Surface:
+    """A material as pbr.vfx takes it. Maps are a float or an (h, w) float image; color is sRGB."""
+    color: object = (0.8, 0.8, 0.8)  # RGB tuple or (h, w, 3+) image
+    roughness: object = 0.5
+    metalness: object = 0.0
+    alpha: object = 1.0
+    blended: bool = False  # Blender's Blended render method: alpha always blends, never cuts
+    normal: object = None  # (h, w, 3) tangent-space normals
+    emission: tuple = (0.0, 0.0, 0.0)  # linear RGB times strength
+    emission_mask: object = None  # (h, w) image: glows in the base colour where set
+
+
+def surface(material):
     if material is None:
-        return (0.8, 0.8, 0.8, 1.0), 0.5, 0.0, None
-    color = tuple(material.diffuse_color)
+        return Surface()
     tree = material.node_tree if material.use_nodes else None
     bsdf = next((n for n in tree.nodes if n.type == 'BSDF_PRINCIPLED'), None) if tree else None
     if bsdf is None:
-        return (tuple(_linear_to_srgb(np.array(color[:3]))) + (color[3],), float(material.roughness),
-                float(material.metallic), None)
-    roughness, metalness = _scalar_map(bsdf, 'Roughness'), _scalar_map(bsdf, 'Metallic')
-    normal = _normal_map(bsdf)
+        color = material.diffuse_color
+        return Surface(tuple(_linear_to_srgb(np.array(color[:3]))), float(material.roughness),
+                       float(material.metallic), float(color[3]))
+    out = Surface(roughness=_scalar_map(bsdf, 'Roughness'), metalness=_scalar_map(bsdf, 'Metallic'),
+                  alpha=_scalar_map(bsdf, 'Alpha'), normal=_normal_map(bsdf),
+                  blended=getattr(material, 'surface_render_method', '') == 'BLENDED')
     linked = _linked_image(bsdf.inputs['Base Color'])
     if linked is not None and linked[1] is None:
         image = linked[0]
         px = _shrink(_image_floats(image))
         if image.is_float:
             px[..., :3] = _linear_to_srgb(px[..., :3])
-        return px, roughness, metalness, normal
-    value = tuple(bsdf.inputs['Base Color'].default_value)
-    return tuple(_linear_to_srgb(np.array(value[:3]))) + (value[3],), roughness, metalness, normal
+        out.color = px
+    else:
+        out.color = tuple(_linear_to_srgb(np.array(bsdf.inputs['Base Color'].default_value[:3])))
+    strength = bsdf.inputs['Emission Strength']
+    strength = 1.0 if strength.is_linked else float(strength.default_value)
+    emission = bsdf.inputs['Emission Color']
+    linked = _linked_image(emission)
+    if linked is not None and strength > 0:
+        px = _shrink(_image_floats(linked[0]))
+        mask = px[..., :3].max(axis=2) if linked[1] is None else px[..., linked[1]]
+        out.emission, out.emission_mask = (strength,) * 3, mask
+    elif not emission.is_linked:
+        out.emission = tuple(float(c) * strength for c in emission.default_value[:3])
+    return out
 
 
 def _to_bytes(px):
     return np.clip(np.round(np.asarray(px, np.float32) * 255), 0, 255).astype(np.uint8)
 
 
-def material_textures(material):
-    """(colour RGBA, normal-roughness RGBA) uint8 images for pbr.vfx. Opaque pbr reads metalness from the colour
-    alpha; g_tNormalRoughness is a hemi-octahedral tangent-space normal in RG and roughness in B."""
-    color, roughness, metalness, normal = material_inputs(material)
-    maps = [m for m in (color, metalness) if not isinstance(m, (tuple, float))]
-    shape = max((m.shape[:2] for m in maps), key=lambda s: s[0] * s[1], default=(4, 4))
-    if isinstance(color, tuple):
-        rgba = np.empty(shape + (4,), np.float32)
-        rgba[:] = color
+def _largest(*maps, default=(4, 4)):
+    shapes = [m.shape[:2] for m in maps if isinstance(m, np.ndarray)]
+    return max(shapes, key=lambda s: s[0] * s[1], default=default)
+
+
+def _fill(value, shape):
+    return np.full(shape, value, np.float32) if not isinstance(value, np.ndarray) else _resample(value, shape)
+
+
+def alpha_mode(surf):
+    """'' (opaque), 'test' (cut out) or 'blend'. An image alpha that is all but fully on or off cuts."""
+    alpha = surf.alpha
+    if not isinstance(alpha, np.ndarray):
+        return '' if alpha >= 0.999 else 'blend'
+    if alpha.min() >= 0.999:
+        return ''
+    partial = np.count_nonzero((alpha > 0.02) & (alpha < 0.98)) / alpha.size
+    return 'blend' if surf.blended or partial > 0.01 else 'test'
+
+
+def material_textures(surf, mode):
+    """{texture param: uint8 RGBA image} for pbr.vfx. Opaque pbr reads metalness from the colour alpha; cut-out and
+    blended ones read opacity there and metalness from g_tMetalness. g_tNormalRoughness is a hemi-octahedral
+    tangent-space normal in RG and roughness in B."""
+    shape = _largest(surf.color, surf.metalness, surf.alpha)
+    if isinstance(surf.color, np.ndarray):
+        rgba = _resample(surf.color, shape)[..., :4].copy()
+        if rgba.shape[2] == 3:
+            rgba = np.concatenate([rgba, np.ones(shape + (1,), np.float32)], axis=2)
     else:
-        rgba = _resample(color, shape).copy()
-    rgba[..., 3] = metalness if isinstance(metalness, float) else _resample(metalness, shape)
-    maps = [m for m in (normal, roughness) if not isinstance(m, (float, type(None)))]
-    shape = max((m.shape[:2] for m in maps), key=lambda s: s[0] * s[1], default=(4, 4))
+        rgba = np.empty(shape + (4,), np.float32)
+        rgba[..., :3] = surf.color
+    out = {}
+    if mode:
+        rgba[..., 3] = _fill(surf.alpha, shape)
+        metal = _fill(surf.metalness, _largest(surf.metalness))
+        out['g_tMetalness'] = np.repeat(metal[..., None], 4, axis=2)
+    else:
+        rgba[..., 3] = _fill(surf.metalness, shape)
+    out['g_tColor'] = rgba
+    shape = _largest(surf.normal, surf.roughness)
     nr = np.empty(shape + (4,), np.float32)
     nr[:] = (128 / 255, 128 / 255, 0.5, 1.0)
-    if normal is not None:
-        nr[..., :2] = _hemi_octahedral(_resample(normal, shape))
-    nr[..., 2] = roughness if isinstance(roughness, float) else _resample(roughness, shape)
-    return _to_bytes(rgba), _to_bytes(nr)
+    if surf.normal is not None:
+        nr[..., :2] = _hemi_octahedral(_resample(surf.normal, shape))
+    nr[..., 2] = _fill(surf.roughness, shape)
+    out['g_tNormalRoughness'] = nr
+    if surf.emission_mask is not None:
+        out['g_tSelfIllumMask'] = np.repeat(surf.emission_mask[..., None], 4, axis=2)
+    return {name: _to_bytes(px) for name, px in out.items()}
 
 
 def _hemi_octahedral(n):
@@ -349,23 +403,69 @@ def _write(root, path, data):
         os.replace(tmp, full)
 
 
+def _number(value):
+    value = float(value)
+    return s2res.Node(s2res.DOUBLE_ZERO if value == 0 else s2res.DOUBLE_ONE if value == 1 else s2res.DOUBLE, value)
+
+
+PARAM_VALUE = {'m_intParams': 'm_nValue', 'm_floatParams': 'm_flValue', 'm_vectorParams': 'm_value',
+               'm_textureParams': 'm_pValue'}
+
+
+def _set_param(root, kind, name, value):
+    """Set a material parameter, adding it (shaped like the list's first entry) when the template lacks it."""
+    params = root[kind].v
+    entry = next((p for p in params if p['m_name'].v == name), None)
+    if entry is None:
+        entry = copy.deepcopy(params[0])
+        entry['m_name'].v = name
+        params.append(entry)
+        params.sort(key=lambda p: p['m_name'].v)
+    key = PARAM_VALUE[kind]
+    if kind == 'm_intParams':
+        entry[key] = s2res.integer(int(value))
+    elif kind == 'm_floatParams':
+        entry[key] = _number(value)
+    elif kind == 'm_vectorParams':
+        for node, v in zip(entry[key].v, value):
+            node.t, node.v = s2res.DOUBLE, float(v)
+    else:
+        entry[key].v = value
+
+
+# Blender emission strength 1 to self illumination scale, matched by eye against EEVEE
+EMISSION_SCALE = 1.0
+
+
 def write_material(game, root, material):
     """A material's vmat_c (and textures), named for its contents: 'models/dlrigs/custom/mat_<hash>.vmat'."""
-    textures = {}
-    for param, pixels in zip(('g_tColor', 'g_tNormalRoughness'), material_textures(material)):
-        textures[param] = f'{FOLDER}/tex_{_short_hash(pixels.shape, pixels.tobytes())}.vtex'
-        _write(root, textures[param], s2res.texture(pixels))
-
+    surf = surface(material)
+    mode = alpha_mode(surf)
     res = _template(game, MATERIAL_TEMPLATE)
     res.drop('RED2')
     doc = res.kv3('DATA')
-    for param in doc.root['m_textureParams'].v:
-        name = param['m_name'].v
-        if name in textures:
-            param['m_pValue'].v = textures[name]
-    refs = [p['m_pValue'].v for p in doc.root['m_textureParams'].v]
-    mat_path = f'{FOLDER}/mat_{_short_hash(MATERIAL_TEMPLATE, *refs)}.vmat'
-    doc.root['m_materialName'].v = mat_path
+    r = doc.root
+    for param, pixels in material_textures(surf, mode).items():
+        path = f'{FOLDER}/tex_{_short_hash(pixels.shape, pixels.tobytes())}.vtex'
+        _write(root, path, s2res.texture(pixels))
+        _set_param(r, 'm_textureParams', param, path)
+    if mode == 'test':
+        _set_param(r, 'm_intParams', 'F_ALPHA_TEST', 1)
+        _set_param(r, 'm_floatParams', 'g_flAlphaTestReference1', 0.5)
+    elif mode == 'blend':
+        _set_param(r, 'm_intParams', 'F_TRANSLUCENT', 1)
+        _set_param(r, 'm_floatParams', 'g_flOpacityScale1', 1.0)
+    glow = max(surf.emission)
+    if glow > 0:
+        _set_param(r, 'm_intParams', 'F_SELF_ILLUM', 1)
+        # the scale saturates where it blends the albedo to the tint, so the tint carries the colour at strength 1
+        _set_param(r, 'm_vectorParams', 'g_vSelfIllumTint1', [c / glow for c in surf.emission] + [0.0])
+        _set_param(r, 'm_floatParams', 'g_flSelfIllumScale1', glow * EMISSION_SCALE)
+        _set_param(r, 'm_floatParams', 'g_flSelfIllumAlbedoFactor1', 1.0 if surf.emission_mask is not None else 0.0)
+    refs = [p['m_pValue'].v for p in r['m_textureParams'].v]
+    settings = [(p['m_name'].v, p[PARAM_VALUE[k]].py()) for k in PARAM_VALUE for p in r[k].v]
+    mat_path = f'{FOLDER}/mat_{_short_hash(MATERIAL_TEMPLATE, settings)}.vmat'
+    r['m_materialName'].v = mat_path
     res.set_kv3('DATA', doc)
     res.block('RERL').data = s2res.reference_list(refs)
     _write(root, mat_path, s2res.write_resource(res))
