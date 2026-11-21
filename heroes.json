@@ -902,7 +902,8 @@
   "face": {
    "part": "nurse_head_static_model",
    "mesh": "nurse_head_static_model",
-   "eyes": "nurse_eye"
+   "eyes": "nurse_eye",
+   "builder": "handkeys.py"
   },
   "props": [
    {
