@@ -64,9 +64,18 @@ def pack_normals(n):
     return (yb << 22) | (xb << 12) | np.uint32(1)
 
 
+def _two_sided(obj, nslots):
+    """Per material slot: drawn from both sides, as Blender does unless the material culls back faces."""
+    slots = obj.material_slots
+    return np.array([not (i < len(slots) and slots[i].material and slots[i].material.use_backface_culling)
+                     for i in range(nslots)], bool)
+
+
 def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
     """(positions in game units, normals, uvs, triangles, material index per triangle) of an object's evaluated mesh
-    in its own space with scale applied, axes turned to the game's (x forward), one vertex per distinct corner."""
+    in its own space with scale applied, axes turned to the game's (x forward), one vertex per distinct corner.
+    A negative scale mirrors it. The game culls back faces: an open mesh (some edge with one face) gets each
+    triangle twice, the copy facing the other way, unless its material has Backface Culling on."""
     evaluated = obj.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh()
     try:
@@ -79,6 +88,9 @@ def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
         tris.foreach_get('loops', loops)
         mat = np.empty(nt, np.int32)
         tris.foreach_get('material_index', mat)
+        edge_of_loop = np.empty(len(mesh.loops), np.int32)
+        mesh.loops.foreach_get('edge_index', edge_of_loop)
+        is_open = bool(np.any(np.bincount(edge_of_loop, minlength=len(mesh.edges)) == 1))
         vert_of_loop = np.empty(len(mesh.loops), np.int32)
         mesh.loops.foreach_get('vertex_index', vert_of_loop)
         co = np.empty(len(mesh.vertices) * 3, np.float32)
@@ -93,9 +105,19 @@ def mesh_arrays(obj, depsgraph, scale=(1.0, 1.0, 1.0)):
             uv = flat.reshape(-1, 2)
     finally:
         evaluated.to_mesh_clear()
-    scale = np.maximum(np.array(scale, np.float32), 1e-6)
+    scale = np.array(scale, np.float32)
+    scale = np.copysign(np.maximum(np.abs(scale), 1e-6), scale)
+    if np.prod(scale) < 0:
+        loops = loops.reshape(-1, 3)[:, ::-1].reshape(-1)  # mirrored: keep the faces facing out
+    if is_open:
+        both = np.repeat(_two_sided(obj, int(mat.max()) + 1)[mat], 3)
+        flipped = loops.reshape(-1, 3)[:, ::-1].reshape(-1)[both]
+        loops = np.concatenate([loops, flipped])
+        mat = np.concatenate([mat, mat[both[::3]]])
+    sign = np.ones(len(loops), np.float32)
+    sign[nt * 3:] = -1
     co = co.reshape(-1, 3)[vert_of_loop[loops]] * scale
-    normals = normals.reshape(-1, 3)[loops] / scale
+    normals = normals.reshape(-1, 3)[loops] / scale * sign[:, None]
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
     uv = uv[loops] * [1, -1] + [0, 1]  # the game's v runs down from the top of the image
     # Blender +y is game +x (GAME_FROM_BLENDER turns 90 degrees about z).
@@ -253,8 +275,9 @@ def model_name(obj):
 
 def export(obj, depsgraph, game, scale=(1.0, 1.0, 1.0)):
     """Write an object's mesh as a game model into the session overlay; its path ('models/dlrigs/custom/x.vmdl').
-    '' when it has no faces. scale is baked in (an entity only scales uniformly). The path changes with the mesh or its materials: the game
-    keeps a loaded model, so an edit needs a new name."""
+    '' when it has no faces. scale (signed, as Matrix.to_scale gives it) is baked in: an entity only scales
+    uniformly. The path changes with the mesh or its materials: the game keeps a loaded model, so an edit needs a
+    new name."""
     root = overlay_root(game)
     try:
         pos, normals, uv, indices, mat = mesh_arrays(obj, depsgraph, scale)

@@ -684,7 +684,11 @@ class GameProp:
         return struct.pack('<8f', *loc, (scale.x + scale.y + scale.z) / 3, rot.x, rot.y, rot.z, rot.w)
 
     def world(self, obj):
-        return obj.matrix_world.normalized() if self.unscaled else obj.matrix_world
+        if not self.unscaled:
+            return obj.matrix_world
+        m = obj.matrix_world.normalized()
+        # a mirroring matrix_world: to_scale() is all negative, and the model has that baked in
+        return m @ Matrix.Diagonal((-1, -1, -1, 1)) if m.determinant() < 0 else m
 
     def placement(self, obj):
         """Game position, angles (pitch, yaw, roll in degrees) and uniform scale of an evaluated object."""
