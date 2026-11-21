@@ -2331,16 +2331,15 @@ for part in hero.cfg.get('parts', []):
     for o in obs:
         hide_with(o, f'show_part_{key}')
     print('part', key, PART_TOGGLES[key], [o.name for o in obs] or PART_BONES[key])
-# a weapon inside the body mesh (Mina, the Doorman, Mo & Krill's rider): its bones' scale hides it, unless a part
-# already does (Paige's books are her weapon)
-WEAPON_BONE = next((b for b in ('weapon', 'rider_weapon_hand_R') if b in B), None)
-if 'weapon' not in PART_TOGGLES and WEAPON_BONE:
-    held = set(descendants(WEAPON_BONE))
+# a gun inside the body mesh (Mina, the Doorman): its bones' scale hides it, unless a part already does (Paige's
+# books are her weapon). Not Mo & Krill's rider_weapon_hand_R: Krill holds no gun, the bone carries his hand
+if 'weapon' not in PART_TOGGLES and 'weapon' in B:
+    held = set(descendants('weapon'))
     if not held & {b for bones in PART_BONES.values() for b in bones} and any(
             dominant_verts(o, held) > 50 for o in OWN_MESHES):
         PART_TOGGLES['weapon'] = 'Weapon'
-        PART_BONES['weapon'] = [WEAPON_BONE]
-        print('part weapon', [WEAPON_BONE])
+        PART_BONES['weapon'] = ['weapon']
+        print('part weapon', ['weapon'])
 for key, label in PART_TOGGLES.items():
     if key not in PART_BONES:
         arm[f'show_part_{key}'] = 1
