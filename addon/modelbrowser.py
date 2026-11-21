@@ -1,9 +1,10 @@
-"""Game model browser: a grid of thumbnails of the game's models (search, folder, sort) for Add Game Model.
+"""Game model browser: a scrolling grid of thumbnails of the game's models (search, folder, sort) for Add Game
+Model.
 
-Thumbnails are made on demand for the page on screen and cached: a grey pass first (S2V geometry-only export,
-well under a second for a page), then a textured pass (S2V with materials, ~10 s for 30 models) that replaces
-them. Rendering happens in one background Blender kept running (model_thumbs.py), so pages after the first don't
-pay Blender's start-up."""
+Thumbnails are made on demand for the models listed, top first, and cached: a grey pass first (S2V geometry-only
+export, about a second per 100 models), then a textured pass (S2V with materials, ~10 s per 30 models) that
+replaces them. Rendering happens in one background Blender kept running (model_thumbs.py), so later batches
+don't pay Blender's start-up."""
 import importlib
 import json
 import os
@@ -20,7 +21,9 @@ from . import gamelaunch, gamerender
 
 THUMB_SIZE = 160
 COLUMNS = 8
-PAGE_SIZE = COLUMNS * 4
+SHOW_STEP = COLUMNS * 20  # models listed at first and added per "Show more"
+GREY_BATCH = 96
+TEXTURED_BATCH = 32
 HERE = os.path.dirname(os.path.abspath(__file__))
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
@@ -53,7 +56,7 @@ def _done(png):
 
 
 class ThumbWorker(threading.Thread):
-    """Makes the thumbnails of the newest page asked for: grey ones first, then textured."""
+    """Makes the thumbnails of the newest list asked for: grey ones first, then textured, top of the list first."""
 
     def __init__(self):
         super().__init__(daemon=True)
@@ -96,14 +99,15 @@ class ThumbWorker(threading.Thread):
                     wanted = list(self.wanted)
                 grey = [m for m in wanted if not _done(thumb_paths(m)[0]) and not _done(thumb_paths(m)[1])]
                 textured = [m for m in wanted if not _done(thumb_paths(m)[0])]
-                todo, textures = (grey, False) if grey else (textured, True)
+                # top of the list first: the grey pass is cheap, so it runs ahead in bigger batches
+                todo, textures = (grey[:GREY_BATCH], False) if grey else (textured[:TEXTURED_BATCH], True)
                 if not todo:
                     break
                 self.busy = len(textured)
                 try:
                     self.make(todo, textures)
                     self.error = ''
-                except Exception as error:  # noqa: BLE001 (shown in the browser; a page must not kill the thread)
+                except Exception as error:  # noqa: BLE001 (shown in the browser; a batch must not kill the thread)
                     self.error = str(error)
                     gamelaunch.log(f'model thumbnails: {error}')
                     for m in todo:
@@ -238,16 +242,35 @@ def results(search, folder, sort):
     return models
 
 
+_model_items = []
+
+
+def model_items(self, context):
+    """Every game model as an enum item, so a grid cell can select one with prop_enum (kept: Blender reads the
+    strings after the callback returns)."""
+    if not _model_items:
+        _model_items.append(('NONE', 'None', ''))
+        _model_items.extend((m, m.rsplit('/', 1)[-1], m) for m in gamerender.game_models())
+    return _model_items
+
+
 def _search_changed(self, context):
-    self.page = 1
+    self.shown = SHOW_STEP
+
+
+def _show_more(self, context):
+    if self.more:
+        self.more = False
+        self.shown += SHOW_STEP
 
 
 class DLR_OT_game_model_browser(bpy.types.Operator):
     bl_idname = 'dlr.game_model_browser'
     bl_label = 'Add Game Model'
     bl_description = ('Pick a game model from a grid of thumbnails: an empty at the 3D cursor that the game draws '
-                      'the model at. Thumbnails are made for each page the first time it is shown (grey first, '
-                      'textured a few seconds later) and kept')
+                      'the model at. Thumbnails are made for the listed models the first time they are shown (grey '
+                      'first, textured a few seconds later) and kept')
+    bl_options = {'REGISTER', 'UNDO'}
 
     search: bpy.props.StringProperty(name='Search', options={'TEXTEDIT_UPDATE', 'SKIP_SAVE'}, update=_search_changed,
                                      description='Words of the model path; hero names find their models too '
@@ -258,7 +281,11 @@ class DLR_OT_game_model_browser(bpy.types.Operator):
         ('NAME', 'Name', 'By file name'),
         ('FOLDER', 'Folder', 'By folder, then name'),
     ), update=_search_changed)
-    page: bpy.props.IntProperty(name='Page', default=1, min=1, options={'SKIP_SAVE'})
+    shown: bpy.props.IntProperty(default=SHOW_STEP, options={'HIDDEN', 'SKIP_SAVE'})
+    more: bpy.props.BoolProperty(name='Show More', update=_show_more, options={'SKIP_SAVE'},
+                                 description='List more models (scroll down for them)')
+    selected: bpy.props.EnumProperty(name='Model', items=model_items, options={'SKIP_SAVE'},
+                                     description='Select a model, then Import')
 
     def invoke(self, context, event):
         if not gamerender.game_models():
@@ -267,10 +294,13 @@ class DLR_OT_game_model_browser(bpy.types.Operator):
         # previews are ~100 KB each: start each browse with an empty set
         _previews.clear()
         _loaded.clear()
-        return context.window_manager.invoke_props_dialog(self, width=900, title='Game Models', confirm_text='Close')
+        return context.window_manager.invoke_props_dialog(self, width=900, title='Game Models', confirm_text='Import')
 
     def execute(self, context):
-        return {'FINISHED'}
+        if self.selected == 'NONE':
+            self.report({'WARNING'}, 'no model selected')
+            return {'CANCELLED'}
+        return bpy.ops.dlr.game_add_model('EXEC_DEFAULT', model=self.selected)
 
     def draw(self, context):
         layout = self.layout
@@ -279,16 +309,15 @@ class DLR_OT_game_model_browser(bpy.types.Operator):
         row.prop(self, 'folder', text='')
         row.prop(self, 'sort', text='')
         models = results(self.search, self.folder, self.sort)
-        pages = max(1, -(-len(models) // PAGE_SIZE))
-        page = min(self.page, pages)
-        shown = models[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+        shown = models[:self.shown]
         work = worker()
         work.want(shown)
         row = layout.row()
-        row.label(text=f'{len(models)} models')
-        sub = row.row(align=True)
+        row.label(text=f'{len(models)} models' + (f', first {len(shown)} listed' if len(shown) < len(models) else ''))
+        sub = row.row()
         sub.alignment = 'RIGHT'
-        sub.prop(self, 'page', text=f'Page (of {pages})')
+        sub.label(text=f'Selected: {self.selected.rsplit("/", 1)[-1]}' if self.selected != 'NONE'
+                  else 'Click a name to select it', icon='RESTRICT_SELECT_OFF')
         if work.error:
             layout.label(text=work.error, icon='ERROR')
         if not shown:
@@ -298,10 +327,11 @@ class DLR_OT_game_model_browser(bpy.types.Operator):
         for model in shown:
             cell = grid.column(align=True)
             cell.template_icon(icon_value=icon(model), scale=5.0)
-            cell.operator_context = 'EXEC_DEFAULT'
-            name = model.rsplit('/', 1)[-1]
-            cell.operator(gamerender.DLR_OT_game_add_model.bl_idname, text=name).model = model
+            cell.prop_enum(self, 'selected', model, text=model.rsplit('/', 1)[-1])
             cell.label(text=model.rsplit('/', 1)[0] if '/' in model else '')
+        if len(shown) < len(models):
+            layout.prop(self, 'more', toggle=True, text=f'Show {min(SHOW_STEP, len(models) - len(shown))} More',
+                        icon='ADD')
 
 
 def _redraw():
