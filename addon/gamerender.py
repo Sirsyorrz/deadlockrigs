@@ -2125,8 +2125,8 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
             lk.want(game_view(rv3d.view_matrix.inverted(), rv3d.window_matrix, w / h, lk.min_vfov))
             frame = _stream_tex if _stream_tex is not None else _stream_texture(lk, region.width)
             if lk.outside:
-                _draw_message(region, 'Outside the game\'s play area: the game camera stays put '
-                                      '(View > Jump to Game View to go back)')
+                _draw_message(region, 'Outside the game\'s play area: the game camera stays put until the view '
+                                      'is back inside')
             elif frame is not None and frame[2] is not None:
                 self._draw_frame(rv3d.window_matrix, frame[1], w / h, frame[2], packed_shader(frame[3]))
         else:
@@ -2134,8 +2134,8 @@ class DeadlockGameEngine(bpy.types.RenderEngine):
             game_aspect = img.size[0] / img.size[1] if img and img.size[1] else 16 / 9
             lk.want(game_view(rv3d.view_matrix.inverted(), rv3d.window_matrix, game_aspect, lk.min_vfov))
             if lk.outside:
-                _draw_message(region, 'Outside the game\'s play area: the game camera stays put '
-                                      '(View > Jump to Game View to go back)')
+                _draw_message(region, 'Outside the game\'s play area: the game camera stays put until the view '
+                                      'is back inside')
             elif _shown is not None and img is not None:
                 self._draw_frame(rv3d.window_matrix, gpu.texture.from_image(img), game_aspect, _shown[0],
                                  gpu.shader.from_builtin('IMAGE'))
@@ -2498,24 +2498,6 @@ def jump_viewports(context, pos, pitch, yaw):
         area.tag_redraw()
 
 
-class DLR_OT_game_jump(bpy.types.Operator):
-    bl_idname = 'dlr.game_jump'
-    bl_label = 'Jump to Game View'
-    bl_description = 'Move the 3D viewports to where the game camera is now'
-
-    @classmethod
-    def poll(cls, context):
-        return _link is not None and _link.running
-
-    def execute(self, context):
-        cam = _link.game_camera()
-        if cam is None:
-            self.report({'ERROR'}, 'the game did not answer getpos')
-            return {'CANCELLED'}
-        jump_viewports(context, *cam)
-        return {'FINISHED'}
-
-
 class DLR_OT_game_connect(bpy.types.Operator):
     bl_idname = 'dlr.game_connect'
     bl_label = 'Connect to Deadlock'
@@ -2842,15 +2824,15 @@ class DLR_PT_game_render(bpy.types.Panel):
             elif lk.frame:
                 col.label(text=f'Screenshot mode: frame {lk.frame[2]}, {lk.timing * 1000:.0f} ms')
             if not lk.stream and lk.frames_error:
-                col.label(text=f'No game frames: {lk.frames_error}', icon='ERROR')
+                _wrapped_label(context, col, f'No game frames: {lk.frames_error}', icon='ERROR')
             if lk.outside:
                 col.label(text='View is outside the play area', icon='ERROR')
-            col.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
             col.prop(context.scene, 'dlr_game_no_npcs')
             if lk.poses:
                 col.operator(DLR_OT_game_pause.bl_idname, text='Resume Game' if lk.paused else 'Pause Game',
                              icon='PLAY' if lk.paused else 'PAUSE', depress=lk.paused)
-                col.label(text='Visible rigs, game models and lights are in the game (Rendered shading or F12)')
+                _wrapped_label(context, col, 'Visible rigs, game models and lights are in the game (Rendered '
+                                             'shading or F12)')
                 arm = puppet_armature(context.active_object)
                 if arm is not None and arm.name in lk.declined:
                     col.operator(DLR_OT_game_pose_rig.bl_idname, icon='ARMATURE_DATA')
@@ -2891,22 +2873,37 @@ class DLR_PT_game_render(bpy.types.Panel):
             if context.active_object is not None and context.active_object.type == 'LIGHT':
                 col.prop(context.active_object, 'dlr_game_light')
         if _session and _session.error:
-            col.label(text=_session.error, icon='ERROR')
+            _wrapped_label(context, col, _session.error, icon='ERROR')
         if lk and lk.error:
-            col.label(text=lk.error, icon='ERROR')
+            _wrapped_label(context, col, lk.error, icon='ERROR')
         if (lk and (lk.error or (not lk.stream and lk.frames_error))) or (_session and _session.error):
             col.label(text=f'Log: {gamelaunch.log_path()}')
 
 
+def _wrapped_label(context, layout, text, icon='NONE'):
+    """Panel labels don't wrap; Blender cuts long ones in the middle with an ellipsis."""
+    scale = context.preferences.system.ui_scale
+    # room left after the panel margins and the icon column
+    width = (context.region.width if context.region else 300) - 60 * scale
+    blf.size(0, context.preferences.ui_styles[0].widget.points * scale)
+    lines = []
+    for word in text.split():
+        if lines and blf.dimensions(0, lines[-1] + ' ' + word)[0] <= width:
+            lines[-1] += ' ' + word
+        else:
+            lines.append(word)
+    col = layout.column(align=True)
+    for i, line in enumerate(lines or ['']):
+        col.label(text=line, icon=icon if i == 0 else 'BLANK1' if icon != 'NONE' else 'NONE')
+
+
 def _view_menu(self, context):
-    if context.scene.render.engine == ENGINE_ID:
-        self.layout.operator(DLR_OT_game_jump.bl_idname, icon='VIEW_CAMERA')
-    elif _link is not None and _link.running:
+    if context.scene.render.engine != ENGINE_ID and _link is not None and _link.running:
         self.layout.operator(DLR_OT_game_plate.bl_idname, icon='IMAGE_BACKGROUND')
 
 
 CLASSES = (DeadlockGameEngine, DLR_OT_game_connect, DLR_OT_game_disconnect, DLR_OT_game_start, DLR_OT_game_quit,
-           DLR_OT_game_jump, DLR_OT_game_pause, DLR_OT_game_add_model, DLR_OT_game_add_light,
+           DLR_OT_game_pause, DLR_OT_game_add_model, DLR_OT_game_add_light,
            DLR_OT_game_pose_rig, DLR_OT_game_unpose_rig, DLR_PT_game_render,
            DLR_OT_game_plate)
 
