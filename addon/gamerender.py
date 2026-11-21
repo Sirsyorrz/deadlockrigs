@@ -2741,7 +2741,10 @@ class DLR_OT_game_unpose_rig(bpy.types.Operator):
             else:
                 _link.remove_light(light)
             arm = bpy.data.objects.get(self.armature)
-            if arm:
+            if arm and prop and arm.type == 'EMPTY':
+                _link.declined.discard(arm.name)
+                bpy.data.objects.remove(arm)
+            elif arm:
                 arm.update_tag()
         return {'FINISHED'}
 
