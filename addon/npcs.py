@@ -474,7 +474,9 @@ def draw(layout, context):
         what = {'NPCS': "Finding the map's NPCs and ziplines", 'RIG': f'Building {hero_name(_job.slug)}',
                 'ANIMS': f"Exporting {hero_name(_job.slug)}'s animations"}.get(_job.kind, _job.slug)
         uitext.label(context, box, f'{what} ({pos[0]}/{pos[1]})', boxed=1)
-        box.progress(factor=_job.progress, type='BAR', text=f'{_job.status}  {_job.progress:.0%}')
+        if _job.status:
+            uitext.label(context, box, _job.status, boxed=1)
+        box.progress(factor=_job.progress, type='BAR', text=f'{_job.progress:.0%}')
         box.operator('dlr.cancel', icon='X')
     elif sc.dlr_npcs_status == 'failed':
         uitext.label(context, box, 'Building the NPCs failed', icon='ERROR', boxed=1)

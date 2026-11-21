@@ -3334,7 +3334,7 @@ class DLR_PT_game_render(bpy.types.Panel):
         col = self.layout.column()
         lk = _link
         if lk and lk.running:
-            col.label(text=f'Connected (port {lk.port})', icon='LINKED')
+            uitext.label(context, col, f'Connected (port {lk.port})', icon='LINKED')
         else:
             col.label(text='Not connected', icon='UNLINKED')
         uitext.label(context, col, 'The game controls are in the 3D view sidebar: Deadlock Rigs > Game', icon='INFO')
@@ -3353,7 +3353,7 @@ class DLR_PT_game(bpy.types.Panel):
         if lk and lk.running and context.scene.render.engine != ENGINE_ID:
             col.operator(DLR_OT_game_use_engine.bl_idname, icon='RESTRICT_RENDER_OFF')
         if lk and lk.running:
-            col.label(text=f'Connected (port {lk.port})', icon='LINKED')
+            uitext.label(context, col, f'Connected (port {lk.port})', icon='LINKED')
             uitext.label(context, col, 'Camera: bridge (free camera)' if lk.bridge else
                          'Camera: console (moves the hero; start the session with --bridge for a free camera)')
             if lk.stream:
@@ -3400,10 +3400,10 @@ class DLR_PT_game(bpy.types.Panel):
             if _session:
                 row.operator(DLR_OT_game_quit.bl_idname, icon='QUIT')
         elif _reload is not None:
-            uitext.label(context, col, f'Reloading {_reload["map"]} ({time.time() - _reload["since"]:.0f} s)...',
+            uitext.label(context, col, f'Reloading {_reload["map"]} ({time.time() - _reload["since"]:.0f} s)',
                          icon='TIME')
         elif _session and not _session.error and not _session.ready.is_set():
-            uitext.label(context, col, _session.status + '...', icon='TIME')
+            uitext.label(context, col, _session.status, icon='TIME')
         else:
             row = uitext.buttons(context, col, DLR_OT_game_start.bl_label, DLR_OT_game_connect.bl_label)
             row.operator(DLR_OT_game_start.bl_idname, icon='PLAY')

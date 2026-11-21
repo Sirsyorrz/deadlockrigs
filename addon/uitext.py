@@ -1,4 +1,10 @@
-"""Panel text that fits the sidebar: Blender cuts long labels and button text in the middle with an ellipsis."""
+"""Panel text that fits the sidebar: Blender cuts long labels and button text in the middle with an ellipsis.
+
+Rules (worklog/scripts/textlint.py checks them, textcheck.sh finds cut text in screenshots of every panel):
+- A label whose text isn't a fixed short string goes through label() here.
+- Two or more buttons side by side go in a buttons() row, which stacks them when they don't fit.
+- No "..." in panel text: the screenshot check takes any three dots for Blender's cut mark.
+"""
 import blf
 
 # Sidebar room a label doesn't get, measured at UI scale 1 in a 5.3 sidebar: panel margins and the tab column, plus

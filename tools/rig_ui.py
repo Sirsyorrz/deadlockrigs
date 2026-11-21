@@ -1801,9 +1801,9 @@ class DLRIG_PT_game(bpy.types.Panel):
 
     def draw(self, context):
         col = self.layout.column(align=True)
-        col.operator('dlrig.game_anim', text='Load as New Action...', icon='ACTION').mode = 'NEW'
-        col.operator('dlrig.game_anim', text='Insert at Current Frame...', icon='NLA_PUSHDOWN').mode = 'INSERT'
-        col.operator('dlrig.game_anim', text='Copy Pose...', icon='POSE_HLT').mode = 'POSE'
+        col.operator('dlrig.game_anim', text='Load as New Action', icon='ACTION').mode = 'NEW'
+        col.operator('dlrig.game_anim', text='Insert at Current Frame', icon='NLA_PUSHDOWN').mode = 'INSERT'
+        col.operator('dlrig.game_anim', text='Copy Pose', icon='POSE_HLT').mode = 'POSE'
         col.prop(context.scene, 'dlrig_in_place')
         idle = idle_clip(context)
         col.label(text=f'Idle motion uses {idle[5:]}' if idle else 'No idle clip found', icon='INFO')

@@ -84,10 +84,11 @@ def draw(layout, context):
         uitext.label(context, box, "Started by the map's logic", icon='INFO', boxed=1)
     if holder.get('dl_animated'):
         if holder.get('dl_loop', True):
-            box.label(text=f"Loops every {holder['dl_steps'] / holder['dl_rate']:.1f} s", icon='FILE_REFRESH')
+            seconds = holder['dl_steps'] / holder['dl_rate']
+            uitext.label(context, box, f'Loops every {seconds:.1f} s', icon='FILE_REFRESH', boxed=1)
         else:
             start = holder['dl_start'] * context.scene.render.fps / context.scene.render.fps_base
-            box.label(text=f"Plays once from frame {start:.0f}", icon='PLAY')
+            uitext.label(context, box, f'Plays once from frame {start:.0f}', icon='PLAY', boxed=1)
     else:
         box.label(text='Still', icon='PAUSE')
     if holder.library is not None:

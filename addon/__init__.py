@@ -689,7 +689,9 @@ class DLR_PT_main(bpy.types.Panel):
 def draw_job(layout, context, name):
     box = layout.box()
     if not _job.done:
-        box.progress(factor=_job.progress, type='BAR', text=f'{_job.status}  {_job.progress:.0%}')
+        if _job.status:
+            uitext.label(context, box, _job.status, boxed=1)
+        box.progress(factor=_job.progress, type='BAR', text=f'{_job.progress:.0%}')
         box.operator('dlr.cancel', icon='X')
     elif _job.ok:
         uitext.label(context, box, f'{name}: done', icon='CHECKMARK', boxed=1)
