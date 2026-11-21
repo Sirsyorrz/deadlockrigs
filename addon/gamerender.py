@@ -3155,7 +3155,7 @@ class DLR_PT_game_render(bpy.types.Panel):
             col.label(text=f'Connected (port {lk.port})', icon='LINKED')
         else:
             col.label(text='Not connected', icon='UNLINKED')
-        col.label(text='The game controls are in the 3D view sidebar: Deadlock Rigs > Game', icon='INFO')
+        _wrapped_label(context, col, 'The game controls are in the 3D view sidebar: Deadlock Rigs > Game', icon='INFO')
 
 
 class DLR_PT_game(bpy.types.Panel):
