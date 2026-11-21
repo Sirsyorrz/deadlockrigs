@@ -690,7 +690,9 @@ def main():
         keys_mod.PAINTED = painted
     n_head, cut, split, bag_mesh = len(arrays['co']), None, None, None
     if spec.get('open'):
-        arrays, h, n_head, cut, split, bag_mesh = open_mouth(arrays)
+        floor = spec.get('bag_floor')
+        floor = None if floor is None else float(arrays['bone_head'][2]) + floor / 1000
+        arrays, h, n_head, cut, split, bag_mesh = open_mouth(arrays, floor)
     else:
         h = fg.from_arrays(arrays)
     face = Face(h, spec, arrays, painted)
@@ -700,9 +702,11 @@ def main():
             keys.setdefault(k, np.zeros((len(h.co), 3), np.float32))
         tongue = face.tongue(spec['tongue'], keys)
     np.savez(os.path.join(hero.data, 'keys.npz'), **{k: v[:n_head] for k, v in keys.items()})
-    for f in ('keys_split.npz', 'keys_cut.npy', 'keys_mouth.npz', 'keys_tongue.npz'):
+    for f in ('keys_split.npz', 'keys_cut.npy', 'keys_mouth.npz', 'keys_tongue.npz', 'keys_tongue_piece.npy'):
         if os.path.exists(os.path.join(hero.data, f)):
             os.remove(os.path.join(hero.data, f))
+    if 'tongue_piece' in spec:
+        np.save(os.path.join(hero.data, 'keys_tongue_piece.npy'), (face.region(spec['tongue_piece']) > 0.5)[h.weld][:n_head])
     if cut is not None:
         np.save(os.path.join(hero.data, 'keys_cut.npy'), cut)
     if split is not None:

@@ -1564,10 +1564,11 @@ def cut_lips(d, h, rig):
     return out, {'src': src, 'off': off, 'rewire': np.array(rewire)}
 
 
-def add_bag(d, h, rig, rings=10, split=False):
+def add_bag(d, h, rig, rings=10, split=False, floor=None):
     """A mouth bag for a head whose mouth is a hole into nothing (Venator's): a tube from the lips' open edge back
     past the teeth, widening to hold them, closed at the back. Returns d with the bag appended (its first ring sits
-    on the edge, so it welds to the lips) and the bag's (co, tris)."""
+    on the edge, so it welds to the lips) and the bag's (co, tris). floor: lowest z, for a bag whose round bottom
+    would come out under the chin (Lady Geist's, deepened by her tongue's root)."""
     s, p = rig.s, h.wco
     loop = rig.hole
     v = p[loop]
@@ -1608,6 +1609,8 @@ def add_bag(d, h, rig, rings=10, split=False):
         ring_pts.append(np.c_[xz[:, 0], y, xz[:, 1]])
     cap = np.array([[0, y_back + 0.004 * s, zc]])
     co = np.concatenate(ring_pts + [cap])
+    if floor is not None:
+        co[:, 2] = np.maximum(co[:, 2], floor)
     tris = []
     for k in range(rings):
         for i in range(n):
@@ -1641,7 +1644,7 @@ def add_bag(d, h, rig, rings=10, split=False):
     return out, co, tris
 
 
-def open_mouth(arrays):
+def open_mouth(arrays, floor=None):
     """Opens sculpted closed lips (drops the faces joining them, or splits them along the lip line) and builds a
     mouth bag on a mouth that is a hole into nothing. Returns (arrays, h, n_head, cut, split, bag_mesh): n_head
     counts the head's vertices with the split's copies, before the bag's; the game weights (w_*) cover them all."""
@@ -1667,7 +1670,7 @@ def open_mouth(arrays):
         probe = Rig(h)
         print('split the lips along', len(split['src']), 'vertices')
     if probe.hole is not None:
-        arrays, bco, btris = add_bag(arrays, h, probe, split=split is not None)
+        arrays, bco, btris = add_bag(arrays, h, probe, split=split is not None, floor=floor)
         arrays.pop('lip_loop', None)
         # build.py skins the bag like the nearest head vertex
         _, near = cKDTree(arrays['co'][:n_head]).query(bco)

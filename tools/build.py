@@ -110,6 +110,17 @@ if hero.face:
         part_path = keys_path.replace('.npz', suffix)
         if os.path.exists(part_path):
             extra.append(add_part(head, part_path, mat()))
+    # the game's own tongue piece (handkeys "tongue_piece"): Lady Geist's is painted the teeth's grey
+    piece_path = keys_path.replace('.npz', '_tongue_piece.npy')
+    if os.path.exists(piece_path):
+        on = np.zeros(len(me.vertices), bool)
+        on[:len(np.load(piece_path))] = np.load(piece_path)
+        mat = tongue_material()
+        me.materials.append(mat)
+        mi = len(me.materials) - 1
+        for p in me.polygons:
+            if on[list(p.vertices)].all():
+                p.material_index = mi
     n = len(me.vertices)
     # game morphs and face bones come with the game's own skinning; only keys.py heads get the collar fix
     if hero.face.get('builder', 'keys.py') == 'keys.py':

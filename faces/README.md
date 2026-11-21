@@ -36,6 +36,7 @@ Weights 0..1 per vertex, by name in `"regions"` or inline:
 `"open": true`: for lips sculpted shut (one surface, nothing inside), keys.py's lip split and generated mouth bag
 (`keys.open_mouth`) run first, so the keys see the split lips and the bag (material `mouth_bag`). Lock the bag's upper
 side with the upper lip and give its lower side to the jaw (`{"bag": ...}` regions in the jaw harmonic).
+`"bag_floor"` (z, mm) flattens the bag's bottom there, for one that would come out under the chin (Lady Geist's).
 
 ## keys
 
@@ -59,6 +60,9 @@ Extra fields: `"mask": region` multiplies one move, `"sym": true` repeats it mir
 in-betweens) move it like the floor under it; tongueOut slides it `reach` mm out, lifts it to `lift` (z) and drops
 the tip `droop` mm (default 6). Part the lips for it with the head's own `"tongueOut"` moves; with `tongueOut` in `follow` the tongue also rides
 the floor for them (a tongueOut that opens the jaw a little).
+
+`"tongue_piece"`: a region holding the game's own tongue piece, built with the generated tongue's material (Lady Geist's
+is painted the teeth's grey). Move it with the jaw and tongueOut like any other region.
 
 `"bag"`: the dark mouth inside. Skin in `region` hidden from the front by over `deep` mm of mouth goes dark (`inner`
 mm marks the lips' inner faces). `spread` (deg): skin that a ray tilted that far escapes from stays light, so lip
