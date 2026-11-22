@@ -150,6 +150,25 @@ def game_running(game):
     return bool(_game_commandlines())
 
 
+def session_running():
+    """A session game (launched with -insecure) is running. The user's own Steam launch never is, so a normal
+    launch started right after the session quit isn't taken for the session."""
+    return any('-insecure' in args for args in _game_commandlines() or ())
+
+
+def _shut_down(console_log, since):
+    """The session's console log (rewritten each launch) shows the engine finished shutting down: the cfgs are
+    saved by then, though Proton can keep the process around for a while longer."""
+    try:
+        if os.path.getmtime(console_log) < since:
+            return False
+        with open(console_log, 'rb') as f:
+            f.seek(max(0, os.path.getsize(console_log) - 4096))
+            return b'ShutdownSource2Logging' in f.read()
+    except OSError:
+        return False
+
+
 def game_insecure():
     """True when every running Deadlock is an -insecure session, False when one is not (a VAC-secured game: the
     add-on must not touch it), None when no game runs or its command line can't be read."""
@@ -495,10 +514,13 @@ def watch(game, token):
         except OSError:
             return False
 
-    give_up = time.time() + CONSOLE_TIMEOUT + 60
+    started = time.time()
+    give_up = started + CONSOLE_TIMEOUT + 60
     seen, gone_since = False, None
     while current():
-        if game_running(game):
+        if seen and _shut_down(session.console_log(), started):
+            break
+        if session_running():
             seen, gone_since = True, None
         elif seen or time.time() > give_up:
             gone_since = gone_since or time.time()
@@ -507,14 +529,18 @@ def watch(game, token):
         time.sleep(WATCH_POLL)
     else:
         return
-    if game_running(game) or not current():
+    if not current():
         return
     restoring = os.path.exists(os.path.join(session.cfg_backup, 'index.json'))
     session.restore_gameinfo()
     session.restore_cfgs()
-    session.remove_bridge()
     if restoring:
         log('watcher: the game quit without Blender, settings restored')
+    # The bridge dll can't be deleted on Windows while the exiting process still has it loaded.
+    end = time.time() + 120
+    while session_running() and time.time() < end:
+        time.sleep(WATCH_POLL)
+    session.remove_bridge()
 
 
 def _search_paths_block(lines):
