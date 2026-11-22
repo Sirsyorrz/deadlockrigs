@@ -1181,7 +1181,8 @@
     0.04,
     2.372,
     8
-   ]
+   ],
+   "builder": "handkeys.py"
   },
   "extra_models": {
    "Serrated Knife": {

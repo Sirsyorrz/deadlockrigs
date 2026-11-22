@@ -53,7 +53,9 @@ class Face:
             if h.ball is not None and h.ball[s].any():
                 m = np.zeros(self.nw, bool)
                 m[h.weld[h.ball[s]]] = True
-                self.ball[s] = m
+                # painted eyes with eyeballs hidden behind the skin (Shiv's): the balls stay still, the paint is the eye
+                if painted is None:
+                    self.ball[s] = m
                 balls |= m
         self.balls = balls
         sizes = np.bincount(comp).astype(float)
