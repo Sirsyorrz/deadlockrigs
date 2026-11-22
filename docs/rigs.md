@@ -27,6 +27,9 @@ Open the sidebar in the 3D View (N) > Deadlock Rigs, pick a hero and press Build
 The first build downloads Source2Viewer-CLI (about 60 MB) to read the game files. Rigs are saved to
 `Documents/DeadlockRigs/<hero>/`.
 
+After an add-on update, a rig that the update changes (new face, fixes, new toggles) shows "Built by an older add-on,
+rebuild" under the hero list. Rebuild Rig keeps the previous one as `<hero>_rig.old.blend`.
+
 ## Using a rig
 
 - The rig's controls are in the sidebar under **Hero Rig**, in Pose Mode.
