@@ -209,11 +209,15 @@ class FaceBones:
             # separate pieces (teeth) take their mean weights and move whole instead of bending with the gum
             on = (self.f.region(rig['rigid']) > 0.5)[self.h.weld]
             comp = self.f.comp[self.h.weld]
+            arr = [w for w in W.values() if np.ndim(w)]
+            tot = sum(arr)
             for k in np.unique(comp[on]):
                 m = comp == k
-                for w in W.values():
-                    if np.ndim(w):
-                        w[m] = w[m].mean()
+                # average shares, not weights: a piece partly on body bones (Shiv's lower teeth) keeps each
+                # vertex's head total, so the rest pose doesn't move
+                t = np.maximum(tot[m], 1e-9)
+                for w in arr:
+                    w[m] = (w[m] / t).mean() * tot[m]
         origin = self.f.origin
         out = {'bones': [], 'reparent': {}, 'show': [], 'scale': rig.get('scale', 1.0)}
         for n in self.order:
