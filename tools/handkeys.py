@@ -3,7 +3,7 @@
 weights, for face_preview.py).
 
 For heads the generator (keys.py) can't read: snouts, beaks, masks, robots. The spec places everything by hand; see
-faces/README.md for the format.
+worklog/faces.md for the format.
 """
 import json
 import os
