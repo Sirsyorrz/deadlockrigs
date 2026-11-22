@@ -439,6 +439,8 @@ class Builder:
         self.blender_script(h, 'rig.py', h.base_blend)
         if not os.path.exists(h.rig_blend):
             raise BuildError('rig.py wrote no ' + h.rig_blend)
+        with open(h.rig_stamp_file, 'w', encoding='utf-8') as f:
+            json.dump(h.rig_stamp(), f)
         if not self.keep:
             for f in glob.glob(os.path.join(h.out, '*.blend1')):
                 os.remove(f)

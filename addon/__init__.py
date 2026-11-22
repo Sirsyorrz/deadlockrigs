@@ -130,6 +130,26 @@ def rig_path(slug, context=None):
     return os.path.join(output_dir(context), slug, f'{slug}_rig.blend')
 
 
+_rig_state = {}
+
+
+def rig_state(slug, context):
+    """'missing', 'current', or 'old' (built by an earlier add-on, or this hero's rig data changed since)."""
+    path = rig_path(slug, context)
+    if path not in _rig_state:
+        if not os.path.exists(path):
+            state = 'missing'
+        else:
+            try:
+                with open(path[:-len('.blend')] + '.json', encoding='utf-8') as f:
+                    built = json.load(f)
+                state = 'current' if built == tools_module('hero').Hero(slug).rig_stamp() else 'old'
+            except (OSError, ValueError):
+                state = 'old'
+        _rig_state[path] = state
+    return _rig_state[path]
+
+
 def tools_module(name):
     """A module of tools/, imported as <add-on>.tools.<name>. Blender's extension policy forbids adding to sys.path
     or importing top-level modules from the extension's folder; in the repo tools/ isn't inside the add-on at all."""
@@ -334,6 +354,7 @@ def tick():
     if not _job.done:
         return 0.25
     _map_state.clear()
+    _rig_state.clear()
     if _job.quiet:
         if _job.ok and _queue:
             start(bpy.context, *_queue.pop(0), quiet=True)
@@ -674,7 +695,9 @@ class DLR_PT_main(bpy.types.Panel):
         busy = _job is not None and not _job.done
         row = col.row(align=True)
         row.enabled = not busy
-        row.operator('dlr.build', text='Build Rig', icon='ARMATURE_DATA').kind = 'RIG'
+        rig = rig_state(sc.dlr_hero, context)
+        row.operator('dlr.build', text='Rebuild Rig' if rig == 'old' else 'Build Rig',
+                     icon='ARMATURE_DATA').kind = 'RIG'
         row.prop(sc, 'dlr_after', text='')
         sub = col.row()
         sub.enabled = not busy
@@ -684,8 +707,9 @@ class DLR_PT_main(bpy.types.Panel):
         if _job is not None and _job.kind != 'MAP' and not _job.quiet and _job.slug == sc.dlr_hero:
             draw_job(layout, context, hero_name(_job.slug))
 
-        path = rig_path(sc.dlr_hero, context)
-        if os.path.exists(path):
+        if rig == 'old':
+            uitext.label(context, layout, 'Built by an older add-on, rebuild', icon='ERROR')
+        if rig != 'missing':
             row = uitext.buttons(context, layout, 'Open Rig', 'Append to Scene', align=True)
             row.operator('dlr.open', text='Open Rig', icon='FILE_FOLDER').append = False
             row.operator('dlr.open', text='Append to Scene', icon='APPEND_BLEND').append = True

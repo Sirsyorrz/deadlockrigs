@@ -2,6 +2,7 @@
 
 Build files go under DLRIG_WORK/<slug>/ (default heroes/<slug>/), finished files under DLRIG_OUT/<slug>/ when
 DLRIG_OUT is set, else heroes/<slug>/out/."""
+import hashlib
 import json
 import os
 import sys
@@ -9,6 +10,10 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # values the rig takes from the game clips (held-prop grips, twist weights), kept so builds without clips match
 RIGDATA = os.path.join(ROOT, 'rigdata')
+FACES = os.path.join(ROOT, 'faces')
+# raised when a change to the rig build makes earlier rigs wrong, so they show as needing a rebuild. Changes to one
+# hero's own data (heroes.json entry, rigdata, face spec) are caught by rig_stamp's hash without a bump.
+RIG_BUILDER = 1
 
 
 def heroes():
@@ -64,6 +69,17 @@ class Hero:
     @property
     def rig_blend(self):
         return os.path.join(self.out, f'{self.slug}_rig.blend')
+
+    @property
+    def rig_stamp_file(self):
+        return os.path.join(self.out, f'{self.slug}_rig.json')
+
+    def rig_stamp(self):
+        data = hashlib.sha1(json.dumps(self.cfg, sort_keys=True).encode())
+        for path in (self.rigdata, os.path.join(FACES, f'{self.slug}.json')):
+            if os.path.exists(path):
+                data.update(open(path, 'rb').read())
+        return {'builder': RIG_BUILDER, 'data': data.hexdigest()[:16]}
 
     @property
     def anims_blend(self):
